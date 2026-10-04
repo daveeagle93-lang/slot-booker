@@ -49,3 +49,12 @@ export function copyText(event, booking) {
   if (event.details) lines.push(event.details);
   return lines.join("\n");
 }
+
+/** 128 random bits as 22 base64url characters: one per booking form, reused when a request is retried. */
+export function newIdempotencyKey() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** Paragraphs of the privacy notice: blank lines separate them. */
+export const privacyParagraphs = (text) => text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);

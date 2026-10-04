@@ -1,5 +1,5 @@
 import ICAL from "ical.js";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { generateBookingToken } from "../../../../../../src/core/slug";
 import { identityKey } from "../../../../../../src/core/identity";
 import { createTestEnv, insertBreak, insertEvent, type TestEnv } from "../../../../../../src/test/db";
@@ -8,8 +8,16 @@ import { onRequestPost } from "../../bookings";
 import { onRequestGet } from "./ics";
 
 let t: TestEnv;
-beforeAll(async () => { t = await createTestEnv(); });
-afterAll(() => t.dispose());
+beforeAll(async () => {
+  t = await createTestEnv();
+  // The POST test books an event dated 2026-06-13, so the clock must be before it (Date only; timers stay real).
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-06-01T00:00:00Z"));
+});
+afterAll(async () => {
+  vi.useRealTimers();
+  await t.dispose();
+});
 
 const SLOT = "2026-06-13T08:15:00Z";
 
@@ -191,7 +199,7 @@ describe("GET /api/events/:slug/bookings/:token/ics", () => {
       onRequestPost({
         request: new Request(`http://localhost/api/events/${slug}/bookings`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ slot: SLOT, dogName: "  Zoë & Co ", handlerName: "Sam #1 " }),
+          body: JSON.stringify({ slot: SLOT, dogName: "  Zoë & Co ", handlerName: "Sam #1 ", idempotencyKey: generateBookingToken() }),
         }),
         env: t.env,
         params: { slug },

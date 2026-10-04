@@ -1,0 +1,29 @@
+/** Readers for the non-secret Pages variables in AppEnv (src/server/env.ts). Pure: each takes the raw string. */
+
+export const DEFAULT_PRIVACY_NOTICE =
+  "We store your name, your dog's name and the slot you choose so the club can run the event. "
+  + "The club's organisers can see these details; other people using this page only see which slots are taken. "
+  + "The club deletes booking details after the event.";
+
+const MAX_PRIVACY_NOTICE_CODE_POINTS = 1000;
+const MAX_CUTOFF_OFFSET_MINUTES = 7 * 24 * 60;
+
+/** Whole minutes in [-10080, 10080]; unset gives 0, and anything else gives 0 with a warning. */
+export function bookingCutoffOffsetMinutes(raw: string | undefined): number {
+  if (raw === undefined) return 0;
+  const text = raw.trim();
+  const minutes = /^[+-]?\d+$/.test(text) ? Number(text) : NaN;
+  if (Math.abs(minutes) <= MAX_CUTOFF_OFFSET_MINUTES) return minutes;
+  console.warn(`BOOKING_CUTOFF_OFFSET_MINUTES must be a whole number from -${MAX_CUTOFF_OFFSET_MINUTES} to ${MAX_CUTOFF_OFFSET_MINUTES}; using 0.`);
+  return 0;
+}
+
+/** The trimmed notice, cut to 1000 code points (with a warning), or the default if blank or unset. */
+export function privacyNotice(raw: string | undefined): string {
+  const text = raw?.trim() ?? "";
+  if (text === "") return DEFAULT_PRIVACY_NOTICE;
+  const points = [...text];
+  if (points.length <= MAX_PRIVACY_NOTICE_CODE_POINTS) return text;
+  console.warn(`PRIVACY_NOTICE is longer than ${MAX_PRIVACY_NOTICE_CODE_POINTS} characters; truncating it.`);
+  return points.slice(0, MAX_PRIVACY_NOTICE_CODE_POINTS).join("");
+}

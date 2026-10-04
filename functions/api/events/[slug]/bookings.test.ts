@@ -1,16 +1,28 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { identityKey } from "../../../../src/core/identity";
+import { generateBookingToken } from "../../../../src/core/slug";
+import type { AppEnv } from "../../../../src/server/env";
 import { createTestEnv, insertBreak, insertEvent, type TestEnv } from "../../../../src/test/db";
 import { onRequestPost } from "./bookings";
 
+// The test events are dated 2026-06-13: pin the clock before them so bookings are open (Date only; timers stay real).
+const BEFORE_EVENTS = "2026-06-01T00:00:00Z";
+
 let t: TestEnv;
-beforeAll(async () => { t = await createTestEnv(); });
-afterAll(() => t.dispose());
+beforeAll(async () => {
+  t = await createTestEnv();
+  vi.useFakeTimers({ toFake: ["Date"] });
+});
+beforeEach(() => { vi.setSystemTime(new Date(BEFORE_EVENTS)); });
+afterAll(async () => {
+  vi.useRealTimers();
+  await t.dispose();
+});
 
 const SLOT = "2026-06-13T08:00:00Z";
 
 interface PostOptions {
-  contentType?: string | null; raw?: string; env?: { DB: D1Database };
+  contentType?: string | null; raw?: string; env?: AppEnv;
   headers?: Record<string, string>; stream?: ReadableStream<Uint8Array>;
 }
 
@@ -29,7 +41,11 @@ const post = (slug: string, body: unknown, o: PostOptions = {}): Promise<Respons
   );
 };
 
-const entry = (slot: string, dogName: string, handlerName: string) => ({ slot, dogName, handlerName });
+const newKey = generateBookingToken; // 22 base64url characters, the same shape as the browser's key
+
+/** Each call is a different form load, so it gets a fresh key unless one is passed. */
+const entry = (slot: string, dogName: string, handlerName: string, idempotencyKey = newKey()) =>
+  ({ slot, dogName, handlerName, idempotencyKey });
 
 interface ErrorBody {
   error: { code: string; message: string };
@@ -267,9 +283,9 @@ describe("POST /api/events/:slug/bookings", () => {
       expect(await rows(id)).toHaveLength(0);
     });
 
-    it("checks the event before the body: archived beats a bad content type", async () => {
+    it("reads the body before the archived check, so a retry can still find its booking: a bad content type beats archived", async () => {
       const { slug } = await insertEvent(t.env.DB, { archived: true });
-      expect((await post(slug, {}, { contentType: "text/plain" })).status).toBe(410);
+      expect((await post(slug, {}, { contentType: "text/plain" })).status).toBe(415);
     });
 
     it("returns 400 invalid_slot for times that are not slots, and inserts nothing", async () => {
@@ -295,7 +311,7 @@ describe("POST /api/events/:slug/bookings", () => {
 
     it("returns 400 invalid_input for a missing or non-string slot", async () => {
       const { id, slug } = await insertEvent(t.env.DB);
-      for (const body of [{ dogName: "Rex", handlerName: "Sam" }, { ...entry(SLOT, "Rex", "Sam"), slot: 123 }]) {
+      for (const body of [{ dogName: "Rex", handlerName: "Sam", idempotencyKey: newKey() }, { ...entry(SLOT, "Rex", "Sam"), slot: 123 }]) {
         const res = await post(slug, body);
         expect(res.status).toBe(400);
         const parsed = (await res.json()) as ErrorBody;
@@ -400,9 +416,9 @@ describe("POST /api/events/:slug/bookings", () => {
     it("returns 400 invalid_input naming each bad name field", async () => {
       const { id, slug } = await insertEvent(t.env.DB);
       const cases: [string, Record<string, unknown>, string[]][] = [
-        ["missing dog", { slot: SLOT, handlerName: "Sam" }, ["dogName"]],
-        ["missing handler", { slot: SLOT, dogName: "Rex" }, ["handlerName"]],
-        ["both missing", { slot: SLOT }, ["dogName", "handlerName"]],
+        ["missing dog", { slot: SLOT, handlerName: "Sam", idempotencyKey: newKey() }, ["dogName"]],
+        ["missing handler", { slot: SLOT, dogName: "Rex", idempotencyKey: newKey() }, ["handlerName"]],
+        ["both missing", { slot: SLOT, idempotencyKey: newKey() }, ["dogName", "handlerName"]],
         ["non-string", entry(SLOT, "Rex", 7 as unknown as string), ["handlerName"]],
         ["blank", entry(SLOT, "   ", "Sam"), ["dogName"]],
         ["too long (81 chars)", entry(SLOT, "Rex", "a".repeat(81)), ["handlerName"]],
@@ -429,14 +445,14 @@ describe("POST /api/events/:slug/bookings", () => {
     it("rejects a lone surrogate with 400 and inserts nothing (it would break the icsUrl after the insert)", async () => {
       const { id, slug } = await insertEvent(t.env.DB);
       // The escape survives JSON.parse as a real lone surrogate.
-      const raw = `{"slot":"${SLOT}","dogName":"Rex\\ud800","handlerName":"Sam"}`;
+      const raw = `{"slot":"${SLOT}","dogName":"Rex\\ud800","handlerName":"Sam","idempotencyKey":"${newKey()}"}`;
       const res = await post(slug, undefined, { raw });
       expect(res.status).toBe(400);
       const parsed = (await res.json()) as ErrorBody;
       expect(parsed.error.code).toBe("invalid_input");
       expect(Object.keys(parsed.fields ?? {})).toEqual(["dogName"]);
       expect(await rows(id)).toHaveLength(0);
-      const handler = `{"slot":"${SLOT}","dogName":"Rex","handlerName":"\\udc00Sam"}`;
+      const handler = `{"slot":"${SLOT}","dogName":"Rex","handlerName":"\\udc00Sam","idempotencyKey":"${newKey()}"}`;
       expect(Object.keys(((await (await post(slug, undefined, { raw: handler })).json()) as ErrorBody).fields ?? {})).toEqual(["handlerName"]);
       expect(await rows(id)).toHaveLength(0);
     });
@@ -487,6 +503,268 @@ describe("POST /api/events/:slug/bookings", () => {
       const { slug } = await insertEvent(t.env.DB);
       expect((await post(slug, entry(SLOT, "🐕".repeat(80), "Sam"))).status).toBe(201);
       expect((await post(slug, entry("2026-06-13T08:15:00Z", "🐕".repeat(81), "Sam"))).status).toBe(400);
+    });
+  });
+
+  describe("idempotency keys", () => {
+    const S1 = "2026-06-13T08:00:00Z";
+    const S2 = "2026-06-13T08:15:00Z";
+
+    it("answers a retry after a dropped response with the original booking, token and icsUrl", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, { name: "Summer show" });
+      const body = entry(S1, "Rex", "Sam Jones");
+      void (await post(slug, body)); // the response is lost: its body is never read
+      const stored = await rows(id);
+      expect(stored).toHaveLength(1);
+
+      const retry = await post(slug, body);
+      expect(retry.status).toBe(201);
+      expect(retry.headers.get("idempotent-replayed")).toBe("true");
+      expect(retry.headers.get("cache-control")).toBe("no-store");
+      expect(await retry.json()).toEqual({
+        booking: { slot: { start: S1, end: "2026-06-13T08:15:00Z" }, dogName: "Rex", handlerName: "Sam Jones" },
+        event: expect.objectContaining({ slug, name: "Summer show", archived: false }),
+        icsUrl: `/api/events/${slug}/bookings/${stored[0].token}/ics`,
+      });
+      expect(await rows(id)).toHaveLength(1);
+    });
+
+    it("gives a replay byte-for-byte the same body as the first response, and marks only the replay", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      const body = entry(S1, "Rex", "Sam Jones");
+      const first = await post(slug, body);
+      const second = await post(slug, body);
+      const third = await post(slug, body);
+      expect(first.headers.get("idempotent-replayed")).toBeNull();
+      expect(second.headers.get("idempotent-replayed")).toBe("true");
+      const original = await first.text();
+      expect(await second.text()).toBe(original);
+      expect(await third.text()).toBe(original);
+    });
+
+    it("replays with the names as first stored when the retry differs only in case or spacing", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const key = newKey();
+      await post(slug, entry(S1, "Rex", "Sam Jones", key));
+      const res = await post(slug, entry(S1, " REX ", "sam   jones", key));
+      expect(res.status).toBe(201);
+      expect(((await res.json()) as { booking: { dogName: string; handlerName: string } }).booking)
+        .toMatchObject({ dogName: "Rex", handlerName: "Sam Jones" });
+      expect(await rows(id)).toHaveLength(1);
+    });
+
+    it("gives 6 simultaneous requests with one key exactly one row and one token", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const body = entry(S1, "Rex", "Sam Jones");
+      const responses = await Promise.all(Array.from({ length: 6 }, () => post(slug, body)));
+      expect(responses.map((r) => r.status)).toEqual([201, 201, 201, 201, 201, 201]);
+      const urls = await Promise.all(responses.map(async (r) => ((await r.json()) as { icsUrl: string }).icsUrl));
+      expect(new Set(urls).size).toBe(1);
+      const stored = await rows(id);
+      expect(stored).toHaveLength(1);
+      expect(urls[0]).toBe(`/api/events/${slug}/bookings/${stored[0].token}/ics`);
+    });
+
+    it("tells a simultaneous request with the same key but a different payload apart: 201 for one, 422 for the rest", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const key = newKey();
+      const responses = await Promise.all([
+        post(slug, entry(S1, "Rex", "Sam Jones", key)),
+        post(slug, entry(S2, "Fido", "Ann Lee", key)),
+        post(slug, entry(S2, "Fido", "Ann Lee", key)),
+      ]);
+      const statuses = responses.map((r) => r.status).sort();
+      expect(statuses.filter((s) => s === 201).length).toBeGreaterThanOrEqual(1);
+      expect(statuses.filter((s) => s === 422).length).toBeGreaterThanOrEqual(1);
+      expect(statuses.every((s) => s === 201 || s === 422)).toBe(true);
+      expect(await rows(id)).toHaveLength(1);
+    });
+
+    it.each([
+      ["slot", entry(S2, "Rex", "Sam Jones")],
+      ["dog", entry(S1, "Fido", "Sam Jones")],
+      ["handler", entry(S1, "Rex", "Ann Lee")],
+    ])("refuses the same key with a different %s: 422, nothing written, nothing of the first booking revealed", async (_what, other) => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const key = newKey();
+      const first = await post(slug, entry(S1, "Rex", "Sam Jones", key));
+      const { icsUrl } = (await first.json()) as { icsUrl: string };
+      const before = await rows(id);
+
+      const res = await post(slug, { ...other, idempotencyKey: key });
+      expect(res.status).toBe(422);
+      expect(res.headers.get("idempotent-replayed")).toBeNull();
+      const text = await res.text();
+      expect((JSON.parse(text) as ErrorBody).error).toEqual({
+        code: "idempotency_key_reuse",
+        message: "That request doesn't match the earlier one. Reload the page and try again.",
+      });
+      expect(Object.keys(JSON.parse(text) as object)).toEqual(["error"]);
+      expect(text).not.toContain(icsUrl.split("/")[5]); // the token
+      expect(text).not.toMatch(/Rex|Sam|2026-06-13T08:00/);
+      expect(await rows(id)).toEqual(before);
+    });
+
+    it("keeps keys apart per event", async () => {
+      const a = await insertEvent(t.env.DB);
+      const b = await insertEvent(t.env.DB);
+      const key = newKey();
+      const first = await post(a.slug, entry(S1, "Rex", "Sam Jones", key));
+      const second = await post(b.slug, entry(S1, "Rex", "Sam Jones", key));
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(second.headers.get("idempotent-replayed")).toBeNull();
+      expect(((await first.json()) as { icsUrl: string }).icsUrl).not.toBe(((await second.json()) as { icsUrl: string }).icsUrl);
+      expect(await rows(a.id)).toHaveLength(1);
+      expect(await rows(b.id)).toHaveLength(1);
+    });
+
+    it("still replays once the booking cut-off has passed, but refuses new bookings", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const body = entry(S1, "Rex", "Sam Jones");
+      const first = await post(slug, body);
+      vi.setSystemTime(new Date("2026-06-13T08:00:00Z")); // exactly at the start: closed
+      const retry = await post(slug, body);
+      expect(retry.status).toBe(201);
+      expect(retry.headers.get("idempotent-replayed")).toBe("true");
+      expect(((await retry.json()) as { icsUrl: string }).icsUrl).toBe(((await first.json()) as { icsUrl: string }).icsUrl);
+      expect((await post(slug, entry(S2, "Fido", "Ann Lee"))).status).toBe(410);
+      expect(await rows(id)).toHaveLength(1);
+    });
+
+    it("still replays for an event archived after the first booking", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const body = entry(S1, "Rex", "Sam Jones");
+      const first = await post(slug, body);
+      await t.env.DB.prepare("UPDATE events SET archived = 1 WHERE id = ?").bind(id).run();
+      const retry = await post(slug, body);
+      expect(retry.status).toBe(201);
+      expect(retry.headers.get("idempotent-replayed")).toBe("true");
+      expect(((await retry.json()) as { icsUrl: string }).icsUrl).toBe(((await first.json()) as { icsUrl: string }).icsUrl);
+      expect((await post(slug, entry(S2, "Fido", "Ann Lee"))).status).toBe(410);
+      expect(await rows(id)).toHaveLength(1);
+    });
+
+    it("binds a key only once a booking exists: a 409 leaves it free for another slot", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      await post(slug, entry(S1, "Fido", "Ann Lee"));
+      const key = newKey();
+      const taken = await post(slug, entry(S1, "Rex", "Sam Jones", key));
+      expect(taken.status).toBe(409);
+      expect(((await taken.json()) as ErrorBody).error.code).toBe("slot_taken");
+      const other = await post(slug, entry(S2, "Rex", "Sam Jones", key));
+      expect(other.status).toBe(201);
+      expect(other.headers.get("idempotent-replayed")).toBeNull();
+      expect(await rows(id)).toHaveLength(2);
+    });
+
+    it("keeps duplicate_booking for a second booking by the same pair under a new key", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      expect((await post(slug, entry(S1, "Rex", "Sam Jones"))).status).toBe(201);
+      const res = await post(slug, entry(S2, "Rex", "Sam Jones"));
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("duplicate_booking");
+      expect(await rows(id)).toHaveLength(1);
+    });
+
+    it("stores the key with the booking", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const key = newKey();
+      await post(slug, entry(S1, "Rex", "Sam Jones", key));
+      expect((await rows(id))[0].idempotency_key).toBe(key);
+    });
+
+    describe("validation", () => {
+      const message = "Reload the page and try again.";
+      it.each([
+        ["missing", undefined],
+        ["not a string", 1234567890123456],
+        ["null", null],
+        ["15 characters", "a".repeat(15)],
+        ["65 characters", "a".repeat(65)],
+        ["empty", ""],
+        ["a space", "abcdefgh ijklmnop"],
+        ["base64 plus", "abcdefgh+ijklmnop"],
+        ["base64 padding", "abcdefghijklmnop=="],
+        ["a non-ASCII letter", "abcdefghijklmnopé"],
+        ["a newline", "abcdefghijklmnop\n"],
+      ])("returns 400 invalid_input with a field message when the key is %s", async (_what, key) => {
+        const { id, slug } = await insertEvent(t.env.DB);
+        const body: Record<string, unknown> = { ...entry(S1, "Rex", "Sam Jones"), idempotencyKey: key };
+        if (key === undefined) delete body.idempotencyKey;
+        const res = await post(slug, body);
+        expect(res.status).toBe(400);
+        const parsed = (await res.json()) as ErrorBody;
+        expect(parsed.error.code).toBe("invalid_input");
+        expect(parsed.fields).toEqual({ idempotencyKey: message });
+        expect(await rows(id)).toHaveLength(0);
+      });
+
+      it("accepts keys of 16 and 64 characters, and underscores and hyphens", async () => {
+        const { slug } = await insertEvent(t.env.DB);
+        expect((await post(slug, entry(S1, "Rex", "Sam Jones", "a_-".repeat(5) + "b"))).status).toBe(201);
+        expect((await post(slug, entry(S2, "Fido", "Ann Lee", "Z".repeat(64)))).status).toBe(201);
+      });
+
+      it("reports the key alongside other bad fields", async () => {
+        const { slug } = await insertEvent(t.env.DB);
+        const res = await post(slug, { slot: S1, dogName: "", handlerName: "Sam" });
+        expect(Object.keys(((await res.json()) as ErrorBody).fields ?? {}).sort()).toEqual(["dogName", "idempotencyKey"]);
+      });
+    });
+  });
+
+  describe("booking cut-off", () => {
+    const START = "2026-06-13T08:00:00Z";
+    const at = (iso: string) => vi.setSystemTime(new Date(iso));
+    const withOffset = (value: string): AppEnv => ({ DB: t.env.DB, BOOKING_CUTOFF_OFFSET_MINUTES: value });
+
+    it.each([
+      ["default offset: open 1 s before the start", undefined, "2026-06-13T07:59:59Z", 201],
+      ["default offset: closed exactly at the start", undefined, START, 410],
+      ["default offset: closed after the start", undefined, "2026-06-13T09:00:00Z", 410],
+      ["+30: open 1 s before the cut-off", "30", "2026-06-13T08:29:59Z", 201],
+      ["+30: closed exactly at the cut-off", "30", "2026-06-13T08:30:00Z", 410],
+      ["-30: open 1 s before the cut-off", "-30", "2026-06-13T07:29:59Z", 201],
+      ["-30: closed exactly at the cut-off", "-30", "2026-06-13T07:30:00Z", 410],
+    ])("%s", async (_what, offset, now, status) => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      at(now);
+      const res = await post(slug, entry("2026-06-13T10:00:00Z", "Rex", "Sam Jones"), {
+        ...(offset === undefined ? {} : { env: withOffset(offset) }),
+      });
+      expect(res.status).toBe(status);
+      expect(await rows(id)).toHaveLength(status === 201 ? 1 : 0);
+    });
+
+    it("returns 410 bookings_closed, distinct from event_archived, with no-store", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      at(START);
+      const res = await post(slug, entry(START, "Rex", "Sam Jones"));
+      expect(res.status).toBe(410);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(((await res.json()) as ErrorBody).error).toEqual({
+        code: "bookings_closed", message: "Bookings for this event are now closed.",
+      });
+      expect(await rows(id)).toHaveLength(0);
+    });
+
+    it("keeps event_archived for an archived event even before the cut-off", async () => {
+      const { slug } = await insertEvent(t.env.DB, { archived: true });
+      const res = await post(slug, entry(START, "Rex", "Sam Jones"));
+      expect(((await res.json()) as ErrorBody).error.code).toBe("event_archived");
+    });
+
+    it("falls back to the default offset, with a warning, for an invalid setting", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { slug } = await insertEvent(t.env.DB);
+        at("2026-06-13T08:00:01Z");
+        expect((await post(slug, entry(START, "Rex", "Sam Jones"), { env: withOffset("soon") })).status).toBe(410);
+        expect(warn).toHaveBeenCalledTimes(1);
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 

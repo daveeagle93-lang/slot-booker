@@ -6,15 +6,20 @@ import { errorResponse } from "./http";
 
 const MAX_BODY_BYTES = 4096;
 const MAX_NAME_CODE_POINTS = 80;
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,64}$/;
 // Soft hyphen, zero-width space, LRM/RLM, bidi controls, word joiner and invisible operators, BOM.
 // ZWNJ/ZWJ (U+200C/D) are allowed: emoji sequences and some scripts need them.
 const INVISIBLE = /[\u00AD\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/u;
 export const noStore = { "Cache-Control": "no-store" };
 
-export interface BookingInput { slot: string; dogName: string; handlerName: string }
+export interface BookingInput { slot: string; dogName: string; handlerName: string; idempotencyKey: string }
+
+type BookedResult = { booking: { slot: TimeRange; dogName: string; handlerName: string }; token: string };
 
 export type BookingResult =
-  | { kind: "created"; booking: { slot: TimeRange; dogName: string; handlerName: string }; token: string }
+  | ({ kind: "created" } & BookedResult)
+  | ({ kind: "replayed" } & BookedResult)
+  | { kind: "idempotency_key_reuse" }
   | { kind: "duplicate_booking" }
   | { kind: "slot_taken"; freeSlots: TimeRange[] };
 
@@ -87,8 +92,14 @@ export function validateBookingInput(raw: Record<string, unknown>): BookingInput
   if ("message" in dog) fields.dogName = dog.message;
   if ("message" in handler) fields.handlerName = handler.message;
   if (typeof raw.slot !== "string") fields.slot = "Choose a slot.";
+  if (typeof raw.idempotencyKey !== "string" || !IDEMPOTENCY_KEY.test(raw.idempotencyKey)) {
+    fields.idempotencyKey = "Reload the page and try again.";
+  }
   if (Object.keys(fields).length > 0) return { fields };
-  return { slot: raw.slot as string, dogName: (dog as { name: string }).name, handlerName: (handler as { name: string }).name };
+  return {
+    slot: raw.slot as string, dogName: (dog as { name: string }).name, handlerName: (handler as { name: string }).name,
+    idempotencyKey: raw.idempotencyKey as string,
+  };
 }
 
 function scheduleOf(event: EventRow): TimeRange[] {
@@ -102,10 +113,35 @@ export const findSlot = (event: EventRow, start: string): TimeRange | undefined 
   scheduleOf(event).find((s) => s.start === start);
 
 /**
+ * What the request's idempotency key says: the original booking if the key was used by the same
+ * slot, dog and handler (a retry), idempotency_key_reuse if it was used by anything else, or null
+ * if no booking holds it. Never returns another request's booking unless the whole payload matches.
+ * A retry whose slot has since left the schedule gets null too, and so the usual invalid_slot.
+ */
+export async function findByIdempotencyKey(
+  db: D1Database, event: EventRow, input: BookingInput,
+): Promise<Extract<BookingResult, { kind: "replayed" | "idempotency_key_reuse" }> | null> {
+  const row = await db
+    .prepare(
+      "SELECT slot_start_utc, dog_name, handler_name, dog_key, handler_key, token FROM bookings WHERE event_id = ? AND idempotency_key = ?",
+    )
+    .bind(event.id, input.idempotencyKey)
+    .first<{ slot_start_utc: string; dog_name: string; handler_name: string; dog_key: string; handler_key: string; token: string }>();
+  if (!row) return null;
+  const same = row.slot_start_utc === input.slot
+    && row.dog_key === identityKey(input.dogName) && row.handler_key === identityKey(input.handlerName);
+  if (!same) return { kind: "idempotency_key_reuse" };
+  const slot = findSlot(event, row.slot_start_utc);
+  if (!slot) return null;
+  return { kind: "replayed", booking: { slot, dogName: row.dog_name, handlerName: row.handler_name }, token: row.token };
+}
+
+/**
  * Inserts without checking availability or identity first: the UNIQUE constraints decide, and a
  * failure is classified afterwards. Whoever holds the requested slot decides the answer: a
  * different pair means slot_taken even if the requester's own pair has booked elsewhere, so a
- * guessed dog and handler cannot be confirmed as having booked.
+ * guessed dog and handler cannot be confirmed as having booked. The first thing checked after a
+ * failure is the idempotency key, because a simultaneous request with the same key may have won.
  */
 export async function createBooking(
   db: D1Database, event: EventRow, slot: TimeRange, input: BookingInput,
@@ -116,12 +152,14 @@ export async function createBooking(
   try {
     await db
       .prepare(
-        "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
-      .bind(event.id, slot.start, input.dogName, input.handlerName, dogKey, handlerKey, token)
+      .bind(event.id, slot.start, input.dogName, input.handlerName, dogKey, handlerKey, token, input.idempotencyKey)
       .run();
   } catch (e) {
     if (!(e instanceof Error) || !e.message.includes("UNIQUE constraint failed")) throw e;
+    const prior = await findByIdempotencyKey(db, event, input);
+    if (prior) return prior;
     const holder = await db
       .prepare("SELECT dog_key, handler_key FROM bookings WHERE event_id = ? AND slot_start_utc = ?")
       .bind(event.id, slot.start)

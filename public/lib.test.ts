@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { formatPounds as serverFormatPounds } from "../src/core/format";
 import {
-  copyText, formatDate, formatPounds, formatTime, formatTimeRange, mapsUrl, slotsLeftText, slugFromPathname,
+  copyText, formatDate, formatPounds, formatTime, formatTimeRange, mapsUrl, newIdempotencyKey, privacyParagraphs,
+  slotsLeftText, slugFromPathname,
 } from "./lib.js";
 
 describe("London formatting", () => {
@@ -83,5 +84,26 @@ describe("copyText", () => {
     expect(copyText({ ...event, details: "", costPence: 0 }, booking)).toBe(
       "Trial Day\nSaturday 13 June 2026, 09:20–09:35\nDog: Biscuit\nHandler: Ann Lee\nVenue: SW1A 1AA\nCost: Free",
     );
+  });
+});
+
+describe("newIdempotencyKey", () => {
+  it("is 22 base64url characters, which the server's key pattern accepts", () => {
+    for (let i = 0; i < 50; i++) expect(newIdempotencyKey()).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(newIdempotencyKey()).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
+  });
+
+  it("does not repeat", () => {
+    expect(new Set(Array.from({ length: 1000 }, newIdempotencyKey)).size).toBe(1000);
+  });
+});
+
+describe("privacyParagraphs", () => {
+  it("splits on blank lines and drops empty paragraphs", () => {
+    expect(privacyParagraphs("One.\n\nTwo.\r\n \r\nThree.\n\n\n")).toEqual(["One.", "Two.", "Three."]);
+  });
+
+  it("keeps single line breaks inside a paragraph", () => {
+    expect(privacyParagraphs("Line one\nline two")).toEqual(["Line one\nline two"]);
   });
 });

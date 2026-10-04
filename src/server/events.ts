@@ -45,6 +45,15 @@ export const eventSummary = (e: EventRow) => ({
   costPence: e.costPence, venuePostcode: e.venuePostcode, details: e.details, archived: e.archived,
 });
 
+/**
+ * Bookings close at the event's start plus the offset (minutes, may be negative); a request at
+ * exactly that instant is too late. `now` is passed in so callers and tests control the clock.
+ */
+export function bookingWindow(e: EventRow, offsetMinutes: number, now: Date): { open: boolean; closesAt: string } {
+  const closesAt = new Date(Date.parse(e.startUtc) + offsetMinutes * 60_000);
+  return { open: !e.archived && now.getTime() < closesAt.getTime(), closesAt: closesAt.toISOString().replace(".000Z", "Z") };
+}
+
 /** Bookings whose slot is not in the current schedule are ignored. */
 export async function computeSlotViews(db: D1Database, event: EventRow): Promise<SlotView[]> {
   const { slots } = generateSchedule({

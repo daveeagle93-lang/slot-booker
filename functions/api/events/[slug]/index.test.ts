@@ -1,17 +1,28 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { identityKey } from "../../../../src/core/identity";
+import { DEFAULT_PRIVACY_NOTICE } from "../../../../src/server/config";
+import type { AppEnv } from "../../../../src/server/env";
 import { createTestEnv, insertBreak, insertEvent, type TestEnv } from "../../../../src/test/db";
 import { onRequestGet } from "./index";
 
 let t: TestEnv;
-beforeAll(async () => { t = await createTestEnv(); });
-afterAll(() => t.dispose());
+// The test events are dated 2026-06-13: pin the clock before them so bookings are open (Date only; timers stay real).
+beforeAll(async () => {
+  t = await createTestEnv();
+  vi.useFakeTimers({ toFake: ["Date"] });
+});
+beforeEach(() => { vi.setSystemTime(new Date("2026-06-01T00:00:00Z")); });
+afterAll(async () => {
+  vi.useRealTimers();
+  await t.dispose();
+});
 
-const get = (slug: string): Promise<Response> =>
+/** `vars` stands in for the Pages variables (BOOKING_CUTOFF_OFFSET_MINUTES, PRIVACY_NOTICE). */
+const get = (slug: string, vars: Partial<AppEnv> = {}): Promise<Response> =>
   Promise.resolve(
     onRequestGet({
       request: new Request(`http://localhost/api/events/${slug}`),
-      env: t.env,
+      env: { DB: t.env.DB, ...vars },
       params: { slug },
     } as unknown as Parameters<typeof onRequestGet>[0]),
   );
@@ -91,22 +102,67 @@ describe("GET /api/events/:slug", () => {
     const { slug } = await insertEvent(t.env.DB, { archived: true });
     const res = await get(slug);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { event: { archived: boolean }; slots: unknown[] };
+    const body = (await res.json()) as { event: { archived: boolean }; slots: unknown[]; bookings: unknown };
     expect(body.event.archived).toBe(true);
     expect(body.slots).toEqual([]);
+    expect(body.bookings).toEqual({ open: false, closesAt: "2026-06-13T08:00:00Z" });
+  });
+
+  describe("bookings window", () => {
+    const window = async (slug: string, vars?: Partial<AppEnv>) =>
+      ((await (await get(slug, vars)).json()) as { bookings: unknown }).bookings;
+
+    it("is open before the start, closing at the start by default", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      expect(await window(slug)).toEqual({ open: true, closesAt: "2026-06-13T08:00:00Z" });
+    });
+
+    it("closes exactly at the closing time, and still lists the slots", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      vi.setSystemTime(new Date("2026-06-13T07:59:59Z"));
+      expect(await window(slug)).toEqual({ open: true, closesAt: "2026-06-13T08:00:00Z" });
+      vi.setSystemTime(new Date("2026-06-13T08:00:00Z"));
+      const body = (await (await get(slug)).json()) as { bookings: unknown; slots: unknown[] };
+      expect(body.bookings).toEqual({ open: false, closesAt: "2026-06-13T08:00:00Z" });
+      expect(body.slots).toHaveLength(12);
+    });
+
+    it("applies BOOKING_CUTOFF_OFFSET_MINUTES, positive or negative", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      vi.setSystemTime(new Date("2026-06-13T08:10:00Z"));
+      expect(await window(slug, { BOOKING_CUTOFF_OFFSET_MINUTES: "30" })).toEqual({ open: true, closesAt: "2026-06-13T08:30:00Z" });
+      expect(await window(slug, { BOOKING_CUTOFF_OFFSET_MINUTES: "-30" })).toEqual({ open: false, closesAt: "2026-06-13T07:30:00Z" });
+    });
+  });
+
+  describe("privacy notice", () => {
+    const notice = async (vars?: Partial<AppEnv>) => {
+      const { slug } = await insertEvent(t.env.DB);
+      return ((await (await get(slug, vars)).json()) as { privacyNotice: string }).privacyNotice;
+    };
+
+    it("is the default when PRIVACY_NOTICE is unset or blank", async () => {
+      expect(await notice()).toBe(DEFAULT_PRIVACY_NOTICE);
+      expect(await notice({ PRIVACY_NOTICE: "  \n " })).toBe(DEFAULT_PRIVACY_NOTICE);
+    });
+
+    it("is the club's own text, trimmed, when set", async () => {
+      expect(await notice({ PRIVACY_NOTICE: "  We keep names.\n\nAsk us to delete them.\n" }))
+        .toBe("We keep names.\n\nAsk us to delete them.");
+    });
   });
 
   it("never leaks names, keys, ids or timestamps of bookings", async () => {
     const { id, slug } = await insertEvent(t.env.DB);
     await book(id, "2026-06-13T08:00:00Z", "Zxqdogname", "Zxqhandlername");
-    const res = await get(slug);
+    const res = await get(slug, { PRIVACY_NOTICE: "Plain notice." }); // the default wording mentions dogs
     const text = await res.text();
     expect(text).toContain('"taken"');
     for (const secret of ["Zxqdogname", "Zxqhandlername", "zxqdogname", "zxqhandlername", "dog", "handler", "key", "created"]) {
       expect(text).not.toContain(secret);
     }
     const body = JSON.parse(text) as Record<string, unknown>;
-    expect(Object.keys(body).sort()).toEqual(["event", "slots"]);
+    expect(Object.keys(body).sort()).toEqual(["bookings", "event", "privacyNotice", "slots"]);
     expect(Object.keys(body.event as object).sort()).toEqual(
       ["archived", "costPence", "details", "endUtc", "name", "slug", "startUtc", "venuePostcode"],
     );

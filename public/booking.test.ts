@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_PRIVACY_NOTICE } from "../src/server/config";
 import { init } from "./booking.js";
 
 const SLUG = "abcdefghijklmnop";
@@ -18,7 +19,9 @@ const ICS_URL = "/api/events/abc/bookings/tok0123456789abcdef01/ics";
 
 const reply = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-const getOk = (event = EVENT, slots: unknown[] = SLOTS) => reply(200, { event, slots });
+const OPEN = { open: true, closesAt: "2026-06-13T08:00:00Z" };
+const getOk = (event = EVENT, slots: unknown[] = SLOTS, extra: Record<string, unknown> = {}) =>
+  reply(200, { event, slots, bookings: OPEN, privacyNotice: DEFAULT_PRIVACY_NOTICE, ...extra });
 const created = () => reply(201, {
   booking: { slot: { start: SLOTS[1].start, end: SLOTS[1].end }, dogName: "Biscuit", handlerName: "Ann Lee" },
   event: EVENT, icsUrl: ICS_URL,
@@ -130,6 +133,18 @@ describe("closed and missing events", () => {
     expect(document.querySelector("form")).toBeNull();
   });
 
+  it("shows the header and a Bookings closed message, not the form or slots, once the cut-off has passed", async () => {
+    await start(() => getOk(EVENT, SLOTS, { bookings: { open: false, closesAt: "2026-06-13T08:00:00Z" } }));
+    expect($("h1").textContent).toBe("Trial Day");
+    expect(text()).toContain("Saturday 13 June 2026");
+    expect(text()).toContain("£15.00");
+    expect($(".message h2").textContent).toBe("Bookings closed");
+    expect(text()).toContain("Bookings for this event are closed.");
+    expect(document.querySelector("form")).toBeNull();
+    expect(slotButtons()).toHaveLength(0);
+    expect(document.querySelector(".privacy")).toBeNull();
+  });
+
   it("offers retry after a network error", async () => {
     let fail = true;
     await start(() => {
@@ -154,7 +169,9 @@ describe("booking", () => {
     const post = calls.find((c) => c.init?.method === "POST")!;
     expect(post.url).toBe(`/api/events/${SLUG}/bookings`);
     expect((post.init?.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
-    expect(JSON.parse(post.init!.body as string)).toEqual({ slot: SLOTS[1].start, dogName: "Biscuit", handlerName: "Ann Lee" });
+    expect(JSON.parse(post.init!.body as string)).toEqual({
+      slot: SLOTS[1].start, dogName: "Biscuit", handlerName: "Ann Lee", idempotencyKey: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+    });
 
     expect(text()).toContain("Biscuit");
     expect(text()).toContain("Ann Lee");
@@ -276,13 +293,25 @@ describe("booking", () => {
     expect(form().hidden).toBe(true);
   });
 
-  it("switches to the closed state on 410", async () => {
-    await start(routes(() => reply(410, { error: { code: "event_archived", message: "closed" } })));
+  it.each(["event_archived", "bookings_closed"])("switches to the closed state on 410 %s", async (code) => {
+    await start(routes(() => reply(410, { error: { code, message: "closed" } })));
     slotButton("09:20").click();
     fill();
     submit();
     await vi.waitFor(() => expect(text()).toContain("Bookings for this event are closed."));
+    expect($(".message h2").textContent).toBe("Bookings closed");
     expect(document.querySelector("form")).toBeNull();
+    expect(slotButtons()).toHaveLength(0);
+  });
+
+  it("shows the server's message when the idempotency key was reused with different details", async () => {
+    const message = "That request doesn't match the earlier one. Reload the page and try again.";
+    await start(routes(() => reply(422, { error: { code: "idempotency_key_reuse", message } })));
+    slotButton("09:20").click();
+    fill();
+    submit();
+    await vi.waitFor(() => expect(form().textContent).toContain(message));
+    expect(form().hidden).toBe(false);
   });
 
   it.each([
@@ -302,6 +331,99 @@ describe("booking", () => {
 
     submit(); // can retry
     await vi.waitFor(() => expect(calls.filter((c) => c.init?.method === "POST")).toHaveLength(2));
+  });
+});
+
+describe("idempotency key", () => {
+  const posts = (calls: Call[]) => calls.filter((c) => c.init?.method === "POST");
+  const keyOf = (c: Call) => JSON.parse(c.init!.body as string).idempotencyKey as string;
+
+  it("reuses one key when a submit is retried after a network error", async () => {
+    let fail = true;
+    const { calls } = await start(routes(() => {
+      if (fail) throw new TypeError("offline");
+      return created();
+    }));
+    slotButton("09:20").click();
+    fill();
+    submit();
+    await vi.waitFor(() => expect(form().textContent).toContain("Something went wrong. Please try again."));
+    fail = false;
+    submit();
+    await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+    expect(posts(calls)).toHaveLength(2);
+    expect(keyOf(posts(calls)[0])).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(keyOf(posts(calls)[1])).toBe(keyOf(posts(calls)[0]));
+  });
+
+  it("reuses it after a server error", async () => {
+    let status = 500;
+    const { calls } = await start(routes(() => (status === 500 ? reply(500, { error: { code: "internal_error", message: "x" } }) : created())));
+    slotButton("09:20").click();
+    fill();
+    submit();
+    await vi.waitFor(() => expect(form().textContent).toContain("Something went wrong. Please try again."));
+    status = 201;
+    submit();
+    await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+    expect(keyOf(posts(calls)[1])).toBe(keyOf(posts(calls)[0]));
+  });
+
+  it("reuses it for another slot after a slot_taken 409", async () => {
+    let taken = true;
+    const { calls } = await start(routes(() => (taken
+      ? reply(409, { error: { code: "slot_taken", message: "x" }, freeSlots: [{ start: SLOTS[3].start, end: SLOTS[3].end }] })
+      : created())));
+    slotButton("09:20").click();
+    fill();
+    submit();
+    await vi.waitFor(() => expect($("#notice").textContent).toContain("That slot's just gone."));
+    taken = false;
+    slotButton("10:00").click();
+    submit();
+    await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+    expect(JSON.parse(posts(calls)[1].init!.body as string).slot).toBe(SLOTS[3].start);
+    expect(keyOf(posts(calls)[1])).toBe(keyOf(posts(calls)[0]));
+  });
+
+  it("uses a different key in a new page session after a successful booking", async () => {
+    const first = await start(routes(() => created()));
+    slotButton("09:20").click();
+    fill();
+    submit();
+    await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+    const second = await start(routes(() => created()));
+    slotButton("09:20").click();
+    fill();
+    submit();
+    await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+    expect(keyOf(posts(second.calls)[0])).not.toBe(keyOf(posts(first.calls)[0]));
+  });
+});
+
+describe("privacy notice", () => {
+  const heading = () => [...document.querySelectorAll("h3")].find((h) => h.textContent === "Privacy")!;
+
+  it("shows the server's notice under a Privacy heading, before the submit button", async () => {
+    await start(routes(() => created()));
+    slotButton("09:20").click();
+    expect(heading().closest("form")).toBe(form());
+    expect(heading().parentElement!.textContent).toContain(DEFAULT_PRIVACY_NOTICE);
+    const submitButton = form().querySelector("button[type=submit]")!;
+    expect(heading().compareDocumentPosition(submitButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("splits paragraphs on blank lines", async () => {
+    await start(routes(() => created(), () => getOk(EVENT, SLOTS, { privacyNotice: "First.\n\nSecond.\nStill second." })));
+    expect([...heading().parentElement!.querySelectorAll("p")].map((p) => p.textContent)).toEqual(["First.", "Second.\nStill second."]);
+  });
+
+  it("renders markup in the notice as inert text", async () => {
+    const evil = "<img src=x onerror=alert(1)>";
+    await start(routes(() => created(), () => getOk(EVENT, SLOTS, { privacyNotice: `${evil}\n\n<b>bold</b>` })));
+    expect(document.querySelector("img, b, script")).toBeNull();
+    expect(heading().parentElement!.textContent).toContain(evil);
+    expect(heading().parentElement!.textContent).toContain("<b>bold</b>");
   });
 });
 

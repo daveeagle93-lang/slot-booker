@@ -131,4 +131,4 @@ The first should return `{"ok":true}`. The second should return a JSON 404 (`not
 
 - Data residency: if bookings must stay in the EU, create the databases with `--jurisdiction eu` (step 2).
 - The booking API has no rate limiting or bot protection yet. Add something like Cloudflare Turnstile before posting the link publicly.
-- The booking form has no privacy notice. Add one before collecting real names.
+- The booking form shows a privacy notice. The default wording says the club deletes booking details after the event, which the app does not do for you yet. Replace it with your own text, or make sure the club does that by hand (`docs/configuration.md`).

@@ -1,5 +1,6 @@
 import {
-  copyText, formatDate, formatPounds, formatTime, formatTimeRange, mapsUrl, slotsLeftText, slugFromPathname,
+  copyText, formatDate, formatPounds, formatTime, formatTimeRange, mapsUrl, newIdempotencyKey, privacyParagraphs,
+  slotsLeftText, slugFromPathname,
 } from "./lib.js";
 
 const GENERIC_ERROR = "Something went wrong. Please try again.";
@@ -13,6 +14,10 @@ export function init({ document, fetch, location, clipboard }) {
   let slots = [];
   let selected = null;
   let submitting = false;
+  let privacyText = "";
+  // One key per page load, sent with every submit so a retry can't book twice. The confirmation has no
+  // way back to the form, so a second booking means a reload, and so a new key.
+  const idempotencyKey = newIdempotencyKey();
   let view = null; // element refs for the booking view
 
   // All text goes through textContent; nothing here ever parses HTML.
@@ -62,6 +67,7 @@ export function init({ document, fetch, location, clipboard }) {
   }
 
   const freeOnly = (list) => list.filter((s) => s.status === "free");
+  const isClosed = (data) => data.event.archived || data.bookings?.open === false;
 
   async function load() {
     if (!slug) return showMessage("We couldn't find that event. Check the link you were sent.");
@@ -71,15 +77,16 @@ export function init({ document, fetch, location, clipboard }) {
     if (!r?.data) return showMessage("We couldn't load this event. Check your connection and try again.", true);
     event = r.data.event;
     slots = freeOnly(r.data.slots);
+    privacyText = r.data.privacyNotice ?? "";
     selected = null;
     document.title = event.name;
-    if (event.archived) showClosed();
+    if (isClosed(r.data)) showClosed();
     else showBooking();
   }
 
   function showClosed() {
     view = null;
-    show(eventHeader(event), h("p", { class: "message", role: "status" }, CLOSED));
+    show(eventHeader(event), h("div", { class: "message", role: "status" }, h("h2", {}, "Bookings closed"), h("p", {}, CLOSED)));
   }
 
   function showBooking() {
@@ -101,11 +108,16 @@ export function init({ document, fetch, location, clipboard }) {
     const heading = h("h2", { tabindex: "-1" });
     const submit = h("button", { type: "submit", class: "button primary" });
     const progress = h("p", { class: "progress", "aria-live": "polite" });
+    const privacy = privacyParagraphs(privacyText);
     const form = h("form", { id: "booking-form", hidden: true },
       heading,
       formError,
       h("div", { class: "field" }, h("label", { for: "dog-name" }, "Dog's name"), dog, dogError),
       h("div", { class: "field" }, h("label", { for: "handler-name" }, "Handler's name"), handler, handlerError),
+      ...(privacy.length > 0
+        ? [h("section", { class: "privacy", "aria-labelledby": "privacy-heading" },
+          h("h3", { id: "privacy-heading" }, "Privacy"), ...privacy.map((p) => h("p", {}, p)))]
+        : []),
       submit,
       progress);
 
@@ -185,7 +197,7 @@ export function init({ document, fetch, location, clipboard }) {
       res = await fetch(`/api/events/${slug}/bookings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slot: selected, dogName: view.dog.value, handlerName: view.handler.value }),
+        body: JSON.stringify({ slot: selected, dogName: view.dog.value, handlerName: view.handler.value, idempotencyKey }),
       });
       data = await res.json().catch(() => null);
     } catch {
@@ -213,6 +225,8 @@ export function init({ document, fetch, location, clipboard }) {
       deselect();
       setNotice("That slot isn't available any more.");
       await refresh();
+    } else if (res.status === 422 && code === "idempotency_key_reuse") {
+      view.formError.textContent = data.error.message;
     } else if (res.status === 410) {
       showClosed();
     } else {
@@ -225,7 +239,7 @@ export function init({ document, fetch, location, clipboard }) {
     const r = await fetchEvent();
     if (!r?.data) return;
     event = r.data.event;
-    if (event.archived) return showClosed();
+    if (isClosed(r.data)) return showClosed();
     slots = freeOnly(r.data.slots);
     if (view) renderSlots();
   }

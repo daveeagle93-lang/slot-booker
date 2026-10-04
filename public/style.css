@@ -189,6 +189,11 @@ input[aria-invalid="true"] { border-color: var(--danger-text); }
   border-radius: var(--radius);
 }
 
+.privacy { margin: 0 0 1rem; color: var(--muted); font-size: 0.9375rem; }
+.privacy h3 { margin: 0 0 0.25rem; font-size: 1rem; color: var(--text); }
+.privacy p { margin: 0 0 0.5rem; white-space: pre-line; overflow-wrap: anywhere; }
+.privacy p:last-child { margin-bottom: 0; }
+
 .progress { margin: 0.5rem 0 0; color: var(--muted); }
 .progress:empty { margin: 0; }
 
