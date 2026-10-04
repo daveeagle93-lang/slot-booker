@@ -37,9 +37,13 @@ wr migrations apply "$DB" || { echo "FAIL: migration did not apply"; exit 1; }
 expect_count "foreign keys are on" "SELECT foreign_keys AS n FROM pragma_foreign_keys" 1
 
 EV="INSERT INTO events (name, start_utc, end_utc, session_minutes, venue_postcode) VALUES"
-expect_ok "insert event 1" "$EV ('Test A', '2026-03-14T09:00:00Z', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')"
-expect_ok "insert event 2" "$EV ('Test B', '2026-06-13T09:00:00Z', '2026-06-13T16:00:00Z', 15, 'AB1 2CD')"
-expect_ok "insert event 3" "$EV ('Test C', '2026-09-12T09:00:00Z', '2026-09-12T16:00:00Z', 15, 'AB1 2CD')"
+EVS="INSERT INTO events (name, start_utc, end_utc, session_minutes, venue_postcode, slug) VALUES"
+expect_ok "insert event 1 (with slug)" "$EVS ('Test A', '2026-03-14T09:00:00Z', '2026-03-14T16:00:00Z', 15, 'AB1 2CD', 'slug-a-aaaaaaaaaaaaaa')"
+expect_ok "insert event 2 (different slug)" "$EVS ('Test B', '2026-06-13T09:00:00Z', '2026-06-13T16:00:00Z', 15, 'AB1 2CD', 'slug-b-bbbbbbbbbbbbbb')"
+expect_ok "insert event 3 (NULL slug)" "$EV ('Test C', '2026-09-12T09:00:00Z', '2026-09-12T16:00:00Z', 15, 'AB1 2CD')"
+expect_ok "a second NULL-slug event coexists" "$EV ('Test D', '2026-10-10T09:00:00Z', '2026-10-10T16:00:00Z', 15, 'AB1 2CD')"
+expect_fail "duplicate slug" "$EVS ('Dup', '2026-11-14T09:00:00Z', '2026-11-14T16:00:00Z', 15, 'AB1 2CD', 'slug-a-aaaaaaaaaaaaaa')" "UNIQUE constraint failed"
+expect_count "two events with different slugs" "SELECT count(DISTINCT slug) AS n FROM events WHERE slug IS NOT NULL" 2
 expect_ok "insert breaks" "INSERT INTO breaks (event_id, start_utc, end_utc) VALUES (1, '2026-03-14T12:00:00Z', '2026-03-14T13:00:00Z'), (1, '2026-03-14T14:00:00Z', '2026-03-14T14:15:00Z')"
 
 BK="INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key) VALUES"
@@ -77,6 +81,17 @@ expect_ok "delete event 1" "DELETE FROM events WHERE id = 1"
 expect_count "cascade: breaks removed" "SELECT count(*) AS n FROM breaks WHERE event_id = 1" 0
 expect_count "cascade: bookings removed" "SELECT count(*) AS n FROM bookings WHERE event_id = 1" 0
 expect_count "other event's booking kept" "SELECT count(*) AS n FROM bookings WHERE event_id = 2" 1
+
+# Backfill: a database holding an event from before 0003 gets a random slug.
+OLD=$(mktemp -d)
+trap 'rm -rf "$STATE" "$OLD"' EXIT
+old() { npx wrangler d1 execute "$DB" --local --persist-to "$OLD" "$@" 2>&1; }
+old --file migrations/0001_init.sql >/dev/null && old --file migrations/0002_identity_keys.sql >/dev/null \
+  && old --command "INSERT INTO events (name, start_utc, end_utc, session_minutes, venue_postcode) VALUES ('Old', '2026-03-14T09:00:00Z', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')" >/dev/null \
+  && old --file migrations/0003_event_slug.sql >/dev/null || { echo "FAIL: backfill setup"; FAILS=$((FAILS + 1)); }
+got=$(old --command "SELECT count(*) AS n FROM events WHERE slug GLOB '[0-9a-f]*' AND length(slug) = 32" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+if [ "$got" = "1" ]; then echo "PASS (count=1): pre-existing event backfilled with a 32-hex slug"
+else echo "FAIL (backfill): expected 1, got '$got'"; FAILS=$((FAILS + 1)); fi
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS check(s) FAILED"; exit 1; fi
 echo "All schema checks passed"
