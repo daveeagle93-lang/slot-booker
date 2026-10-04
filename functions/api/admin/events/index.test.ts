@@ -1,0 +1,268 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { identityKey } from "../../../../src/core/identity";
+import { utcToLondon } from "../../../../src/core/london";
+import { generateBookingToken } from "../../../../src/core/slug";
+import type { AppEnv } from "../../../../src/server/env";
+import { countRows, createTestEnv, insertBreak, insertEvent, type TestEnv } from "../../../../src/test/db";
+import { onRequestPost as book } from "../../events/[slug]/bookings";
+import { onRequestGet as publicGet } from "../../events/[slug]/index";
+import { onRequestGet, onRequestPost } from "./index";
+import { onRequestPost as preview } from "./preview";
+
+const ADMIN = { admin: { identity: "test@example.com", csrfBinding: "x" } };
+const NOW = "2026-10-01T12:00:00Z";
+
+let t: TestEnv;
+beforeAll(async () => {
+  t = await createTestEnv();
+  vi.useFakeTimers({ toFake: ["Date"] });
+});
+beforeEach(() => { vi.setSystemTime(new Date(NOW)); });
+afterAll(async () => {
+  vi.useRealTimers();
+  await t.dispose();
+});
+
+interface PostOptions { contentType?: string | null; raw?: string; data?: unknown; env?: unknown }
+
+const post = (body: unknown, o: PostOptions = {}): Promise<Response> => {
+  const headers: Record<string, string> = {};
+  if (o.contentType !== null) headers["Content-Type"] = o.contentType ?? "application/json";
+  return Promise.resolve(
+    onRequestPost({
+      request: new Request("http://localhost/api/admin/events", { method: "POST", headers, body: o.raw ?? JSON.stringify(body) }),
+      env: o.env ?? t.env,
+      data: "data" in o ? o.data : ADMIN,
+    } as unknown as Parameters<typeof onRequestPost>[0]),
+  );
+};
+
+/** Pass a second argument (even undefined) to replace the admin data. */
+const list = (vars: Partial<AppEnv> = {}, ...data: unknown[]): Promise<Response> =>
+  Promise.resolve(
+    onRequestGet({
+      request: new Request("http://localhost/api/admin/events"),
+      env: { DB: t.env.DB, ...vars },
+      data: data.length > 0 ? data[0] : ADMIN,
+    } as unknown as Parameters<typeof onRequestGet>[0]),
+  );
+
+const draft = (over: Record<string, unknown> = {}) => ({
+  name: "Saturday trial day", date: "2026-10-24", start: "09:00", end: "12:00", sessionMinutes: 15, gapMinutes: 0,
+  costPence: 1500, venuePostcode: "ab1  2cd", details: "Bring water", breaks: [{ start: "10:00", end: "10:30" }], ...over,
+});
+
+interface Created {
+  event: Record<string, unknown> & { slug: string };
+  path: string; slotCount: number;
+}
+const create = async (over: Record<string, unknown> = {}): Promise<Created> => {
+  const res = await post(draft(over));
+  expect(res.status).toBe(201);
+  return (await res.json()) as Created;
+};
+
+const publicEvent = async (slug: string) =>
+  (await (await publicGet({
+    request: new Request(`http://localhost/api/events/${slug}`), env: { DB: t.env.DB }, params: { slug },
+  } as unknown as Parameters<typeof publicGet>[0])).json()) as { slots: { start: string; end: string; status: string }[] };
+
+describe("POST /api/admin/events", () => {
+  it("creates the event and its breaks: 201, no internal ids, a path and the slot count", async () => {
+    const res = await post(draft({ breaks: [{ start: "10:00", end: "10:30" }, { start: "11:00", end: "11:10" }] }));
+    expect(res.status).toBe(201);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const body = (await res.json()) as Created;
+    expect(body).toEqual({
+      event: {
+        slug: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/), name: "Saturday trial day",
+        startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z", sessionMinutes: 15, gapMinutes: 0,
+        costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water",
+      },
+      path: `/e/${body.event.slug}`,
+      slotCount: 9, // 09:00 09:15 09:30 09:45, then 10:30 10:45, then 11:10 11:25 11:40
+    });
+    const stored = await t.env.DB.prepare("SELECT * FROM events WHERE slug = ?").bind(body.event.slug).first<{ id: number }>();
+    const { results } = await t.env.DB.prepare("SELECT start_utc, end_utc FROM breaks WHERE event_id = ? ORDER BY start_utc").bind(stored!.id).all();
+    expect(results).toEqual([
+      { start_utc: "2026-10-24T09:00:00Z", end_utc: "2026-10-24T09:30:00Z" },
+      { start_utc: "2026-10-24T10:00:00Z", end_utc: "2026-10-24T10:10:00Z" },
+    ]);
+  });
+
+  it("makes a fresh slug each time", async () => {
+    expect((await create()).event.slug).not.toBe((await create()).event.slug);
+  });
+
+  it("stores what the preview showed, and the public page offers exactly those slots", async () => {
+    const body = draft({ breaks: [{ start: "10:05", end: "10:30" }] });
+    const previewRes = await preview({
+      request: new Request("http://localhost/p", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+      env: {}, data: ADMIN,
+    } as unknown as Parameters<typeof preview>[0]);
+    const previewed = (await previewRes.json()) as { slots: { start: string; end: string }[]; suggestions: unknown[] };
+    expect(previewed.suggestions).toHaveLength(1);
+    const res = await post(body);
+    const created = (await res.json()) as Created;
+    const { slots } = await publicEvent(created.event.slug);
+    expect(slots.map(({ start, end }) => ({ start, end }))).toEqual(previewed.slots);
+    expect(slots.every((s) => s.status === "free")).toBe(true);
+    expect(created.slotCount).toBe(previewed.slots.length);
+  });
+
+  it("can then be booked through the public API", async () => {
+    const { event } = await create();
+    const { slots } = await publicEvent(event.slug);
+    const slot = slots[3];
+    const res = await book({
+      request: new Request(`http://localhost/api/events/${event.slug}/bookings`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slot: slot.start, dogName: "Rex", handlerName: "Sam Jones", idempotencyKey: generateBookingToken() }),
+      }),
+      env: t.env, params: { slug: event.slug },
+    } as unknown as Parameters<typeof book>[0]);
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { booking: { slot: unknown } }).booking.slot).toEqual({ start: slot.start, end: slot.end });
+    expect((await publicEvent(event.slug)).slots[3].status).toBe("taken");
+  });
+
+  it("stores the right instants across the clock change: 2026-10-24 is BST, 2026-10-31 is GMT", async () => {
+    const bst = await create({ date: "2026-10-24", start: "09:00", end: "10:00", breaks: [] });
+    const gmt = await create({ date: "2026-10-31", start: "09:00", end: "10:00", breaks: [] });
+    expect(bst.event).toMatchObject({ startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T09:00:00Z" });
+    expect(gmt.event).toMatchObject({ startUtc: "2026-10-31T09:00:00Z", endUtc: "2026-10-31T10:00:00Z" });
+    for (const { event } of [bst, gmt]) {
+      const { slots } = await publicEvent(event.slug);
+      expect(slots.map((s) => utcToLondon(s.start).time)).toEqual(["09:00", "09:15", "09:30", "09:45"]);
+    }
+  });
+
+  it("rejects a time in the autumn overlap with the right field key, and writes nothing", async () => {
+    const events = await countRows(t.env.DB, "events");
+    const breaks = await countRows(t.env.DB, "breaks");
+    const res = await post(draft({ date: "2026-10-25", start: "00:00", end: "06:00", breaks: [{ start: "01:30", end: "03:00" }] }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: { code: "invalid_input", message: "Check the highlighted fields." },
+      fields: { "breaks.0.start": "That time happens twice in London on that date (the clocks go back)." },
+    });
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+    expect(await countRows(t.env.DB, "breaks")).toBe(breaks);
+  });
+
+  it("requires the event to be in the future (the preview does not), writing nothing", async () => {
+    const events = await countRows(t.env.DB, "events");
+    const res = await post(draft({ date: "2026-09-30" }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: unknown }).fields).toEqual({ date: "The event must start in the future." });
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+  });
+
+  it("returns a generic 500, without leaking the cause, when the batch fails", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const db = { batch: () => Promise.reject(new Error("D1_ERROR: secret detail")), prepare: () => ({ bind: () => ({}) }) };
+      const res = await post(draft(), { env: { DB: db } });
+      expect(res.status).toBe(500);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      const text = await res.text();
+      expect(JSON.parse(text).error.code).toBe("internal_error");
+      expect(text).not.toContain("secret");
+      expect(error).toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("refuses with 401 unless the middleware set an admin identity, writing nothing", async () => {
+    const events = await countRows(t.env.DB, "events");
+    for (const data of [undefined, {}, { admin: { identity: "" } }]) {
+      const res = await post(draft(), { data });
+      expect(res.status).toBe(401);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+    }
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+  });
+
+  it("returns 415, 400 and 413 for bad bodies, writing nothing", async () => {
+    const events = await countRows(t.env.DB, "events");
+    expect((await post(draft(), { contentType: "text/plain" })).status).toBe(415);
+    expect((await post(undefined, { raw: "{nope" })).status).toBe(400);
+    expect((await post(undefined, { raw: "[]" })).status).toBe(400);
+    const res = await post({ ...draft(), padding: "x".repeat(32768) });
+    expect(res.status).toBe(413);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+  });
+});
+
+describe("GET /api/admin/events", () => {
+  beforeEach(async () => { await t.env.DB.prepare("DELETE FROM events").run(); });
+
+  const slugsOf = async (res: Response) => ((await res.json()) as { events: { slug: string }[] }).events.map((e) => e.slug);
+
+  it("lists upcoming events soonest first; hides archived and finished ones", async () => {
+    const day = (d: string, from: string, to: string) => ({ startUtc: `${d}T${from}:00Z`, endUtc: `${d}T${to}:00Z` });
+    const later = await insertEvent(t.env.DB, day("2026-10-24", "08:00", "11:00"));
+    const sooner = await insertEvent(t.env.DB, day("2026-10-10", "08:00", "11:00"));
+    const running = await insertEvent(t.env.DB, day("2026-10-01", "11:00", "13:00"));
+    await insertEvent(t.env.DB, { ...day("2026-10-20", "08:00", "11:00"), archived: true });
+    await insertEvent(t.env.DB, day("2026-09-30", "08:00", "11:00"));
+    await insertEvent(t.env.DB, day("2026-10-01", "11:00", "12:00")); // ends exactly now
+    const res = await list();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await slugsOf(res)).toEqual([running.slug, sooner.slug, later.slug]);
+  });
+
+  it("returns each event's summary, slot count, booked count, booking window and path", async () => {
+    const { id, slug } = await insertEvent(t.env.DB, { name: "Show", costPence: 900, venuePostcode: "ZZ9 9ZZ", details: "private notes" });
+    await insertBreak(t.env.DB, id, "2026-06-13T09:00:00Z", "2026-06-13T09:30:00Z");
+    await insertEvent(t.env.DB, { startUtc: "2026-11-13T08:00:00Z", endUtc: "2026-11-13T09:00:00Z" });
+    for (const [slot, dog] of [["2026-06-13T08:00:00Z", "Rex"], ["2026-06-13T08:15:00Z", "Moss"]]) {
+      await t.env.DB.prepare("INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key) VALUES (?, ?, ?, 'Sam', ?, ?)")
+        .bind(id, slot, dog, identityKey(dog), identityKey("Sam")).run();
+    }
+    vi.setSystemTime(new Date("2026-06-01T00:00:00Z"));
+    const events = ((await (await list({ BOOKING_CUTOFF_OFFSET_MINUTES: "-60" })).json()) as { events: Record<string, unknown>[] }).events;
+    expect(events[0]).toEqual({
+      slug, name: "Show", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z", costPence: 900,
+      venuePostcode: "ZZ9 9ZZ", slotCount: 10, bookedCount: 2,
+      bookings: { open: true, closesAt: "2026-06-13T07:00:00Z" }, path: `/e/${slug}`,
+    });
+    expect(events[1]).toMatchObject({ slotCount: 4, bookedCount: 0 });
+    vi.setSystemTime(new Date("2026-06-13T07:00:00Z"));
+    const closed = ((await (await list({ BOOKING_CUTOFF_OFFSET_MINUTES: "-60" })).json()) as { events: { bookings: unknown }[] }).events;
+    expect(closed[0].bookings).toEqual({ open: false, closesAt: "2026-06-13T07:00:00Z" });
+  });
+
+  it("keeps each event's breaks and booking counts to itself", async () => {
+    const a = await insertEvent(t.env.DB, { startUtc: "2026-10-10T08:00:00Z", endUtc: "2026-10-10T09:00:00Z" });
+    const b = await insertEvent(t.env.DB, { startUtc: "2026-10-11T08:00:00Z", endUtc: "2026-10-11T09:00:00Z" });
+    await insertBreak(t.env.DB, b.id, "2026-10-11T08:00:00Z", "2026-10-11T08:30:00Z");
+    const events = ((await (await list()).json()) as { events: { slug: string; slotCount: number }[] }).events;
+    expect(events.map((e) => [e.slug, e.slotCount])).toEqual([[a.slug, 4], [b.slug, 2]]);
+  });
+
+  it("returns at most 100, the soonest", async () => {
+    const statement = t.env.DB.prepare(
+      "INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, venue_postcode) VALUES (?, 'E', ?, ?, 15, 'AB1 2CD')",
+    );
+    const slugs = Array.from({ length: 101 }, (_, i) => `limit-test-slug-${String(i).padStart(3, "0")}`);
+    await t.env.DB.batch(slugs.map((slug, i) => {
+      const iso = (hour: number) => new Date(Date.UTC(2027, 0, 1 + i, hour)).toISOString().replace(".000Z", "Z");
+      return statement.bind(slug, iso(8), iso(9));
+    }));
+    const got = await slugsOf(await list());
+    expect(got).toHaveLength(100);
+    expect(got).toEqual(slugs.slice(0, 100)); // slug i is the i-th soonest, so the latest one is dropped
+  });
+
+  it("refuses with 401 unless the middleware set an admin identity", async () => {
+    for (const data of [undefined, {}, { admin: {} }]) {
+      const res = await list({}, data);
+      expect(res.status).toBe(401);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+    }
+  });
+});

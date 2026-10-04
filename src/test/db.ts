@@ -64,3 +64,8 @@ export async function insertEvent(db: D1Database, o: EventOverrides = {}): Promi
 export async function insertBreak(db: D1Database, eventId: number, startUtc: string, endUtc: string): Promise<void> {
   await db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc) VALUES (?, ?, ?)").bind(eventId, startUtc, endUtc).run();
 }
+
+/** Row count of a table, for asserting that a failed request left nothing behind. */
+export async function countRows(db: D1Database, table: "events" | "breaks" | "bookings"): Promise<number> {
+  return (await db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>())!.n;
+}

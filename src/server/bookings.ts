@@ -9,7 +9,7 @@ const MAX_NAME_CODE_POINTS = 80;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,64}$/;
 // Soft hyphen, zero-width space, LRM/RLM, bidi controls, word joiner and invisible operators, BOM.
 // ZWNJ/ZWJ (U+200C/D) are allowed: emoji sequences and some scripts need them.
-const INVISIBLE = /[\u00AD\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/u;
+export const INVISIBLE = /[\u00AD\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/u;
 export const noStore = { "Cache-Control": "no-store" };
 
 export interface BookingInput { slot: string; dogName: string; handlerName: string; idempotencyKey: string }
@@ -31,7 +31,7 @@ export const declaresOversizeBody = (request: Request): boolean =>
   Number(request.headers.get("Content-Length")) > MAX_BODY_BYTES;
 
 /** Reads the body as text, cancelling the stream and returning null as soon as it passes the byte cap. */
-async function readCappedText(request: Request): Promise<string | null> {
+async function readCappedText(request: Request, maxBytes: number): Promise<string | null> {
   if (!request.body) return "";
   const reader = request.body.getReader();
   const decoder = new TextDecoder();
@@ -41,7 +41,7 @@ async function readCappedText(request: Request): Promise<string | null> {
     const { done, value } = await reader.read();
     if (done) return text + decoder.decode();
     bytes += value.byteLength;
-    if (bytes > MAX_BODY_BYTES) {
+    if (bytes > maxBytes) {
       await reader.cancel();
       return null;
     }
@@ -50,12 +50,12 @@ async function readCappedText(request: Request): Promise<string | null> {
 }
 
 /** Returns the parsed JSON object, or the error response to send. */
-export async function readJsonObject(request: Request): Promise<Record<string, unknown> | Response> {
+export async function readJsonObject(request: Request, maxBytes = MAX_BODY_BYTES): Promise<Record<string, unknown> | Response> {
   const type = (request.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
   if (type !== "application/json") {
     return errorResponse(415, "unsupported_media_type", "Send the request as application/json.", {}, noStore);
   }
-  const text = await readCappedText(request);
+  const text = await readCappedText(request, maxBytes);
   if (text === null) return payloadTooLarge();
   let value: unknown;
   try {

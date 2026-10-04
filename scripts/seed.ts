@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { identityKey } from "../src/core/identity.ts";
+import { londonToUtc, utcToLondon } from "../src/core/london.ts";
 import { generateSchedule } from "../src/core/schedule.ts";
 import { generateBookingToken, generateSlug } from "../src/core/slug.ts";
 import { executeArgs, migrateArgs, parseArgs } from "./seed-args.ts";
@@ -28,32 +29,9 @@ if ("error" in parsed) {
 const { mode, withBookings } = parsed;
 const persistTo = process.env.SEED_PERSIST_TO;
 
-const londonParts = new Intl.DateTimeFormat("en-GB", {
-  timeZone: "Europe/London", hourCycle: "h23",
-  year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-});
-
-function london(ms: number): { date: string; time: string; wallMs: number } {
-  const p: Record<string, string> = {};
-  for (const part of londonParts.formatToParts(ms)) p[part.type] = part.value;
-  return {
-    date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}`,
-    wallMs: Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute),
-  };
-}
-
-/** London wall-clock time on a YYYY-MM-DD date to a UTC instant string, right in both GMT and BST. */
-function londonToUtc(date: string, time: string): string {
-  const wall = Date.parse(`${date}T${time}:00Z`);
-  let utc = wall;
-  // London is 0 or +1h from UTC, so two corrections settle on the right offset.
-  for (let i = 0; i < 2; i++) utc += wall - london(utc).wallMs;
-  return new Date(utc).toISOString().replace(".000Z", "Z");
-}
-
 /** The first Saturday at least 14 days after today (London date). */
 function nextSaturday(): string {
-  const [y, m, d] = london(Date.now()).date.split("-").map(Number);
+  const [y, m, d] = utcToLondon(new Date().toISOString()).date.split("-").map(Number);
   const target = new Date(Date.UTC(y, m - 1, d + 14));
   target.setUTCDate(target.getUTCDate() + ((6 - target.getUTCDay() + 7) % 7));
   return target.toISOString().slice(0, 10);
@@ -111,7 +89,7 @@ try {
   rmSync(dir, { recursive: true, force: true });
 }
 
-const hhmm = (utc: string): string => london(Date.parse(utc)).time;
+const hhmm = (utc: string): string => utcToLondon(utc).time;
 console.log(`Event: ${event.name}, ${date}, ${hhmm(event.start)}-${hhmm(event.end)} London`);
 console.log(`Schedule: ${slots.length} slots (${event.sessionMinutes} min + ${event.gapMinutes} min gap; breaks ${event.breaks.map((b) => `${hhmm(b.start)}-${hhmm(b.end)}`).join(", ")})`);
 console.log(slots.map((s) => hhmm(s.start)).join(" "));
