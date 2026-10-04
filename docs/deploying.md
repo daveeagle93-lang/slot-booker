@@ -2,6 +2,8 @@
 
 These steps create two remote D1 databases (one for preview, one for production), apply the migrations to the preview one, seed it with a sample event and publish a Pages **preview** deployment. Run them from the repo root, in order. They need a Cloudflare account; nothing here is run by the repo's tests.
 
+> **Hard rule.** Admin sign-in with Cloudflare Access (`ADMIN_AUTH=access`) is only for a deployment served on a custom domain on a Cloudflare zone you control. A deployment reachable only on `*.pages.dev`, and every preview, uses `ADMIN_AUTH=password`. This is a project rule that the Worker doesn't check, and the planned setup wizard will enforce it. The reasons are in [`docs/admin-auth.md`](admin-auth.md#hard-rule-access-needs-a-custom-domain-pagesdev-uses-the-password). The preview below therefore uses the password provider; the Access route for a custom domain is a pointer at the end.
+
 Syntax checked against the installed Wrangler (4.147.0) `npx wrangler d1 <command> --help` output and these Cloudflare docs: [Wrangler configuration for Pages](https://developers.cloudflare.com/pages/functions/wrangler-configuration/), [D1 Wrangler commands](https://developers.cloudflare.com/d1/wrangler-commands/) and Pages Direct Upload.
 
 ## 1. Log in (once)
@@ -115,9 +117,9 @@ It prints the event details and a path such as `/e/<slug>`. Open that path on yo
 
 ## 6. Set up admin sign-in
 
-The admin pages (`/admin/`) and the admin API (`/api/admin/*`) answer 503 until `ADMIN_AUTH` is set to `password` or `access`. `docs/admin-auth.md` explains both options, how the Access one is set up in Zero Trust, and the limits of each. For the password option on the preview:
+The admin pages (`/admin/`) and the admin API (`/api/admin/*`) answer 503 until `ADMIN_AUTH` is set to `password` or `access`. On `pages.dev`, which is where a preview lives, the answer is `password` (see the hard rule above). `docs/admin-auth.md` explains both providers and the limits of each; its Access runbook is for a custom domain only. For the password provider on the preview:
 
-1. Generate the admin secret. It prints the secret on stderr, once (store it in your password manager now), and only the hash to stdout:
+1. Generate the admin secret. It prints the secret on stderr, once (store it in your password manager now; it can't be recovered from the hash), and only the hash to stdout:
 
    ```sh
    npm run --silent generate-admin-secret
@@ -138,7 +140,7 @@ The admin pages (`/admin/`) and the admin API (`/api/admin/*`) answer 503 until 
 
    Cloudflare's [Pages bindings docs](https://developers.cloudflare.com/pages/functions/bindings/) say secrets are set per environment and must be set before the deployment that uses them. The installed `wrangler pages secret put --help` has no environment flag, so which environment these commands write to is **not verified here**: after running them, check Settings, Variables and Secrets for the project in the dashboard, and add any missing secret to the Preview environment there.
 
-If login later fails with a Cloudflare CPU-limit error, see "Known limits" in `docs/admin-auth.md`: the Access option avoids checking a credential in the Worker.
+If login later fails with a Cloudflare CPU-limit error, see "Known limits" in `docs/admin-auth.md`. Access would avoid checking a credential in the Worker, but only on a custom domain, so it isn't an answer for a `pages.dev` preview.
 
 ## 7. Create the Pages project and deploy a preview
 
@@ -169,9 +171,13 @@ curl -sI https://preview.slot-booker.pages.dev/admin/login
 
 The first should print `401` (it prints `503` if `ADMIN_AUTH` or its secrets are missing or malformed: the Pages logs say which). The second should be `200` and show a `Content-Security-Policy` header containing `frame-ancestors 'none'`; if that header is missing in production, the login page could be framed, so tell the maintainers. Then open `/admin/login` in a browser, sign in, and create an event.
 
+## Production on a custom domain with Access
+
+Going live on a custom domain, with Cloudflare Access in front of `/admin/*` and `/api/admin/*`, is described click by click in "Access provider" in [`docs/admin-auth.md`](admin-auth.md#setting-it-up-custom-domain). Apart from that pointer a production go-live is out of scope here. Production also needs its migrations applied first (step 4, `npx wrangler d1 migrations apply slot-booker-db --remote`; check the pending list before applying) and its own `ADMIN_AUTH` variables in `account.local.json`: the script writes the same `vars` to production and preview, so read the note at the end of step 5 of that runbook.
+
 ## Not covered
 
-- Custom domains and production deployment are out of scope here.
+- A production go-live beyond the pointer above, and DNS or Pages custom-domain setup beyond what `docs/admin-auth.md` says.
 - Nothing is deleted automatically, ever: there is no retention timer. (Archiving, deleting and the lineup export are built: see "Archiving and deleting" and "Managing bookings" in the README.)
 
 ## Before a real event
@@ -179,3 +185,110 @@ The first should print `401` (it prints `503` if `ADMIN_AUTH` or its secrets are
 - Data residency: if bookings must stay in the EU, create the databases with `--jurisdiction eu` (step 2).
 - The booking API has no rate limiting or bot protection yet. Add something like Cloudflare Turnstile before posting the link publicly.
 - The booking form shows a privacy notice. The default wording says the details are kept until an organiser deletes the event, and that nothing is deleted automatically, which is what the app does: delete or clear out old events from the admin list when you no longer need them. The default names no data controller or contact, so replace it with your own text that does (`docs/configuration.md`).
+- Admin sign-in: on `pages.dev` it is the password provider, a single shared secret with no second factor and no per-person identity (`docs/admin-auth.md`, "Known limits"). If that is not enough for your club, put the site on a custom domain and use Access (above).
+- Preview URLs are public, and the booking pages work on them like any other deployment. Treat a preview's data as test data and delete the preview events from the admin list when you have finished.
+
+## Runbook: deploy a preview (password sign-in, pages.dev)
+
+**These commands are for you to run; nothing in this repo runs them.** They need a Cloudflare account and change it. Run them in order from a clean checkout of this repo with Node 24, from the repo root. The steps are the sections above in one list; where a step says "check", the check matters. `slot-booker` is the Pages project name: if it is taken, use another and set `name` in `account.local.json` as well.
+
+1. Install and log in.
+
+   ```sh
+   npm install
+   npx wrangler login
+   npx wrangler whoami
+   ```
+
+2. Create the two D1 databases and copy each `database_id` it prints, noting which is which.
+
+   ```sh
+   npx wrangler d1 create slot-booker-db-preview --location weur
+   npx wrangler d1 create slot-booker-db --location weur
+   ```
+
+3. Fill in `account.local.json` (git-ignored). Use `--jurisdiction eu` instead of `--location weur` above if bookings must stay in the EU.
+
+   ```sh
+   cp account.local.example.json account.local.json
+   ```
+
+   Edit it so it contains your two IDs and the password provider (`BOOKING_CUTOFF_OFFSET_MINUTES` is optional; delete the line if you want the default):
+
+   ```jsonc
+   {
+     "productionDatabaseId": "<database_id of slot-booker-db>",
+     "previewDatabaseId": "<database_id of slot-booker-db-preview>",
+     "vars": { "ADMIN_AUTH": "password" }
+   }
+   ```
+
+4. Generate `wrangler.json` (git-ignored) from it. It prints the variable names it wrote, never their values.
+
+   ```sh
+   npm run configure
+   ```
+
+5. Apply the migrations to the **preview** database: the first list shows every file in `migrations/` as pending, the last shows none. `apply` asks you to confirm.
+
+   ```sh
+   npx wrangler d1 migrations list slot-booker-db-preview --remote --env preview
+   npx wrangler d1 migrations apply slot-booker-db-preview --remote --env preview
+   npx wrangler d1 migrations list slot-booker-db-preview --remote --env preview
+   ```
+
+6. Seed the preview with a sample event and bookings (`--no-bookings` for the event only). It prints the event's path, `/e/<slug>`.
+
+   ```sh
+   npm run seed -- --remote --env preview
+   ```
+
+7. Create the Pages project.
+
+   ```sh
+   npx wrangler pages project create slot-booker --production-branch main
+   ```
+
+8. Generate the admin secret. The secret appears once on stderr: put it in your password manager now. Only the hash goes to stdout. Then make the session secret and keep it somewhere safe too, or you will have to rotate it if you lose it.
+
+   ```sh
+   npm run --silent generate-admin-secret
+   openssl rand -base64 48
+   ```
+
+9. Set the two secrets. Each command prompts for its value: paste the **hash line** from step 8 for `ADMIN_PASSWORD_HASH` (not the secret), and the `openssl` output for `ADMIN_SESSION_SECRET`.
+
+   ```sh
+   npx wrangler pages secret put ADMIN_PASSWORD_HASH --project-name slot-booker
+   npx wrangler pages secret put ADMIN_SESSION_SECRET --project-name slot-booker
+   ```
+
+   Then, in the dashboard, open "Workers & Pages", the project, "Settings" and "Variables and Secrets", and check that both secrets exist for the **Preview** environment; add any that is missing there. (Which environment `wrangler pages secret put` writes to is not verified.)
+
+10. Deploy as a preview, from the repo root (`functions/` is picked up automatically). Any branch other than `main` is a preview, and it uses the `env.preview` block of `wrangler.json`.
+
+    ```sh
+    npx wrangler pages deploy public --project-name slot-booker --branch preview
+    ```
+
+11. Check the deployment. `PREVIEW` is the branch alias Wrangler printed (`https://preview.slot-booker.pages.dev` for the default name).
+
+    ```sh
+    PREVIEW=https://preview.slot-booker.pages.dev
+    curl -s $PREVIEW/api/health
+    curl -s $PREVIEW/api/events/not-a-real-slug
+    curl -s -o /dev/null -w "%{http_code}\n" $PREVIEW/api/admin/events
+    curl -sI $PREVIEW/admin/login
+    curl -sI $PREVIEW/admin/login | grep -i "^content-security-policy"
+    ```
+
+    Expected: `{"ok":true}`; a JSON 404 with code `not_found`; `401`; a `200` with headers; and a `Content-Security-Policy` line that contains `frame-ancestors 'none'`. A 500 on the first two means the `DB` binding is missing from the preview (dashboard: project, "Settings", "Bindings", Preview). A `503` on the third means `ADMIN_AUTH` or a secret is missing or malformed (the Pages logs say which). If the CSP header is missing, the login page could be framed: tell the maintainers.
+
+12. In a browser, open `$PREVIEW/admin/login` and sign in with the secret from step 8 (let the password manager fill it in). Then check, using a test event (the seeded one will do):
+    - Sign-in works, and a wrong secret is refused. After "Sign out", `/admin/` sends you back to the login page.
+    - Create an event, copy its booking link, open it in a private window and book a slot.
+    - In the admin list, open the event's **Schedule**: the booking is there. Add a booking on another slot, move it, then clear it (confirm the prompt). Use **Copy lineup** and paste it somewhere.
+    - **Edit** the event: change the name, and check the preview of removed bookings appears when you shorten the schedule (cancel instead of saving if you don't want to lose the test bookings).
+    - **Archive** the event, check its public link shows it closed, **Unarchive** it, then **Delete…** it with its name typed in. Repeat for the seeded event if you don't want it kept.
+
+Not verified: `wrangler pages deploy` itself (it needs a login and has no dry run; its use of the `env.preview` block was read from the Wrangler source, see "Why this works" in section 3), where `wrangler pages secret put` writes and whether it works before the project's first deployment, and whether a real login fits the free plan's 10 ms of CPU on Workers (only local timings exist, `docs/admin-auth.md`). The 302 and 503 answers from the admin middleware may not carry the `_headers` security headers in production either; only the static pages were checked.
