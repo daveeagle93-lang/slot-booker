@@ -110,7 +110,7 @@ describe("form", () => {
     expect(input("gap").min).toBe("0");
     expect(input("cost").getAttribute("inputmode")).toBe("decimal");
     expect(input("details").tagName).toBe("TEXTAREA");
-    expect(text()).toContain("You can't edit an event after saving yet, so check the details.");
+    expect(text()).toContain("You can edit the event after saving, so you can fix any slip later.");
     expect(buttonNamed("Save event")).toBeDefined();
     expect($("form").hasAttribute("novalidate")).toBe(true);
   });
