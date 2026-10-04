@@ -35,6 +35,7 @@ Things to know:
 
 - Admin actions skip the public booking rules: they work after the cut-off, on slots that have started and on an archived event. A slot must still be one of the event's current slots.
 - Nothing notifies the person. If you move, swap or clear a booking, tell them yourself.
+- A booker whose page retries the same request (for example after a dropped connection) gets their booking back rather than a second one. If you have cleared that booking in the meantime, the retry books the slot again if it is still free, so tell people before you clear their booking.
 - A booking whose slot is no longer in the schedule is listed under "Not in the schedule", where it can be moved or cleared, so it can't hide. It can't be swapped: a swap needs both bookings to be on slots of the current schedule, otherwise the other booking would be left on a slot that doesn't exist.
 - Each change is applied in one step and is checked at that moment: moving a booking to a slot someone else took a moment earlier, or an event that was edited while you were working, is refused and the page reloads the schedule. A swap that fails part-way changes nothing.
 

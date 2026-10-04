@@ -5,6 +5,7 @@ import type { AppEnv } from "../../../../../src/server/env";
 import { countRows, createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../../../../../src/test/db";
 import { onRequestPost as book } from "../../../events/[slug]/bookings";
 import { onRequestGet as publicGet } from "../../../events/[slug]/index";
+import { onRequestDelete as clearBooking } from "./bookings/[id]/index";
 import { onRequestDelete, onRequestGet, onRequestPut } from "./index";
 
 const ADMIN = { admin: { identity: "test@example.com", csrfBinding: "x" } };
@@ -417,16 +418,18 @@ describe("PUT /api/admin/events/[slug]: bookings that would lose their slot", ()
     expect(await bookingIds(e.id)).toEqual([e.a]);
   });
 
-  it("does not let a removed booking's replayed public request bring it back", async () => {
+  /** The public booking request for one slot, repeatable byte for byte (same idempotency key and payload). */
+  const publicRequest = (slug: string, slot: string, key: string) => () => book({
+    request: new Request(`http://localhost/api/events/${slug}/bookings`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot, dogName: "Rex", handlerName: "Sam Smith", idempotencyKey: key }),
+    }),
+    env: t.env, params: { slug },
+  } as unknown as Parameters<typeof book>[0]);
+
+  it("answers a replayed public request invalid_slot, revealing nothing, once an edit has removed the booking's slot", async () => {
     const e = await seed();
-    const key = generateSlug();
-    const request = () => book({
-      request: new Request(`http://localhost/api/events/${e.slug}/bookings`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slot: "2026-10-24T10:45:00Z", dogName: "Rex", handlerName: "Sam Smith", idempotencyKey: key }),
-      }),
-      env: t.env, params: { slug: e.slug },
-    } as unknown as Parameters<typeof book>[0]);
+    const request = publicRequest(e.slug, "2026-10-24T10:45:00Z", generateSlug());
     expect((await request()).status).toBe(201);
     const [{ id }] = (await t.env.DB.prepare("SELECT id FROM bookings WHERE event_id = ?").bind(e.id).all<{ id: number }>()).results;
     expect((await put(e.slug, shorter({ removeBookingIds: [id] }))).status).toBe(200);
@@ -437,6 +440,24 @@ describe("PUT /api/admin/events/[slug]: bookings that would lose their slot", ()
     expect(replayBody.error.code).toBe("invalid_slot");
     expect(replayBody.booking).toBeUndefined();
     expect(await bookingIds(e.id)).toEqual([]);
+  });
+
+  it("documents the accepted behaviour after an admin Clear of a surviving slot: the same replayed request books it afresh (201), because the key went with the booking", async () => {
+    const e = await seed();
+    const request = publicRequest(e.slug, "2026-10-24T08:15:00Z", generateSlug());
+    expect((await request()).status).toBe(201);
+    const [{ id }] = (await t.env.DB.prepare("SELECT id FROM bookings WHERE event_id = ?").bind(e.id).all<{ id: number }>()).results;
+    const cleared = await clearBooking({
+      request: new Request("http://localhost/api/admin/x", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true }) }),
+      env: t.env, params: { slug: e.slug, id: String(id) }, data: ADMIN,
+    } as unknown as Parameters<typeof clearBooking>[0]);
+    expect(cleared.status).toBe(200);
+    expect(await bookingIds(e.id)).toEqual([]);
+    const replay = await request();
+    expect(replay.status).toBe(201);
+    expect(replay.headers.get("idempotent-replayed")).toBeNull(); // a new booking, not a replay of the old one
+    expect(await bookingIds(e.id)).toHaveLength(1);
+    expect(await bookingIds(e.id)).not.toEqual([id]);
   });
 });
 
