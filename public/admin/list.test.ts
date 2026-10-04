@@ -390,6 +390,23 @@ describe("Delete… one event", () => {
     expect(JSON.parse(h.writes()[0].init!.body as string)).toEqual({ confirmName: "Trial Day" });
   });
 
+  it("shows a name with repeated spaces in an element that keeps them, hints how to type it, and needs it typed exactly", async () => {
+    const h = await begin(full({ events: [UP({ name: "Trial  Day" })] }), () => reply(200, { deleted: { slug: "x", name: "Trial  Day", bookings: 3 } }));
+    const panel = open("Trial  Day");
+    const shown = panel.querySelector("strong")!;
+    expect(shown.textContent).toBe("Trial  Day");
+    expect(shown.classList.contains("name-exact")).toBe(true);
+    expect(panel.textContent).toContain("Type it exactly as shown, including capital letters and spaces.");
+    expect(typed().getAttribute("aria-describedby")).toBe(panel.querySelector(".note")!.getAttribute("id"));
+    type(typed(), "Trial Day");
+    expect(confirmButton().disabled).toBe(true);
+    type(typed(), "Trial  Day");
+    expect(confirmButton().disabled).toBe(false);
+    confirmButton().click();
+    await vi.waitFor(() => expect(h.writes()).toHaveLength(1));
+    expect(JSON.parse(h.writes()[0].init!.body as string)).toEqual({ confirmName: "Trial  Day" });
+  });
+
   it("disables everything while the request runs, then refreshes and announces", async () => {
     let release!: (r: Response) => void;
     const h = await begin(full(), () => new Promise<Response>((r) => { release = r; }));
@@ -539,6 +556,14 @@ describe("clearing out Past", () => {
     expect(sure().disabled).toBe(true);
     expect(box("Alpha Show").disabled).toBe(true); // the selection is locked while the panel is open
     expect(bulk().disabled).toBe(true);
+  });
+
+  it("lists the chosen names in an element that keeps repeated spaces", async () => {
+    await begin(full({ past: [OLD({ slug: "past-event-slug-0001", name: "Alpha  Show", bookedCount: 2 })] }));
+    tick("Alpha  Show");
+    bulk().click();
+    const name = $(".confirm li .name-exact");
+    expect(name.textContent).toBe("Alpha  Show");
   });
 
   it("enables Delete events only for DELETE (trimmed), and sends exactly { slugs, confirm } on click", async () => {

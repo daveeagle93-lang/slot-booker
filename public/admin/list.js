@@ -259,7 +259,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
   /** The typed-name confirmation for one event. The button stays disabled until the trimmed text matches exactly. */
   function deletePanel(ev, cancel) {
     const id = `confirm-${++ids}`;
-    const input = h("input", { id, type: "text", autocomplete: "off", autocapitalize: "off", spellcheck: "false", "data-autofocus": true });
+    const input = h("input", { id, type: "text", autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-describedby": `${id}-hint`, "data-autofocus": true });
     const error = h("p", { class: "form-error", role: "alert" });
     const confirmButton = h("button", { type: "button", class: "button danger" }, "Delete event");
     const cancelButton = h("button", { type: "button", class: "button" }, "Cancel");
@@ -282,9 +282,10 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     });
     syncPanel();
     return h("div", { class: "confirm", role: "group", "aria-label": `Delete ${ev.name}` },
-      h("p", {}, "This permanently deletes ", h("strong", {}, ev.name), ` and its ${plural(ev.bookedCount, "booking")}. This can't be undone.`),
+      h("p", {}, "This permanently deletes ", h("strong", { class: "name-exact" }, ev.name), ` and its ${plural(ev.bookedCount, "booking")}. This can't be undone.`),
       error,
-      h("div", { class: "field" }, h("label", { for: id }, "Type the event name to confirm"), input),
+      h("div", { class: "field" }, h("label", { for: id }, "Type the event name to confirm"), input,
+        h("p", { class: "note", id: `${id}-hint` }, "Type it exactly as shown, including capital letters and spaces.")),
       h("div", { class: "actions" }, confirmButton, cancelButton));
   }
 
@@ -320,7 +321,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     syncPanel();
     return h("div", { class: "confirm", role: "group", "aria-label": "Delete the selected events" },
       h("p", {}, `This permanently deletes ${plural(chosen.length, "event")} and ${plural(total, "booking")} in total. This can't be undone.`),
-      h("ul", { class: "confirm-list" }, ...chosen.map((e) => h("li", {}, e.name))),
+      h("ul", { class: "confirm-list" }, ...chosen.map((e) => h("li", {}, h("span", { class: "name-exact" }, e.name)))),
       error,
       h("div", { class: "field" }, h("label", { for: id }, "Type DELETE to confirm"), input),
       h("div", { class: "actions" }, confirmButton, cancelButton));

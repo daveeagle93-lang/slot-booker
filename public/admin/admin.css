@@ -164,6 +164,8 @@ legend { padding: 0; font-weight: 600; }
 .affected-note { font-size: 0.9375rem; }
 .confirm { margin-top: 1rem; }
 .confirm h2 { overflow-wrap: anywhere; }
+.confirm .note { color: inherit; font-size: 0.9375rem; }
+.name-exact { white-space: pre-wrap; overflow-wrap: anywhere; }
 .confirm .notice { background: var(--surface); }
 .confirm .button, .removed .button { min-height: 48px; margin: 0; }
 .button.danger { color: var(--bg); background: var(--danger-text); border-color: var(--danger-text); }
