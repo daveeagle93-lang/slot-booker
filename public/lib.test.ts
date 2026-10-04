@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { formatPounds as serverFormatPounds } from "../src/core/format";
 import {
-  copyText, formatDate, formatPounds, formatTime, formatTimeRange, mapsUrl, newIdempotencyKey, privacyParagraphs,
-  slotsLeftText, slugFromPathname,
+  copyText, formatDate, formatPounds, formatTime, formatTimeRange, isBookingPath, mapsUrl, newIdempotencyKey,
+  penceFromPounds, privacyParagraphs, slotsLeftText, slugFromPathname, whatsappMessage,
 } from "./lib.js";
 
 describe("London formatting", () => {
@@ -105,5 +105,58 @@ describe("privacyParagraphs", () => {
 
   it("keeps single line breaks inside a paragraph", () => {
     expect(privacyParagraphs("Line one\nline two")).toEqual(["Line one\nline two"]);
+  });
+});
+
+describe("penceFromPounds", () => {
+  it.each([
+    ["12", 1200], ["12.5", 1250], ["12.50", 1250], ["12.05", 1205], ["0", 0], ["0.00", 0], ["0.5", 50], ["00012", 1200],
+    ["£12", 1200], ["£ 12.50", 1250], ["  7  ", 700], ["1000", 100000], ["19.99", 1999],
+  ])("converts %j to %j pence", (text, pence) => {
+    expect(penceFromPounds(text)).toEqual({ pence });
+  });
+
+  it.each([
+    "", "   ", "£", "abc", "-1", "+1", "1e3", "12.505", "12.", ".5", "1,000", "12 50", "£-1", "12p", "1.2.3", "0x10", "٣",
+    "1000.01", "99999999999999999999",
+  ])("rejects %j with a message", (text) => {
+    const r = penceFromPounds(text);
+    expect(r).toHaveProperty("error");
+    expect((r as { error: string }).error).toMatch(/^[A-Z].*\.$/);
+  });
+
+  it("gives specific messages", () => {
+    expect(penceFromPounds("")).toEqual({ error: "Enter the cost in pounds, or 0 if it's free." });
+    expect(penceFromPounds("12.505")).toEqual({ error: "Use two decimal places at most, for example 12.50." });
+    expect(penceFromPounds("1000.01")).toEqual({ error: "The cost can be at most £1,000." });
+  });
+});
+
+describe("isBookingPath", () => {
+  it("accepts only /e/<slug>", () => {
+    expect(isBookingPath("/e/abc_DEF-123")).toBe(true);
+    for (const p of ["/e/", "/e/a/b", "/e/abc/", "//evil.example/e/abc", "https://x/e/abc", "/x/abc", "", null, undefined, 5]) {
+      expect(isBookingPath(p)).toBe(false);
+    }
+  });
+});
+
+describe("whatsappMessage", () => {
+  const event = { name: "Trial Day", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T15:00:00Z", venuePostcode: "SW1A 1AA", costPence: 1500 };
+
+  it("builds the message in London time (BST)", () => {
+    expect(whatsappMessage(event, "https://club.example/e/abc")).toBe(
+      "Trial Day\nSaturday 13 June 2026, 09:00–16:00\nVenue: SW1A 1AA\nCost: £15.00\nBook your slot: https://club.example/e/abc",
+    );
+  });
+
+  it("builds the message in London time (GMT)", () => {
+    expect(whatsappMessage({ ...event, startUtc: "2026-01-17T09:00:00Z", endUtc: "2026-01-17T16:00:00Z" }, "https://c.example/e/x")).toBe(
+      "Trial Day\nSaturday 17 January 2026, 09:00–16:00\nVenue: SW1A 1AA\nCost: £15.00\nBook your slot: https://c.example/e/x",
+    );
+  });
+
+  it("says Free for a free event", () => {
+    expect(whatsappMessage({ ...event, costPence: 0 }, "https://c.example/e/x")).toContain("\nCost: Free\n");
   });
 });

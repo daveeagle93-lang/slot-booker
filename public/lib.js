@@ -58,3 +58,35 @@ export function newIdempotencyKey() {
 
 /** Paragraphs of the privacy notice: blank lines separate them. */
 export const privacyParagraphs = (text) => text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+
+/** Only paths the server issues for booking pages are ever turned into links. */
+export const isBookingPath = (path) => typeof path === "string" && /^\/e\/[A-Za-z0-9_-]+$/.test(path);
+
+const MAX_COST_PENCE = 100_000; // as src/server/admin-events.ts
+
+/**
+ * Whole pounds or pounds and pence as typed ("12", "12.5", "12.50", "£12") to integer pence, or an error message.
+ * Integer arithmetic on the digits only: no floating point, no exponents, no signs.
+ */
+export function penceFromPounds(text) {
+  const t = String(text).trim().replace(/^£\s*/, "");
+  if (t === "") return { error: "Enter the cost in pounds, or 0 if it's free." };
+  const m = /^(\d+)(?:\.(\d*))?$/.exec(t);
+  if (!m || m[2] === "") return { error: "Enter the cost in pounds, for example 12.50." };
+  const fraction = m[2] ?? "";
+  if (fraction.length > 2) return { error: "Use two decimal places at most, for example 12.50." };
+  const pence = Number(m[1]) * 100 + Number(fraction.padEnd(2, "0"));
+  if (pence > MAX_COST_PENCE) return { error: "The cost can be at most £1,000." };
+  return { pence };
+}
+
+/** Ready-to-paste WhatsApp text for a newly created event (`event` is the create response's `event`). */
+export function whatsappMessage(event, url) {
+  return [
+    event.name,
+    `${formatDate(event.startUtc)}, ${formatTimeRange(event.startUtc, event.endUtc)}`,
+    `Venue: ${event.venuePostcode}`,
+    `Cost: ${formatPounds(event.costPence)}`,
+    `Book your slot: ${url}`,
+  ].join("\n");
+}
