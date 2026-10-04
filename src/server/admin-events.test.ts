@@ -3,6 +3,7 @@ import { londonToUtc } from "../core/london";
 import { generateSchedule } from "../core/schedule";
 import { generateSlug } from "../core/slug";
 import { countRows, createTestEnv, type TestEnv } from "../test/db";
+import { loadEventBySlug } from "./events";
 import { insertEventWithBreaks, parseEventDraft, previewSchedule, type EventDraft } from "./admin-events";
 
 const NOW = new Date("2026-10-01T12:00:00Z");
@@ -38,7 +39,7 @@ describe("parseEventDraft: accepted input", () => {
       name: "Saturday trial day", date: "2026-10-24", start: "09:00", end: "12:00",
       sessionMinutes: 15, gapMinutes: 0, costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water",
       startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z",
-      breaks: [{ start: "10:00", end: "10:30", startUtc: "2026-10-24T09:00:00Z", endUtc: "2026-10-24T09:30:00Z" }],
+      breaks: [{ start: "10:00", end: "10:30", label: "", startUtc: "2026-10-24T09:00:00Z", endUtc: "2026-10-24T09:30:00Z" }],
     });
   });
 
@@ -259,6 +260,53 @@ describe("parseEventDraft: breaks", () => {
   });
 });
 
+describe("parseEventDraft: break labels", () => {
+  const labelled = (label: unknown) => ({ breaks: [{ start: "10:00", end: "10:30", label }] });
+  const labelOf = (label: unknown) => draftOf(labelled(label)).breaks[0].label;
+
+  it("defaults to the empty string when missing, undefined or null", () => {
+    expect(labelOf(undefined)).toBe("");
+    expect(labelOf(null)).toBe("");
+    expect(draftOf({ breaks: [{ start: "10:00", end: "10:30" }] }).breaks[0].label).toBe("");
+    expect(labelOf("")).toBe("");
+  });
+
+  it("is trimmed, and a blank one becomes empty", () => {
+    expect(labelOf("  Lunch \t")).toBe("Lunch");
+    expect(labelOf("   ")).toBe("");
+  });
+
+  it("accepts 40 code points and rejects 41, counting an emoji as one", () => {
+    expect(labelOf("x".repeat(40))).toBe("x".repeat(40));
+    expect(labelOf("😀".repeat(40))).toBe("😀".repeat(40));
+    expect(fieldsOf(labelled("x".repeat(41)))["breaks.0.label"]).toBe("The break name must be at most 40 characters.");
+    expect(fieldsOf(labelled("😀".repeat(41)))["breaks.0.label"]).toMatch(/at most 40/);
+  });
+
+  it.each([
+    ["a control character", "a\u0007b", /control/],
+    ["a newline inside", "a\nb", /control/],
+    ["a zero-width space", "a\u200Bb", /invisible/],
+    ["a right-to-left override", "a\u202Eb", /invisible/],
+    ["a lone surrogate", "a\uD800b", /unpaired/],
+  ])("rejects %s", (_n, label, message) => {
+    expect(fieldsOf(labelled(label))["breaks.0.label"]).toMatch(message);
+  });
+
+  it.each([5, true, {}, ["Lunch"]])("rejects the non-string %j", (label) => {
+    expect(fieldsOf(labelled(label))["breaks.0.label"]).toBe("The break name must be text.");
+  });
+
+  it("allows emoji joiners and keeps the text as typed", () => {
+    expect(labelOf("👩\u200D🐕 <b>Lunch</b>")).toBe("👩\u200D🐕 <b>Lunch</b>");
+  });
+
+  it("reports the label error under its own break's index, alongside time errors", () => {
+    const f = fieldsOf({ breaks: [{ start: "10:00", end: "10:30" }, { start: "9:00", end: "10:00", label: "x".repeat(41) }] });
+    expect(Object.keys(f).sort()).toEqual(["breaks.1.label", "breaks.1.start"]);
+  });
+});
+
 describe("parseEventDraft: slot count", () => {
   it("needs at least one session", () => {
     expect(ok({ start: "09:00", end: "09:15" })).toBe(true);
@@ -295,8 +343,14 @@ describe("previewSchedule", () => {
       overrunMinutes: 10,
       suggestedBreak: { start: "2026-10-24T11:15:00Z", end: "2026-10-24T12:10:00Z" },
       suggestedLocal: { start: "12:15", end: "13:10" },
+      breakLabel: "",
     }]);
     expect(previewSchedule(d).slots.map((s) => s.start)).not.toContain("2026-10-24T11:00:00Z");
+  });
+
+  it("carries the label of the break each suggestion is about", () => {
+    const d = draftOf({ ...day, breaks: [{ start: "14:35", end: "14:40" }, { start: "12:05", end: "13:00", label: "Lunch" }] });
+    expect(previewSchedule(d).suggestions.map((s) => [s.breakIndex, s.breakLabel])).toEqual([[1, "Lunch"], [0, ""]]);
   });
 
   it("gives no suggestion when the overrun is 11 minutes", () => {
@@ -359,6 +413,17 @@ describe("insertEventWithBreaks", () => {
     expect(results).toEqual([
       { start_utc: "2026-10-24T09:00:00Z", end_utc: "2026-10-24T09:15:00Z" },
       { start_utc: "2026-10-24T10:00:00Z", end_utc: "2026-10-24T10:15:00Z" },
+    ]);
+  });
+
+  it("stores each break's label, and loadEventBySlug returns them with the times, in start order", async () => {
+    const d = draftOf({ breaks: [{ start: "11:00", end: "11:15" }, { start: "10:00", end: "10:15", label: "Lunch 🍽" }] });
+    const slug = generateSlug();
+    await insertEventWithBreaks(t.env.DB, slug, d);
+    const event = await loadEventBySlug(t.env.DB, slug);
+    expect(event?.breaks).toEqual([
+      { start: "2026-10-24T09:00:00Z", end: "2026-10-24T09:15:00Z", label: "Lunch 🍽" },
+      { start: "2026-10-24T10:00:00Z", end: "2026-10-24T10:15:00Z", label: "" },
     ]);
   });
 

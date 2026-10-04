@@ -90,6 +90,22 @@ describe("POST /api/admin/events", () => {
     ]);
   });
 
+  it("stores each break's label, and an unnamed break as an empty one", async () => {
+    const { event } = await create({ breaks: [{ start: "10:00", end: "10:30", label: "Lunch" }, { start: "11:00", end: "11:10" }] });
+    const { results } = await t.env.DB.prepare(
+      "SELECT label FROM breaks WHERE event_id = (SELECT id FROM events WHERE slug = ?) ORDER BY start_utc",
+    ).bind(event.slug).all();
+    expect(results).toEqual([{ label: "Lunch" }, { label: "" }]);
+  });
+
+  it("rejects an over-long break label under its own key, writing nothing", async () => {
+    const events = await countRows(t.env.DB, "events");
+    const res = await post(draft({ breaks: [{ start: "10:00", end: "10:30", label: "x".repeat(41) }] }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: unknown }).fields).toEqual({ "breaks.0.label": "The break name must be at most 40 characters." });
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+  });
+
   it("makes a fresh slug each time", async () => {
     expect((await create()).event.slug).not.toBe((await create()).event.slug);
   });

@@ -5,6 +5,7 @@ import { bookingWindow, type EventRow } from "./events";
 import { errorResponse } from "./http";
 
 const MAX_NAME_CODE_POINTS = 100;
+const MAX_LABEL_CODE_POINTS = 40;
 const MAX_DETAILS_CODE_POINTS = 2000;
 const MAX_BREAKS = 20;
 const MAX_SLOTS = 500;
@@ -21,7 +22,7 @@ export interface EventDraft {
   sessionMinutes: number; gapMinutes: number; costPence: number;
   venuePostcode: string; details: string;
   startUtc: string; endUtc: string;
-  breaks: { start: string; end: string; startUtc: string; endUtc: string }[];
+  breaks: { start: string; end: string; label: string; startUtc: string; endUtc: string }[];
 }
 
 type Fields = Record<string, string>;
@@ -52,6 +53,18 @@ function checkName(value: unknown): { name: string } | { message: string } {
   if ([...name].length > MAX_NAME_CODE_POINTS) return { message: `The event name must be at most ${MAX_NAME_CODE_POINTS} characters.` };
   if (/\p{Cc}/u.test(name)) return { message: "The event name can't contain control characters." };
   return { name };
+}
+
+/** A break's optional name: missing, undefined or null means unnamed (""). */
+function checkLabel(value: unknown): { label: string } | { message: string } {
+  if (value === undefined || value === null) return { label: "" };
+  if (typeof value !== "string") return { message: "The break name must be text." };
+  if (!value.isWellFormed()) return { message: "The break name can't contain unpaired surrogate characters." };
+  if (INVISIBLE.test(value)) return { message: "The break name can't contain invisible or direction-changing characters." };
+  const label = value.trim();
+  if ([...label].length > MAX_LABEL_CODE_POINTS) return { message: `The break name must be at most ${MAX_LABEL_CODE_POINTS} characters.` };
+  if (/\p{Cc}/u.test(label)) return { message: "The break name can't contain control characters." };
+  return { label };
 }
 
 /**
@@ -128,15 +141,17 @@ export function parseEventDraft(
         fields[`breaks.${i}`] = "Each break needs a start and an end.";
         return;
       }
+      const label = checkLabel(b.label);
+      if ("message" in label) fields[`breaks.${i}.label`] = label.message;
       const s = londonTime(base, b.start);
       const e = londonTime(base, b.end);
       if ("message" in s) fields[`breaks.${i}.start`] = s.message;
       if ("message" in e) fields[`breaks.${i}.end`] = e.message;
-      if (!("utc" in s) || !("utc" in e)) return;
+      if (!("utc" in s) || !("utc" in e) || !("label" in label)) return;
       if (e.utc <= s.utc) fields[`breaks.${i}.end`] = "The break must end after it starts.";
       else if (startUtc && s.utc < startUtc) fields[`breaks.${i}.start`] = "The break must start within the event.";
       else if (endUtc && e.utc > endUtc) fields[`breaks.${i}.end`] = "The break must end within the event.";
-      breaks.push({ start: b.start as string, end: b.end as string, startUtc: s.utc, endUtc: e.utc });
+      breaks.push({ start: b.start as string, end: b.end as string, label: label.label, startUtc: s.utc, endUtc: e.utc });
     });
   }
 
@@ -172,6 +187,8 @@ export interface PreviewSuggestion {
   suggestedBreak: TimeRange;
   /** The suggested break as London HH:MM, ready for the form inputs. */
   suggestedLocal: { start: string; end: string };
+  /** The break's name ("" if unnamed), for the suggestion's wording. */
+  breakLabel: string;
 }
 
 export function previewSchedule(draft: EventDraft): { slots: TimeRange[]; suggestions: PreviewSuggestion[] } {
@@ -198,7 +215,7 @@ export function previewSchedule(draft: EventDraft): { slots: TimeRange[]; sugges
     if (breakIndex === -1) continue;
     usable.push({
       breakIndex, droppedSlot: s.droppedSlot, overrunMinutes: s.overrunMinutes,
-      suggestedBreak: s.suggestedBreak, suggestedLocal,
+      suggestedBreak: s.suggestedBreak, suggestedLocal, breakLabel: draft.breaks[breakIndex].label,
     });
   }
   return { slots, suggestions: usable };
@@ -215,8 +232,8 @@ export async function insertEventWithBreaks(db: D1Database, slug: string, d: Eve
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(slug, d.name, d.startUtc, d.endUtc, d.sessionMinutes, d.gapMinutes, d.costPence, d.venuePostcode, d.details),
     ...d.breaks.map((b) =>
-      db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc) VALUES ((SELECT id FROM events WHERE slug = ?), ?, ?)")
-        .bind(slug, b.startUtc, b.endUtc)),
+      db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES ((SELECT id FROM events WHERE slug = ?), ?, ?, ?)")
+        .bind(slug, b.startUtc, b.endUtc, b.label)),
   ]);
 }
 
@@ -234,12 +251,12 @@ export async function listUpcomingEvents(db: D1Database, now: Date, cutoffOffset
       `SELECT id, slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode
        FROM events WHERE id IN (${upcoming}) ORDER BY start_utc, id`,
     ).bind(nowIso),
-    db.prepare(`SELECT event_id, start_utc, end_utc FROM breaks WHERE event_id IN (${upcoming})`).bind(nowIso),
+    db.prepare(`SELECT event_id, start_utc, end_utc, label FROM breaks WHERE event_id IN (${upcoming})`).bind(nowIso),
     db.prepare(`SELECT event_id, COUNT(*) AS n FROM bookings WHERE event_id IN (${upcoming}) GROUP BY event_id`).bind(nowIso),
   ]);
-  const breaksOf = new Map<number, TimeRange[]>();
-  for (const b of (breaks.results as { event_id: number; start_utc: string; end_utc: string }[])) {
-    breaksOf.set(b.event_id, [...(breaksOf.get(b.event_id) ?? []), { start: b.start_utc, end: b.end_utc }]);
+  const breaksOf = new Map<number, EventRow["breaks"]>();
+  for (const b of (breaks.results as { event_id: number; start_utc: string; end_utc: string; label: string }[])) {
+    breaksOf.set(b.event_id, [...(breaksOf.get(b.event_id) ?? []), { start: b.start_utc, end: b.end_utc, label: b.label }]);
   }
   const bookedOf = new Map((counts.results as { event_id: number; n: number }[]).map((r) => [r.event_id, r.n]));
   return (events.results as unknown as ListedEvent[]).map((e) => {

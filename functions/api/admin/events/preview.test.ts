@@ -40,7 +40,13 @@ describe("POST /api/admin/events/preview", () => {
       overrunMinutes: 10,
       suggestedBreak: { start: "2026-10-24T11:15:00Z", end: "2026-10-24T12:10:00Z" },
       suggestedLocal: { start: "12:15", end: "13:10" },
+      breakLabel: "",
     }]);
+  });
+
+  it("returns the break's label with its suggestion", async () => {
+    const res = await post(draft({ breaks: [{ start: "12:05", end: "13:00", label: " Lunch " }] }));
+    expect(((await res.json()) as { suggestions: { breakLabel: string }[] }).suggestions[0].breakLabel).toBe("Lunch");
   });
 
   it("previews a date in the past (it is not an event yet)", async () => {

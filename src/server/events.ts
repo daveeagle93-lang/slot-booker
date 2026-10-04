@@ -13,7 +13,7 @@ export interface EventRow {
   venuePostcode: string;
   details: string;
   archived: boolean;
-  breaks: TimeRange[];
+  breaks: (TimeRange & { label: string })[];
 }
 
 export interface SlotView extends TimeRange { status: "free" | "taken" | "past" }
@@ -28,14 +28,14 @@ export async function loadEventBySlug(db: D1Database, slug: string): Promise<Eve
   const e = await db.prepare("SELECT * FROM events WHERE slug = ?").bind(slug).first<RawEvent>();
   if (!e) return null;
   const { results } = await db
-    .prepare("SELECT start_utc, end_utc FROM breaks WHERE event_id = ? ORDER BY start_utc")
+    .prepare("SELECT start_utc, end_utc, label FROM breaks WHERE event_id = ? ORDER BY start_utc")
     .bind(e.id)
-    .all<{ start_utc: string; end_utc: string }>();
+    .all<{ start_utc: string; end_utc: string; label: string }>();
   return {
     id: e.id, slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc,
     sessionMinutes: e.session_minutes, gapMinutes: e.gap_minutes, costPence: e.cost_pence,
     venuePostcode: e.venue_postcode, details: e.details, archived: e.archived === 1,
-    breaks: results.map((b) => ({ start: b.start_utc, end: b.end_utc })),
+    breaks: results.map((b) => ({ start: b.start_utc, end: b.end_utc, label: b.label })),
   };
 }
 
