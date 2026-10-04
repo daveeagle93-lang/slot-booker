@@ -11,6 +11,8 @@ FAILS=0
 
 wr() { npx wrangler d1 "$@" --local --persist-to "$STATE"; }
 sql() { wr execute "$DB" --command "$1" --json 2>&1; }
+# key TEXT: the application's identity key (src/core/identity.ts), so SQL need not know Unicode rules
+key() { node -e 'import("./src/core/identity.ts").then(m => process.stdout.write(m.identityKey(process.argv[1])))' -- "$1"; }
 
 # expect_ok LABEL SQL
 expect_ok() {
@@ -37,21 +39,35 @@ expect_count "foreign keys are on" "SELECT foreign_keys AS n FROM pragma_foreign
 EV="INSERT INTO events (name, start_utc, end_utc, session_minutes, venue_postcode) VALUES"
 expect_ok "insert event 1" "$EV ('Test A', '2026-03-14T09:00:00Z', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')"
 expect_ok "insert event 2" "$EV ('Test B', '2026-06-13T09:00:00Z', '2026-06-13T16:00:00Z', 15, 'AB1 2CD')"
+expect_ok "insert event 3" "$EV ('Test C', '2026-09-12T09:00:00Z', '2026-09-12T16:00:00Z', 15, 'AB1 2CD')"
 expect_ok "insert breaks" "INSERT INTO breaks (event_id, start_utc, end_utc) VALUES (1, '2026-03-14T12:00:00Z', '2026-03-14T13:00:00Z'), (1, '2026-03-14T14:00:00Z', '2026-03-14T14:15:00Z')"
 
-BK="INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name) VALUES"
-expect_ok "first booking" "$BK (1, '2026-03-14T09:00:00Z', 'Rex', 'Sam Jones')"
-expect_fail "duplicate (event, slot)" "$BK (1, '2026-03-14T09:00:00Z', 'Fido', 'Ann Lee')" "UNIQUE constraint failed"
-expect_fail "duplicate dog+handler, exact" "$BK (1, '2026-03-14T09:15:00Z', 'Rex', 'Sam Jones')" "UNIQUE constraint failed"
-expect_fail "duplicate dog+handler, case/whitespace variants" "$BK (1, '2026-03-14T09:15:00Z', ' rex ', 'sam jones')" "UNIQUE constraint failed"
-expect_ok "same handler, different dog, same event" "$BK (1, '2026-03-14T09:15:00Z', 'Fido', 'Sam Jones')"
-expect_ok "same dog+handler, different event" "$BK (2, '2026-06-13T09:00:00Z', 'Rex', 'Sam Jones')"
-expect_ok "no ab+c / a+bc collision" "$BK (1, '2026-03-14T09:30:00Z', 'ab', 'c'), (1, '2026-03-14T09:45:00Z', 'a', 'bc')"
-expect_fail "blank dog name" "$BK (1, '2026-03-14T10:00:00Z', '  ', 'Ann Lee')" "CHECK constraint failed"
-expect_fail "bad booking timestamp format" "$BK (1, '2026-03-14 10:00', 'Bo', 'Ann Lee')" "CHECK constraint failed"
-expect_fail "booking for missing event" "$BK (99, '2026-03-14T10:00:00Z', 'Bo', 'Ann Lee')" "FOREIGN KEY constraint failed"
+BK="INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key) VALUES"
+# row EVENT SLOT DOG HANDLER: one VALUES tuple with keys computed from the names
+row() { echo "($1, '$2', '$3', '$4', '$(key "$3")', '$(key "$4")')"; }
+expect_ok "first booking" "$BK $(row 1 '2026-03-14T09:00:00Z' 'Rex' 'Sam Jones')"
+expect_fail "duplicate (event, slot)" "$BK $(row 1 '2026-03-14T09:00:00Z' 'Fido' 'Ann Lee')" "UNIQUE constraint failed"
+expect_fail "duplicate dog+handler, exact" "$BK $(row 1 '2026-03-14T09:15:00Z' 'Rex' 'Sam Jones')" "UNIQUE constraint failed"
+expect_fail "duplicate dog+handler, case/whitespace variants" "$BK $(row 1 '2026-03-14T09:15:00Z' ' rex ' 'sam jones')" "UNIQUE constraint failed"
+expect_ok "same handler, different dog, same event" "$BK $(row 1 '2026-03-14T09:15:00Z' 'Fido' 'Sam Jones')"
+expect_ok "same dog+handler, different event" "$BK $(row 2 '2026-06-13T09:00:00Z' 'Rex' 'Sam Jones')"
+expect_ok "no ab+c / a+bc collision" "$BK $(row 1 '2026-03-14T09:30:00Z' 'ab' 'c'), $(row 1 '2026-03-14T09:45:00Z' 'a' 'bc')"
+expect_fail "blank dog name" "$BK $(row 1 '2026-03-14T10:00:00Z' '  ' 'Ann Lee')" "CHECK constraint failed"
+expect_fail "bad booking timestamp format" "$BK $(row 1 '2026-03-14 10:00' 'Bo' 'Ann Lee')" "CHECK constraint failed"
+expect_fail "booking for missing event" "$BK $(row 99 '2026-03-14T10:00:00Z' 'Bo' 'Ann Lee')" "FOREIGN KEY constraint failed"
 
-expect_fail "trailing junk after timestamp" "$BK (1, '2026-03-14T10:00:00Zx', 'Bo', 'Ann Lee')" "CHECK constraint failed"
+# Unicode identity: keys come from identityKey(), display columns keep the text as entered.
+expect_ok "Zoë booked" "$BK $(row 1 '2026-03-14T10:15:00Z' 'Zoë' 'Pat Kay')"
+expect_fail "Zoë vs ZOË (same event and handler) collides" "$BK $(row 1 '2026-03-14T10:30:00Z' 'ZOË' 'Pat Kay')" "UNIQUE constraint failed"
+expect_fail "precomposed vs decomposed ë collides" "$BK $(row 1 '2026-03-14T10:30:00Z' $'Zoe\xcc\x88' 'Pat Kay')" "UNIQUE constraint failed"
+expect_ok "same Zoë dog, different handler" "$BK $(row 1 '2026-03-14T10:30:00Z' 'Zoë' 'Lee Ray')"
+expect_ok "ZOË in another event" "$BK $(row 3 '2026-09-12T09:00:00Z' 'ZOË' 'Pat Kay')"
+expect_count "display column keeps text as entered" "SELECT count(*) AS n FROM bookings WHERE dog_name = 'ZOË'" 1
+expect_count "old ASCII-only index is gone" "SELECT count(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'bookings_one_run_per_dog_handler'" 0
+expect_ok "booking with forgotten keys (first)" "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name) VALUES (3, '2026-09-12T09:15:00Z', 'Mo', 'Al')"
+expect_fail "booking with forgotten keys (second) fails loudly" "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name) VALUES (3, '2026-09-12T09:30:00Z', 'Bo', 'Cy')" "UNIQUE constraint failed"
+
+expect_fail "trailing junk after timestamp" "$BK $(row 1 '2026-03-14T10:00:00Zx' 'Bo' 'Ann Lee')" "CHECK constraint failed"
 expect_fail "bad event timestamp format" "$EV ('Bad', '2026-03-14 09:00', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
 expect_fail "event end == start" "$EV ('Bad', '2026-03-14T09:00:00Z', '2026-03-14T09:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
 expect_fail "event end < start" "$EV ('Bad', '2026-03-14T09:00:00Z', '2026-03-14T08:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
