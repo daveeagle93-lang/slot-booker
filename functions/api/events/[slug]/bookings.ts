@@ -1,10 +1,10 @@
 import {
   bookableSlots, createBooking, declaresOversizeBody, findByIdempotencyKey, findSlot, noStore, payloadTooLarge, readJsonObject,
-  validateBookingInput, type BookingResult,
+  validateBookingInput, type BookingResult, type CreateResult,
 } from "../../../../src/server/bookings";
 import { bookingCutoffOffsetMinutes } from "../../../../src/server/config";
 import type { AppEnv } from "../../../../src/server/env";
-import { bookingWindow, eventSummary, isSlotBookable, loadEventBySlug } from "../../../../src/server/events";
+import { bookingWindow, eventSummary, isSlotBookable, loadEventBySlug, type EventRow } from "../../../../src/server/events";
 import { errorResponse, json } from "../../../../src/server/http";
 import { bookingIcsUrl } from "../../../../src/server/ics";
 
@@ -32,23 +32,41 @@ export const onRequestPost: PagesFunction<AppEnv, "slug"> = async ({ request, en
   } catch (e) {
     return failed(e);
   }
+  // The event as the answer should describe it: replaced by the reloaded one if an edit raced the insert.
+  let current = event;
   if (!result) {
-    if (event.archived) return errorResponse(410, "event_archived", "This event is closed to bookings.", {}, noStore);
-    const now = new Date();
-    const window = bookingWindow(event, bookingCutoffOffsetMinutes(env.BOOKING_CUTOFF_OFFSET_MINUTES), now);
-    if (!window.open) {
-      return errorResponse(410, "bookings_closed", "Bookings for this event are now closed.", {}, noStore);
-    }
-    const slot = findSlot(event, input.slot);
-    if (!slot) return errorResponse(400, "invalid_slot", "That time isn't one of this event's slots.", {}, noStore);
-    try {
+    // Everything that depends on the event, so a retry after an edit re-checks it all against the fresh event.
+    const book = async (ev: EventRow): Promise<Response | CreateResult> => {
+      if (ev.archived) return errorResponse(410, "event_archived", "This event is closed to bookings.", {}, noStore);
+      const now = new Date();
+      const window = bookingWindow(ev, bookingCutoffOffsetMinutes(env.BOOKING_CUTOFF_OFFSET_MINUTES), now);
+      if (!window.open) {
+        return errorResponse(410, "bookings_closed", "Bookings for this event are now closed.", {}, noStore);
+      }
+      const slot = findSlot(ev, input.slot);
+      if (!slot) return errorResponse(400, "invalid_slot", "That time isn't one of this event's slots.", {}, noStore);
       if (!isSlotBookable(slot.start, window, now)) {
         return errorResponse(
           409, "slot_started", "That session has already started.",
-          { freeSlots: await bookableSlots(env.DB, event, now) }, noStore,
+          { freeSlots: await bookableSlots(env.DB, ev, now) }, noStore,
         );
       }
-      result = await createBooking(env.DB, event, slot, input, now);
+      return createBooking(env.DB, ev, slot, input, now);
+    };
+    try {
+      let outcome = await book(event);
+      if (!(outcome instanceof Response) && outcome.kind === "schedule_changed") {
+        // Edited between our read and the insert (nothing was written): look once more, and retry once if the slot survived.
+        const fresh = await loadEventBySlug(env.DB, event.slug);
+        if (!fresh) return errorResponse(404, "not_found", "Event not found", {}, noStore);
+        current = fresh;
+        outcome = await book(fresh);
+      }
+      if (outcome instanceof Response) return outcome;
+      if (outcome.kind === "schedule_changed") {
+        return errorResponse(409, "event_changed", "The event was just changed. Reload the page and try again.", {}, noStore);
+      }
+      result = outcome;
     } catch (e) {
       return failed(e);
     }
@@ -58,7 +76,7 @@ export const onRequestPost: PagesFunction<AppEnv, "slug"> = async ({ request, en
     case "replayed":
       return json({
         booking: result.booking,
-        event: eventSummary(event),
+        event: eventSummary(current),
         icsUrl: bookingIcsUrl(event.slug, result.token),
       }, 201, result.kind === "replayed" ? { ...noStore, "Idempotent-Replayed": "true" } : noStore);
     case "idempotency_key_reuse": {
@@ -66,7 +84,7 @@ export const onRequestPost: PagesFunction<AppEnv, "slug"> = async ({ request, en
       const { original } = result;
       return errorResponse(422, "idempotency_key_reuse", message, original ? {
         booking: original.booking,
-        event: eventSummary(event),
+        event: eventSummary(current),
         icsUrl: bookingIcsUrl(event.slug, original.token),
       } : {}, noStore);
     }

@@ -1,6 +1,7 @@
 import { identityKey } from "../core/identity";
 import { generateSchedule, type TimeRange } from "../core/schedule";
 import { generateBookingToken } from "../core/slug";
+import { scheduleUnchanged, isGuardFailure } from "./db-guard";
 import { computeSlotViews, type EventRow } from "./events";
 import { errorResponse } from "./http";
 
@@ -22,6 +23,9 @@ export type BookingResult =
   | { kind: "idempotency_key_reuse"; original: BookedResult | null }
   | { kind: "duplicate_booking" }
   | { kind: "slot_taken"; freeSlots: TimeRange[] };
+
+/** What createBooking answers: a BookingResult, or schedule_changed when the event was edited under it (nothing written). */
+export type CreateResult = BookingResult | { kind: "schedule_changed" };
 
 export const payloadTooLarge = (): Response =>
   errorResponse(413, "payload_too_large", "That request is too large.", {}, noStore);
@@ -153,21 +157,28 @@ export async function findByIdempotencyKey(
  * free, a request with the guessed pair gets duplicate_booking when that pair has booked; that is a
  * known limitation (a wrong guess also creates a real booking). The first thing checked after a
  * failure is the idempotency key, because a simultaneous request with the same key may have won.
+ *
+ * The insert is the second statement of a batch whose first is `scheduleUnchanged`, so if the event was
+ * edited between the caller's read and now, nothing is written and the answer is schedule_changed; the
+ * caller reloads the event and decides (the slot may be gone, or still be there).
  */
 export async function createBooking(
   db: D1Database, event: EventRow, slot: TimeRange, input: BookingInput, now: Date,
-): Promise<BookingResult> {
+): Promise<CreateResult> {
   const dogKey = identityKey(input.dogName);
   const handlerKey = identityKey(input.handlerName);
   const token = generateBookingToken();
   try {
-    await db
-      .prepare(
-        "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      )
-      .bind(event.id, slot.start, input.dogName, input.handlerName, dogKey, handlerKey, token, input.idempotencyKey)
-      .run();
+    await db.batch([
+      scheduleUnchanged(db, event),
+      db
+        .prepare(
+          "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(event.id, slot.start, input.dogName, input.handlerName, dogKey, handlerKey, token, input.idempotencyKey),
+    ]);
   } catch (e) {
+    if (isGuardFailure(e)) return { kind: "schedule_changed" };
     if (!(e instanceof Error) || !e.message.includes("UNIQUE constraint failed")) throw e;
     const prior = await findByIdempotencyKey(db, event, input);
     if (prior) return prior;

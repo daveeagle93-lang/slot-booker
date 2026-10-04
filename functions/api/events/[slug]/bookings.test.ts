@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { identityKey } from "../../../../src/core/identity";
 import { generateBookingToken } from "../../../../src/core/slug";
 import type { AppEnv } from "../../../../src/server/env";
-import { createTestEnv, insertBreak, insertEvent, type TestEnv } from "../../../../src/test/db";
+import { createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../../../../src/test/db";
 import { onRequestPost } from "./bookings";
 
 // The test events are dated 2026-06-13: pin the clock before them so bookings are open (Date only; timers stay real).
@@ -213,10 +213,8 @@ describe("POST /api/events/:slug/bookings", () => {
     it("falls back to slot_taken with fresh free slots if the holding row has vanished by the time it is read", async () => {
       const { slug } = await insertEvent(t.env.DB);
       const racing = {
-        prepare: (sql: string) =>
-          sql.startsWith("INSERT INTO bookings")
-            ? { bind: () => ({ run: () => Promise.reject(new Error("D1_ERROR: UNIQUE constraint failed: bookings.event_id, bookings.slot_start_utc")) }) }
-            : t.env.DB.prepare(sql),
+        prepare: (sql: string) => t.env.DB.prepare(sql),
+        batch: () => Promise.reject(new Error("D1_ERROR: UNIQUE constraint failed: bookings.event_id, bookings.slot_start_utc")),
       } as unknown as D1Database;
       const res = await post(slug, entry(S1, "Rex", "Sam Jones"), { env: { DB: racing } });
       expect(res.status).toBe(409);
@@ -950,14 +948,84 @@ describe("POST /api/events/:slug/bookings", () => {
     });
   });
 
+  describe("an edit racing the booking (the insert is guarded on the schedule)", () => {
+    const LAST = "2026-06-13T10:45:00Z";
+    /** The real database, except that `before` runs once per batch attempt (up to `times`) just before the batch: the edit lands between the handler's read and its insert. */
+    const racing = (before: () => Promise<void>, times = 1) => {
+      let batches = 0;
+      const env = {
+        DB: {
+          prepare: (sql: string) => t.env.DB.prepare(sql),
+          batch: async (statements: D1PreparedStatement[]) => {
+            batches++;
+            if (batches <= times) await before();
+            return t.env.DB.batch(statements);
+          },
+        } as unknown as D1Database,
+      };
+      return { env, batches: () => batches };
+    };
+
+    it("answers invalid_slot and writes nothing when the edit removed the requested slot", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const r = racing(async () => { await t.env.DB.prepare("UPDATE events SET end_utc = '2026-06-13T10:30:00Z' WHERE id = ?").bind(id).run(); });
+      const res = await post(slug, entry(LAST, "Rex", "Sam Jones"), { env: r.env });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as ErrorBody).error).toEqual({ code: "invalid_slot", message: "That time isn't one of this event's slots." });
+      expect(await rows(id)).toHaveLength(0);
+      expect(r.batches()).toBe(1);
+    });
+
+    it("answers not_found when the event was deleted in between", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const r = racing(async () => { await t.env.DB.prepare("DELETE FROM events WHERE id = ?").bind(id).run(); });
+      const res = await post(slug, entry(SLOT, "Rex", "Sam Jones"), { env: r.env });
+      expect(res.status).toBe(404);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("not_found");
+      expect(await rows(id)).toHaveLength(0);
+    });
+
+    it("retries once against the fresh event when the edit kept the slot, and books it", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const r = racing(() => insertBreak(t.env.DB, id, "2026-06-13T10:00:00Z", "2026-06-13T10:15:00Z"));
+      const res = await post(slug, entry(SLOT, "Rex", "Sam Jones"), { env: r.env });
+      expect(res.status).toBe(201);
+      expect(r.batches()).toBe(2);
+      expect(await rows(id)).toHaveLength(1);
+    });
+
+    it("gives 409 event_changed, writing nothing, when the schedule changes again during the retry", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const breaks = ["2026-06-13T09:00:00Z", "2026-06-13T10:00:00Z"];
+      const r = racing(() => { const at = breaks.shift()!; return insertBreak(t.env.DB, id, at, at.replace(":00:00", ":15:00")); }, 2);
+      const res = await post(slug, entry(SLOT, "Rex", "Sam Jones"), { env: r.env });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as ErrorBody).error).toEqual({
+        code: "event_changed", message: "The event was just changed. Reload the page and try again.",
+      });
+      expect(await rows(id)).toHaveLength(0);
+      expect(r.batches()).toBe(2);
+    });
+
+    it("still classifies a UNIQUE failure after a retry (slot_taken)", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const r = racing(async () => {
+        await insertBreak(t.env.DB, id, "2026-06-13T10:00:00Z", "2026-06-13T10:15:00Z");
+        await insertBooking(t.env.DB, id, SLOT, "Other", "Person");
+      });
+      const res = await post(slug, entry(SLOT, "Rex", "Sam Jones"), { env: r.env });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("slot_taken");
+      expect(await rows(id)).toHaveLength(1);
+    });
+  });
+
   describe("unexpected failures", () => {
     it("returns a generic 500 and logs, without leaking SQL, when the insert fails for another reason", async () => {
       const { slug } = await insertEvent(t.env.DB);
       const failing = {
-        prepare: (sql: string) =>
-          sql.startsWith("INSERT INTO bookings")
-            ? { bind: () => ({ run: () => Promise.reject(new Error("D1_ERROR: SECRET sql detail")) }) }
-            : t.env.DB.prepare(sql),
+        prepare: (sql: string) => t.env.DB.prepare(sql),
+        batch: () => Promise.reject(new Error("D1_ERROR: SECRET sql detail")),
       } as unknown as D1Database;
       const spy = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
