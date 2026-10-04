@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { experimental_readRawConfig, unstable_readConfig } from "wrangler";
-import { GENERATED_MARKER, buildConfig, isGenerated, parseAccount, renderConfig } from "../../scripts/configure-core";
+import { GENERATED_MARKER, buildConfig, describeJsonError, isGenerated, parseAccount, renderConfig } from "../../scripts/configure-core";
 
 const PROD = "3f2b8c1e-5a4d-4e6f-9b7a-1c2d3e4f5a6b";
 const PREVIEW = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
@@ -19,6 +19,43 @@ const errorsOf = (raw: unknown) => {
   const r = parseAccount(raw);
   return "errors" in r ? r.errors.join("\n") : "";
 };
+
+describe("describeJsonError", () => {
+  const describeParse = (text: string): string => {
+    try {
+      JSON.parse(text);
+    } catch (e) {
+      return describeJsonError(e, text);
+    }
+    throw new Error("expected invalid JSON");
+  };
+  const SECRET = "sk-live-4f9a8b7c6d5e";
+
+  it("gives a generic message with the line and column when the parse error carries a position", () => {
+    expect(describeParse('{\n  "a": 1,\n}')).toBe("account.local.json is not valid JSON (line 3, column 1)");
+    expect(describeParse('{"a":1,}')).toBe("account.local.json is not valid JSON (line 1, column 8)");
+  });
+
+  it("never includes any of the file's text, whatever the error says", () => {
+    for (const text of [`{"token": ${SECRET} }`, `{\n "a": ${SECRET}\n}`, `${SECRET}`, `{"a": "${SECRET}",}`]) {
+      const out = describeParse(text);
+      expect(out, text).not.toContain(SECRET);
+      expect(out, text).not.toContain("sk-");
+      expect(out, text).toMatch(/^account\.local\.json is not valid JSON( \(line \d+, column \d+\))?$/);
+    }
+  });
+
+  it("prints no position when the error has none, or when it is not a usable number", () => {
+    expect(describeParse('{"a":')).toBe("account.local.json is not valid JSON");
+    expect(describeJsonError(new Error("x at position 99999 (line 9 column 9)"), "short")).toBe("account.local.json is not valid JSON");
+    expect(describeJsonError(new Error(`${SECRET} at position 99999999999999999999`), "short")).toBe("account.local.json is not valid JSON");
+    expect(describeJsonError("not an error", "{}")).toBe("account.local.json is not valid JSON");
+  });
+
+  it("counts lines from the text, not from the message", () => {
+    expect(describeJsonError(new Error("Unexpected token at position 4"), "ab\ncd\nef")).toBe("account.local.json is not valid JSON (line 2, column 2)");
+  });
+});
 
 describe("parseAccount", () => {
   it("accepts two distinct UUIDs and lower-cases them", () => {

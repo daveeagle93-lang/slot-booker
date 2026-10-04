@@ -11,7 +11,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { experimental_readRawConfig } from "wrangler";
-import { buildConfig, isGenerated, parseAccount, renderConfig } from "./configure-core.ts";
+import { buildConfig, describeJsonError, isGenerated, parseAccount, renderConfig } from "./configure-core.ts";
 
 const root = join(import.meta.dirname, "..");
 const templatePath = join(root, "wrangler.jsonc");
@@ -48,10 +48,12 @@ if (!existsSync(accountPath)) {
   process.exit(1);
 }
 let raw: unknown;
+let accountText = "";
 try {
-  raw = JSON.parse(readFileSync(accountPath, "utf8"));
+  accountText = readFileSync(accountPath, "utf8");
+  raw = JSON.parse(accountText);
 } catch (e) {
-  console.error(`account.local.json is not valid JSON: ${(e as Error).message}`);
+  console.error(describeJsonError(e, accountText));
   process.exit(1);
 }
 const parsed = parseAccount(raw);
