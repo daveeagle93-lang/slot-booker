@@ -11,7 +11,7 @@ export interface AppEnv {
   ACCESS_TEAM_DOMAIN?: string;
   /** Access only: the application's AUD tag. */
   ACCESS_AUD?: string;
-  /** Password only, SECRET: `pbkdf2-sha512$...` from `npm run hash-password`. */
+  /** Password only, SECRET: `pbkdf2-sha256$...` from `npm run hash-password`. */
   ADMIN_PASSWORD_HASH?: string;
   /** Password only, SECRET: at least 32 random characters that sign the session cookie. */
   ADMIN_SESSION_SECRET?: string;

@@ -152,7 +152,7 @@ describe("unconfigured admin", () => {
     const good = await passwordEnv(t.env.DB);
     const variants: AppEnv[] = [
       { ...good, ADMIN_AUTH: undefined }, { ...good, ADMIN_AUTH: "" }, { ...good, ADMIN_AUTH: "none" }, { ...good, ADMIN_AUTH: "Password" },
-      { ...good, ADMIN_AUTH: "ACCESS" }, { ...good, ADMIN_PASSWORD_HASH: "pbkdf2-sha512$100000$bad$bad" },
+      { ...good, ADMIN_AUTH: "ACCESS" }, { ...good, ADMIN_PASSWORD_HASH: "pbkdf2-sha256$100000$bad$bad" },
       { ...good, ADMIN_SESSION_SECRET: "short" }, { ...accessEnv(t.env.DB), ACCESS_TEAM_DOMAIN: "evil.example" },
     ];
     const app = adminApp({ now: () => NOW });

@@ -11,7 +11,7 @@ describe("scripts/hash-password.ts", () => {
     const password = "correct horse battery staple";
     const out = run(`${password}\n`);
     expect(out.status).toBe(0);
-    expect(out.stdout).toMatch(/^pbkdf2-sha512\$100000\$[\w-]+\$[\w-]+\n$/);
+    expect(out.stdout).toMatch(/^pbkdf2-sha256\$100000\$[\w-]+\$[\w-]+\n$/);
     const parsed = parsePasswordHash(out.stdout.trim());
     expect(parsed).not.toBeNull();
     expect(await verifyPassword(password, parsed!)).toBe(true);

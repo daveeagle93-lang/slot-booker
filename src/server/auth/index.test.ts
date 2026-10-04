@@ -31,8 +31,8 @@ describe("adminAuthFor", () => {
     const password = { ADMIN_AUTH: "password", ADMIN_PASSWORD_HASH: hash, ADMIN_SESSION_SECRET: SECRET };
     for (const bad of [
       { ...access, ACCESS_TEAM_DOMAIN: "evil.example" }, { ...access, ACCESS_AUD: "" }, { ADMIN_AUTH: "access" },
-      { ...password, ADMIN_PASSWORD_HASH: undefined }, { ...password, ADMIN_PASSWORD_HASH: "pbkdf2-sha512$600000$x$y" },
-      { ...password, ADMIN_PASSWORD_HASH: hash.replace(/^pbkdf2-sha512\$100000/, "pbkdf2-sha512$600000") },
+      { ...password, ADMIN_PASSWORD_HASH: undefined }, { ...password, ADMIN_PASSWORD_HASH: "pbkdf2-sha256$600000$x$y" },
+      { ...password, ADMIN_PASSWORD_HASH: hash.replace(/^pbkdf2-sha256\$100000/, "pbkdf2-sha256$600000") },
       { ...password, ADMIN_SESSION_SECRET: "s".repeat(31) }, { ...password, ADMIN_SESSION_SECRET: undefined },
       { ADMIN_AUTH: "password" },
     ]) {

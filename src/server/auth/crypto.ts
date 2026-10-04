@@ -39,23 +39,29 @@ export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
 // bcrypt; a WASM or JS one would burn Worker CPU time and bundle size). Production Workers refuse more than
 // 100,000 iterations (https://github.com/cloudflare/workerd/issues/1346), but local workerd and Node do not,
 // so tests could pass with a count that fails when deployed. Hence the count is fixed at the cap here and
-// the verifier refuses anything above it. SHA-512 because its 64-bit arithmetic suits GPUs less well than
-// SHA-256 does. See docs/admin-auth.md for why this is still below the OWASP work factor.
+// the verifier refuses anything above it.
+// SHA-256 with a 32-byte output (one block, so no extra work for the defender), not SHA-512, on measured CPU
+// cost: 100,000 iterations took about 40 ms with SHA-512 and 64 bytes, about 26 ms with SHA-256 and 64 bytes
+// (two blocks) and about 10 ms with SHA-256 and 32 bytes, in local workerd. Workers Free allows 10 ms of CPU
+// per request (https://developers.cloudflare.com/workers/platform/limits/). That is a small cut in attacker
+// cost (SHA-512's 64-bit arithmetic is less GPU-friendly) to fit the limit. Even 10 ms is UNVERIFIED on real
+// Workers: if login fails with a CPU-limit error, the fix is the Access provider. See docs/admin-auth.md for
+// why this is still below the OWASP work factor.
 export const PBKDF2_ITERATIONS = 100_000;
-const HASH_PREFIX = "pbkdf2-sha512";
+const HASH_PREFIX = "pbkdf2-sha256";
 const SALT_BYTES = 16;
-const HASH_BYTES = 64;
+const HASH_BYTES = 32;
 
 export interface PasswordHash { iterations: number; salt: Uint8Array; hash: Uint8Array }
 
 async function derive(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey("raw", utf8(password), "PBKDF2", false, ["deriveBits"]);
   return new Uint8Array(
-    await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-512", salt, iterations }, key, HASH_BYTES * 8),
+    await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations }, key, HASH_BYTES * 8),
   );
 }
 
-/** `pbkdf2-sha512$<iterations>$<salt>$<hash>`, the last two base64url. */
+/** `pbkdf2-sha256$<iterations>$<salt>$<hash>`, the last two base64url. */
 export async function hashPassword(
   password: string, salt: Uint8Array = crypto.getRandomValues(new Uint8Array(SALT_BYTES)),
 ): Promise<string> {

@@ -14,7 +14,7 @@ It fails closed. If `ADMIN_AUTH` is unset, misspelt (`Password`, `none`, ` acces
 | `ADMIN_AUTH` | no | both | `access` or `password`, exactly. Anything else locks admin out. |
 | `ACCESS_TEAM_DOMAIN` | no | access | Your team's host, such as `your-team.cloudflareaccess.com`. Must match `<name>.cloudflareaccess.com`, because it decides where the signing keys are fetched from. |
 | `ACCESS_AUD` | no | access | The Access application's AUD (audience) tag. |
-| `ADMIN_PASSWORD_HASH` | **yes** | password | `pbkdf2-sha512$<iterations>$<salt>$<hash>` from `npm run hash-password`. |
+| `ADMIN_PASSWORD_HASH` | **yes** | password | `pbkdf2-sha256$<iterations>$<salt>$<hash>` from `npm run hash-password`. |
 | `ADMIN_SESSION_SECRET` | **yes** | password | At least 32 random characters. Signs the session cookie. Shorter counts as not configured. |
 
 The two secrets must never be committed or put in `wrangler.jsonc`. `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are not secrets but are club details, so keep them out of the committed `wrangler.jsonc` as well (`docs/deploying.md` suggests `git update-index --skip-worktree wrangler.jsonc` for local edits). Locally, put all of them in `.dev.vars` (see `.dev.vars.example`) and restart `npm run dev`.
@@ -30,7 +30,7 @@ The two secrets must never be committed or put in `wrangler.jsonc`. `ACCESS_TEAM
    npm run hash-password
    ```
 
-   It prints `pbkdf2-sha512$100000$...`. The password itself is not stored anywhere.
+   It prints `pbkdf2-sha256$100000$...`. The password itself is not stored anywhere.
 3. Make the session secret: `openssl rand -base64 48`.
 4. Set the two secrets on the Pages project. The installed Wrangler (4.147.0) lists `wrangler pages secret put <key>` with a `--project-name` option (`npx wrangler pages secret put --help`); it asks for the value, so nothing secret goes on the command line:
 
@@ -48,11 +48,12 @@ WebCrypto PBKDF2 is the only password-hashing function Workers provide natively.
 
 - The hasher always uses exactly 100,000 iterations.
 - The verifier (and the config check) refuses any stored count above 100,000, and non-integers and zero, so a bad hash fails loudly in tests and puts admin into the 503 state instead of failing at login time.
-- It uses SHA-512 rather than SHA-256 because its 64-bit arithmetic is less GPU-friendly, so it is a better use of a capped iteration count. That is a rationale, not a benchmark I ran.
+- It uses SHA-256 with a 32-byte output (a single hash block, so the defender does no extra work), chosen on measured CPU cost. In local workerd (`wrangler pages dev`, scratch worker), 100,000 iterations took about 40 ms with SHA-512 and a 64-byte output, about 26 ms with SHA-256 and a 64-byte output (two blocks) and about 10 ms with SHA-256 and a 32-byte output. [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) give the free plan 10 ms of CPU per request, and time spent waiting on I/O doesn't count. SHA-512 would almost certainly exceed that. The trade is a small loss of attacker cost: SHA-512's 64-bit arithmetic is less GPU-friendly than SHA-256's.
+- Hashes in the earlier `pbkdf2-sha512` format are rejected as malformed (admin then answers 503); regenerate them with `npm run hash-password`.
 
 **This is below the OWASP-recommended work factor for PBKDF2, and it cannot be raised on Workers.** It is compensated, not fixed, by login rate limiting (below) and by requiring a long password. If someone obtains the stored hash, a long random password is what protects it. If that risk is not acceptable, use the Access provider.
 
-**CPU time (unverified).** One verification took a median of 38.6 ms (36.4 to 44.0 over 12 runs) in Node on this development machine, and a whole login request took about 40 ms against `wrangler pages dev`. I have not run this on real Workers. The Workers free plan is documented as allowing about 10 ms of CPU time per request, and I have not checked how PBKDF2 time counts against it. If logins fail with a CPU-limit error in production, the fallback is the Access provider (or a paid plan, which I haven't evaluated).
+**CPU time (unverified).** The figures above are local measurements, and 10 ms is right at the free plan's limit. I have not run this on real Workers, so whether a login fits, and how PBKDF2 time is counted against the limit, is unverified. If logins fail in production with a CPU-limit error, the fix is the Access provider.
 
 ### Sessions
 
@@ -111,6 +112,7 @@ The pages (`functions/admin/_middleware.ts`) are guarded too: signed out, the pa
 ## Known limits
 
 - **Static admin files can be reached by unusual paths in local dev.** Under `wrangler pages dev` (4.147.0), with signed-out requests, `/admin`, `/admin/`, `/admin/index.html`, `/admin/x.js`, `/admin/../admin/`, `/ADMIN/` and `/admin/%2e%2e/admin/` were all redirected to `/admin/login`, but a path that the Functions router doesn't match while the static file server still normalises it was served without signing in: `//admin/x.js`, `///admin/x.js`, `/%2fadmin/x.js`, `/admin%2fx.js` and `/%61dmin/x.js` (an encoded letter) returned the file (200). Only static files are affected. I could not see a way to make the API or any Function skip its middleware: every variant either matched the router (and got 401) or fell through to the static site's HTML. I haven't checked whether Cloudflare's edge normalises these paths before they reach Pages in production. Since the admin HTML and JavaScript contain no data and every API call is checked, the exposure is the admin UI's code and layout. A fix would be a root `functions/_middleware.ts`, but that would turn every static request into a Function invocation, so it was not done.
+- Whether a login fits in the free plan's 10 ms of CPU is unverified on real Workers (see above).
 - Per-IP login limiting doesn't stop a distributed attack (see above).
 - Logout can't revoke a password session before it expires (see above).
 - No second factor with the password provider. Access can provide one.

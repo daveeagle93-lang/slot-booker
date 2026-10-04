@@ -1,4 +1,4 @@
-// Prints the ADMIN_PASSWORD_HASH value for a password: pbkdf2-sha512$<iterations>$<salt>$<hash>.
+// Prints the ADMIN_PASSWORD_HASH value for a password: pbkdf2-sha256$<iterations>$<salt>$<hash>.
 //
 //   npm run hash-password            prompts twice on the terminal, without echo
 //   printf '%s' "$PW" | npm run hash-password    reads stdin when it is not a terminal

@@ -62,7 +62,7 @@ describe("session cookie", () => {
     const { value } = await issueSession(SECRET, NOW);
     const [v, payload, sig] = value.split(".");
     const bad = [
-      `${v}.${payload}.${sig.slice(0, -2)}`, `${v}.${payload}.${sig.slice(0, -1)}A`, `${v}.${payload}.`, `${v}.${payload}`,
+      `${v}.${payload}.${sig.slice(0, -2)}`, `${v}.${payload}.${sig[0] === "A" ? "B" : "A"}${sig.slice(1)}`, `${v}.${payload}.`, `${v}.${payload}`,
       `v2.${payload}.${sig}`, `${payload}.${sig}`, `${v}.${payload}.${sig}.extra`, "garbage", "...", `${v}.${payload}.!!!`,
       await signed({ sid: SID, iat: SEC, exp: SEC + 3600 }, "y".repeat(40)),
     ];
