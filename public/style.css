@@ -225,3 +225,7 @@ input[aria-invalid="true"] { border-color: var(--danger-text); }
   html { scroll-behavior: smooth; }
   .slot, .button { transition: background-color 0.15s, color 0.15s; }
 }
+
+/* Admin sign-in page (public/admin/login.html). */
+.login { max-width: 24rem; padding-top: 2rem; }
+.login form { margin-top: 0; }

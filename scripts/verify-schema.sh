@@ -87,6 +87,16 @@ expect_ok "same idempotency key, different event" "$BKI (1, '2026-03-14T11:00:00
 expect_ok "different idempotency keys coexist" "$BKI (3, '2026-09-12T12:15:00Z', 'Ib', 'Jb', 'ib', 'jb', 'idem-bbbbbbbbbbbbbbbb')"
 expect_count "NULL-key bookings coexist alongside keyed ones" "SELECT count(*) AS n FROM bookings WHERE event_id = 3 AND dog_key IN ('tc', 'td') AND idempotency_key IS NULL" 2
 
+# Login attempts (0006): one row per hashed client key, all columns required.
+LA="INSERT INTO login_attempts (key, attempts, window_start) VALUES"
+expect_ok "login attempt row" "$LA ('hash-a', 1, 1800000000)"
+expect_fail "duplicate login attempt key" "$LA ('hash-a', 1, 1800000900)" "UNIQUE constraint failed"
+expect_ok "different login attempt key" "$LA ('hash-b', 3, 1800000000)"
+expect_fail "NULL login attempt key" "INSERT INTO login_attempts (key, attempts, window_start) VALUES (NULL, 1, 1800000000)" "NOT NULL constraint failed"
+expect_fail "NULL attempts" "INSERT INTO login_attempts (key, window_start) VALUES ('hash-c', 1800000000)" "NOT NULL constraint failed"
+expect_fail "NULL window_start" "INSERT INTO login_attempts (key, attempts) VALUES ('hash-d', 1)" "NOT NULL constraint failed"
+expect_count "login attempts stored" "SELECT count(*) AS n FROM login_attempts" 2
+
 expect_fail "trailing junk after timestamp" "$BK $(row 1 '2026-03-14T10:00:00Zx' 'Bo' 'Ann Lee')" "CHECK constraint failed"
 expect_fail "bad event timestamp format" "$EV ('Bad', '2026-03-14 09:00', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
 expect_fail "event end == start" "$EV ('Bad', '2026-03-14T09:00:00Z', '2026-03-14T09:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"

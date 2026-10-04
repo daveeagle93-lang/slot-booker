@@ -5,4 +5,14 @@ export interface AppEnv {
   BOOKING_CUTOFF_OFFSET_MINUTES?: string;
   /** Plain-text privacy notice shown on the booking form. See docs/configuration.md. */
   PRIVACY_NOTICE?: string;
+  /** Admin sign-in method: "access" or "password". Anything else, or unset, locks admin out. See docs/admin-auth.md. */
+  ADMIN_AUTH?: string;
+  /** Access only: the team's cloudflareaccess.com host. */
+  ACCESS_TEAM_DOMAIN?: string;
+  /** Access only: the application's AUD tag. */
+  ACCESS_AUD?: string;
+  /** Password only, SECRET: `pbkdf2-sha512$...` from `npm run hash-password`. */
+  ADMIN_PASSWORD_HASH?: string;
+  /** Password only, SECRET: at least 32 random characters that sign the session cookie. */
+  ADMIN_SESSION_SECRET?: string;
 }
