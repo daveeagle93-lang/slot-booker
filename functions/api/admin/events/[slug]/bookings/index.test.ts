@@ -105,6 +105,16 @@ describe("POST /api/admin/events/[slug]/bookings", () => {
     expect(await stored(e.id)).toHaveLength(0);
   });
 
+  it("refuses a name that could fake lines in the pasted lineup (U+2028, U+2029, U+0085), storing nothing", async () => {
+    const e = await seed();
+    for (const ch of ["\u2028", "\u2029", "\u0085"]) {
+      const res = await add(e.slug, { slot: S[0], dogName: `Rex${ch}08:15 \u2014 free`, handlerName: `Sam${ch}` });
+      expect(res.status, JSON.stringify(ch)).toBe(400);
+      expect(Object.keys((await body(res)).fields).sort()).toEqual(["dogName", "handlerName"]);
+    }
+    expect(await stored(e.id)).toHaveLength(0);
+  });
+
   it("books past slots, after the cut-off and on an archived event, which the public handler refuses", async () => {
     const e = await seed({ startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T09:00:00Z", archived: true });
     const slot = "2026-06-13T08:00:00Z";

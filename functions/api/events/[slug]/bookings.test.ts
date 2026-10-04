@@ -497,6 +497,27 @@ describe("POST /api/events/:slug/bookings", () => {
       });
     });
 
+    describe("line and paragraph separators (they could fake a line in a pasted lineup)", () => {
+      it.each([
+        ["LINE SEPARATOR U+2028", "\u2028", "can't contain line or paragraph separators"],
+        ["PARAGRAPH SEPARATOR U+2029", "\u2029", "can't contain line or paragraph separators"],
+        ["NEXT LINE U+0085 (a control character)", "\u0085", "can't contain control characters"],
+      ])("rejects %s inside, at the start and at the end of either name", async (_label, ch, text) => {
+        const { id, slug } = await insertEvent(t.env.DB);
+        for (const make of [(n: string) => `${n}${ch}10:00 \u2014 free ${n}`, (n: string) => `${ch}${n}`, (n: string) => `${n}${ch}`]) {
+          const res = await post(slug, entry(SLOT, make("Rex"), make("Sam")));
+          const label = JSON.stringify(make("Rex"));
+          expect(res.status, label).toBe(400);
+          const parsed = (await res.json()) as ErrorBody;
+          expect(parsed.error.code, label).toBe("invalid_input");
+          expect(Object.keys(parsed.fields ?? {}).sort(), label).toEqual(["dogName", "handlerName"]);
+          expect(parsed.fields?.dogName, label).toContain(text);
+          expect(parsed.fields?.handlerName, label).toContain(text);
+        }
+        expect(await rows(id)).toHaveLength(0);
+      });
+    });
+
     it("counts the 80-character limit in code points, not UTF-16 units", async () => {
       const { slug } = await insertEvent(t.env.DB);
       expect((await post(slug, entry(SLOT, "🐕".repeat(80), "Sam"))).status).toBe(201);

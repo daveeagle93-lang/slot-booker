@@ -11,6 +11,9 @@ export const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,64}$/;
 // Soft hyphen, zero-width space, LRM/RLM, bidi controls, word joiner and invisible operators, BOM.
 // ZWNJ/ZWJ (U+200C/D) are allowed: emoji sequences and some scripts need them.
 export const INVISIBLE = /[\u00AD\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/u;
+// LINE SEPARATOR (U+2028) and PARAGRAPH SEPARATOR (U+2029) are categories Zl and Zp, not control characters, but
+// WhatsApp and most editors start a new line on them, so a name containing one could fake a line in a pasted lineup.
+export const LINE_SEPARATORS = /[\p{Zl}\p{Zp}]/u;
 export const noStore = { "Cache-Control": "no-store" };
 
 export interface BookingInput { slot: string; dogName: string; handlerName: string; idempotencyKey: string }
@@ -79,6 +82,7 @@ export function checkName(value: unknown, label: string): { name: string } | { m
   if (INVISIBLE.test(value)) {
     return { message: `The ${label} can't contain invisible or direction-changing characters.` };
   }
+  if (LINE_SEPARATORS.test(value)) return { message: `The ${label} can't contain line or paragraph separators.` };
   const name = value.trim();
   if (name === "") return { message: `Enter the ${label}.` };
   if ([...name].length > MAX_NAME_CODE_POINTS) {

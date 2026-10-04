@@ -181,6 +181,18 @@ describe("POST /api/admin/events", () => {
     expect(await countRows(t.env.DB, "events")).toBe(events);
   });
 
+  it.each([["U+2028", "\u2028"], ["U+2029", "\u2029"]])("rejects %s in the name, a break name and the details, writing nothing", async (_n, ch) => {
+    const events = await countRows(t.env.DB, "events");
+    const res = await post(draft({ name: `Show${ch}09:00 free`, details: `a${ch}b`, breaks: [{ start: "10:00", end: "10:30", label: `Lunch${ch}` }] }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: unknown }).fields).toEqual({
+      name: "The event name can't contain line or paragraph separators.",
+      details: "The details can't contain line or paragraph separators.",
+      "breaks.0.label": "The break name can't contain line or paragraph separators.",
+    });
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+  });
+
   it("requires the event to be in the future (the preview does not), writing nothing", async () => {
     const events = await countRows(t.env.DB, "events");
     const res = await post(draft({ date: "2026-09-30" }));

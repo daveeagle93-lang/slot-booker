@@ -4,8 +4,11 @@ import { utcToLondon } from "./london";
  * The running order as plain text for pasting into a chat. Pure: London wall-clock times from the UTC
  * instants (never the host's time zone), British English long date, 24-hour times.
  *
- * Nothing is escaped or marked up: names are printed exactly as stored, and the text carries no formatting
- * of its own, so odd characters in a name can't reformat the message.
+ * Nothing is escaped or marked up: names are printed exactly as stored, and the text adds no formatting of
+ * its own. Names can't fake a new line (the server refuses control characters and U+2028/U+2029), but
+ * WhatsApp's own markup characters (`*`, `_`, `~` and backticks) are allowed in names, so a name containing them
+ * can still make part of the message bold, italic or struck through when pasted into the chat. That is not
+ * coded around.
  */
 export interface LineupInput {
   name: string;

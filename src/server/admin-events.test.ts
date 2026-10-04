@@ -78,6 +78,11 @@ describe("parseEventDraft: name", () => {
     ["a zero-width space", "a​b", /invisible/],
     ["a right-to-left override", "a‮b", /invisible/],
     ["a lone surrogate", "a\uD800b", /unpaired/],
+    ["a line separator", "a\u2028b", /line or paragraph separators/],
+    ["a paragraph separator", "a\u2029b", /line or paragraph separators/],
+    ["a leading line separator (trim would hide it)", "\u2028a", /line or paragraph separators/],
+    ["a trailing paragraph separator", "a\u2029", /line or paragraph separators/],
+    ["a next-line (U+0085)", "a\u0085b", /control/],
   ])("rejects %s", (_n, name, message) => {
     expect(fieldsOf({ name }).name).toMatch(message);
   });
@@ -202,6 +207,12 @@ describe("parseEventDraft: details", () => {
   it.each([["right-to-left override", "a\u202Eb"], ["zero-width space", "a\u200Bb"], ["byte order mark", "a\uFEFFb"], ["soft hyphen", "a\u00ADb"]])("rejects a %s", (_n, details) => {
     expect(fieldsOf({ details }).details).toBe("The details can't contain invisible or direction-changing characters.");
   });
+  it.each([["line separator", "a\u2028b"], ["paragraph separator", "a\u2029b"], ["trailing line separator", "a\n\u2028"]])("rejects a %s (only \\n may break a line)", (_n, details) => {
+    expect(fieldsOf({ details }).details).toBe("The details can't contain line or paragraph separators.");
+  });
+  it("rejects a next-line (U+0085) as a control character", () => {
+    expect(fieldsOf({ details: "a\u0085b" }).details).toMatch(/control/);
+  });
   it("allows emoji joiners and newlines", () => {
     expect(draftOf({ details: "👩\u200D🐕 a\u200Cb\nc" }).details).toBe("👩\u200D🐕 a\u200Cb\nc");
   });
@@ -289,6 +300,10 @@ describe("parseEventDraft: break labels", () => {
     ["a zero-width space", "a\u200Bb", /invisible/],
     ["a right-to-left override", "a\u202Eb", /invisible/],
     ["a lone surrogate", "a\uD800b", /unpaired/],
+    ["a line separator", "a\u2028b", /line or paragraph separators/],
+    ["a paragraph separator", "a\u2029b", /line or paragraph separators/],
+    ["a trailing line separator (trim would hide it)", "a\u2028", /line or paragraph separators/],
+    ["a next-line (U+0085)", "a\u0085b", /control/],
   ])("rejects %s", (_n, label, message) => {
     expect(fieldsOf(labelled(label))["breaks.0.label"]).toMatch(message);
   });

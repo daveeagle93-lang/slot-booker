@@ -1,7 +1,7 @@
 import { londonToUtc, LondonTimeError, utcToLondon } from "../core/london";
 import { DEFAULT_NEAR_MISS_MINUTES, generateSchedule, type TimeRange } from "../core/schedule";
 import { generateSlug } from "../core/slug";
-import { IDEMPOTENCY_KEY, INVISIBLE, noStore, readJsonObject } from "./bookings";
+import { IDEMPOTENCY_KEY, INVISIBLE, LINE_SEPARATORS, noStore, readJsonObject } from "./bookings";
 import { bookingWindow, type EventRow } from "./events";
 import { errorResponse } from "./http";
 
@@ -49,6 +49,7 @@ function checkName(value: unknown): { name: string } | { message: string } {
   if (typeof value !== "string") return { message: "Enter the event name." };
   if (!value.isWellFormed()) return { message: "The event name can't contain unpaired surrogate characters." };
   if (INVISIBLE.test(value)) return { message: "The event name can't contain invisible or direction-changing characters." };
+  if (LINE_SEPARATORS.test(value)) return { message: "The event name can't contain line or paragraph separators." };
   const name = value.trim();
   if (name === "") return { message: "Enter the event name." };
   if ([...name].length > MAX_NAME_CODE_POINTS) return { message: `The event name must be at most ${MAX_NAME_CODE_POINTS} characters.` };
@@ -62,6 +63,7 @@ function checkLabel(value: unknown): { label: string } | { message: string } {
   if (typeof value !== "string") return { message: "The break name must be text." };
   if (!value.isWellFormed()) return { message: "The break name can't contain unpaired surrogate characters." };
   if (INVISIBLE.test(value)) return { message: "The break name can't contain invisible or direction-changing characters." };
+  if (LINE_SEPARATORS.test(value)) return { message: "The break name can't contain line or paragraph separators." };
   const label = value.trim();
   if ([...label].length > MAX_LABEL_CODE_POINTS) return { message: `The break name must be at most ${MAX_LABEL_CODE_POINTS} characters.` };
   if (/\p{Cc}/u.test(label)) return { message: "The break name can't contain control characters." };
@@ -82,6 +84,7 @@ function checkDetails(value: unknown): { details: string } | { message: string }
   if (typeof value !== "string") return { message: "Details must be text (they can be empty)." };
   if (!value.isWellFormed()) return { message: "The details can't contain unpaired surrogate characters." };
   if (INVISIBLE.test(value)) return { message: "The details can't contain invisible or direction-changing characters." };
+  if (LINE_SEPARATORS.test(value)) return { message: "The details can't contain line or paragraph separators." };
   const details = value.replaceAll("\r\n", "\n");
   if (/(?!\n)\p{Cc}/u.test(details)) return { message: "The details can't contain control characters." };
   if ([...details].length > MAX_DETAILS_CODE_POINTS) return { message: `The details must be at most ${MAX_DETAILS_CODE_POINTS} characters.` };
