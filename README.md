@@ -16,4 +16,4 @@ npm run dev                # serves on http://localhost:8788
 npm test                   # also: npm run typecheck
 ```
 
-Open the URL that `seed:local` prints. Each run adds a new event (nothing is wiped); pass `-- --no-bookings` to skip the sample bookings. The public booking page at `/e/<slug>` does not exist yet, so for now check the event at `/api/events/<slug>`.
+Open the URL that `seed:local` prints. Each run adds a new event (nothing is wiped); pass `-- --no-bookings` to skip the sample bookings. The public booking page is at `/e/<slug>` (static files in `public/`, no build step); the raw event data is at `/api/events/<slug>`.
