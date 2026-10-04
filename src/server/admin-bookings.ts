@@ -2,7 +2,7 @@ import { identityKey } from "../core/identity";
 import { generateBookingToken } from "../core/slug";
 import type { BookingRef } from "./admin-event-edit";
 import { checkName, findSlot, noStore } from "./bookings";
-import { breaksSignature, guard, isGuardFailure, scheduleUnchanged } from "./db-guard";
+import { guard, isGuardFailure, scheduleUnchanged } from "./db-guard";
 import { loadEventBySlug, type EventRow } from "./events";
 import { errorResponse } from "./http";
 
@@ -30,7 +30,8 @@ const isUniqueFailure = (e: unknown): boolean => e instanceof Error && e.message
 /** A guard failure is either the event being edited or a booking having moved: say which. */
 async function guardFailed(db: D1Database, event: EventRow): Promise<Failure> {
   const fresh = await loadEventBySlug(db, event.slug);
-  const same = (e: EventRow) => JSON.stringify([e.startUtc, e.endUtc, e.sessionMinutes, e.gapMinutes, breaksSignature(e.breaks)]);
+  const same = (e: EventRow) =>
+    JSON.stringify([e.startUtc, e.endUtc, e.sessionMinutes, e.gapMinutes, [...new Set(e.breaks.map((b) => `${b.start}|${b.end}`))].sort()]);
   return !fresh || same(fresh) !== same(event) ? eventChanged() : changed();
 }
 

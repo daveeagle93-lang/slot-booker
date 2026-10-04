@@ -115,6 +115,31 @@ describe("scheduleUnchanged", () => {
     }
   });
 
+  it("treats the breaks as a set: identical duplicates and insertion order make no difference", async () => {
+    const e = await seed();
+    await insertBreak(t.env.DB, e.id, "2026-06-13T10:00:00Z", "2026-06-13T10:30:00Z", "Lunch again");
+    const reloaded = (await loadEventBySlug(t.env.DB, e.slug))!;
+    expect(reloaded.breaks).toHaveLength(3);
+    await run({ ...e, event: reloaded });
+    // One of the two identical breaks goes, and one is added: the schedule is the same, so the guard holds.
+    await t.env.DB.prepare("DELETE FROM breaks WHERE id = (SELECT MAX(id) FROM breaks WHERE event_id = ? AND start_utc = '2026-06-13T10:00:00Z')").bind(e.id).run();
+    await run({ ...e, event: reloaded });
+    await insertBreak(t.env.DB, e.id, "2026-06-13T09:00:00Z", "2026-06-13T09:10:00Z");
+    await run({ ...e, event: reloaded });
+  });
+
+  it("is not fooled by breaks inserted in reverse order", async () => {
+    const e = await insertEvent(t.env.DB, { startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T12:00:00Z", sessionMinutes: 15, gapMinutes: 5 });
+    for (const h of ["11", "10", "09"]) await insertBreak(t.env.DB, e.id, `2026-06-13T${h}:00:00Z`, `2026-06-13T${h}:05:00Z`);
+    await run({ ...e, event: (await loadEventBySlug(t.env.DB, e.slug))! });
+  });
+
+  it("aborts when a break's end moves by one minute", async () => {
+    const e = await seed();
+    await t.env.DB.prepare("UPDATE breaks SET end_utc = '2026-06-13T10:31:00Z' WHERE event_id = ? AND start_utc = '2026-06-13T10:00:00Z'").bind(e.id).run();
+    expect(await refused(e)).toBe(true);
+  });
+
   it("aborts when the event has gone, and compares an event that never had breaks against none", async () => {
     const e = await seed();
     await t.env.DB.prepare("DELETE FROM events WHERE id = ?").bind(e.id).run();

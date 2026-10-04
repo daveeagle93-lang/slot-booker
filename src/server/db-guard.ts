@@ -23,29 +23,28 @@ export function guard(db: D1Database, conditionSql: string, ...binds: unknown[])
 /** True if the error is a failed `guard` (so the batch wrote nothing), not some other database error. */
 export const isGuardFailure = (e: unknown): boolean => e instanceof Error && e.message.includes("integer overflow");
 
-/** Breaks as the guard compares them: start|end, ordered, joined. Labels don't change the schedule, so aren't part of it. */
-export const breaksSignature = (breaks: { start: string; end: string }[]): string =>
-  breaks.map((b) => `${b.start}|${b.end}`).sort().join(";");
-
 /**
  * A guard that aborts the batch if the event's schedule definition is no longer what the handler read:
- * start, end, session length, gap or the set of breaks (name, price and the rest don't matter). It closes the
- * race where another admin edits the event between a handler's read and its batch, which could otherwise put a
- * booking on a slot the edit removed. The handler answers `event_changed` when the batch fails on it.
+ * start, end, session length, gap or the set of breaks (name, price, break labels and the rest don't matter).
+ * It closes the race where another admin edits the event between a handler's read and its batch, which could
+ * otherwise put a booking on a slot the edit removed. The handler answers `event_changed` (or re-reads the
+ * event) when the batch fails on it.
  *
- * The breaks are compared as one ordered string. `ORDER BY` in a subquery feeding `group_concat` is not
- * guaranteed by SQLite's documentation but is what its query planner does in practice (checked on local D1
- * by the guard's tests, which include breaks added in reverse order); the order is identical on both sides
- * for ASCII timestamps (binary collation, as the JS sort).
+ * The schedule depends only on the SET of (start, end) pairs: an identical duplicate break has the same effect
+ * as one. So the breaks are compared as sets of `start|end` strings, in both directions, with no ordering or
+ * aggregation (SQLite does not document the order of a subquery feeding `group_concat`). The handler's set goes
+ * in as ONE JSON parameter, used twice.
  */
 export function scheduleUnchanged(
   db: D1Database,
   event: { id: number; startUtc: string; endUtc: string; sessionMinutes: number; gapMinutes: number; breaks: { start: string; end: string }[] },
 ): D1PreparedStatement {
+  const loaded = JSON.stringify([...new Set(event.breaks.map((b) => `${b.start}|${b.end}`))]);
   return guard(
     db,
     `(SELECT COUNT(*) FROM events WHERE id = ? AND start_utc = ? AND end_utc = ? AND session_minutes = ? AND gap_minutes = ?) = 1
-     AND COALESCE((SELECT group_concat(k, ';') FROM (SELECT start_utc || '|' || end_utc AS k FROM breaks WHERE event_id = ? ORDER BY start_utc || '|' || end_utc)), '') = ?`,
-    event.id, event.startUtc, event.endUtc, event.sessionMinutes, event.gapMinutes, event.id, breaksSignature(event.breaks),
+     AND NOT EXISTS (SELECT 1 FROM breaks WHERE event_id = ? AND start_utc || '|' || end_utc NOT IN (SELECT value FROM json_each(?)))
+     AND NOT EXISTS (SELECT 1 FROM json_each(?) WHERE value NOT IN (SELECT start_utc || '|' || end_utc FROM breaks WHERE event_id = ?))`,
+    event.id, event.startUtc, event.endUtc, event.sessionMinutes, event.gapMinutes, event.id, loaded, loaded, event.id,
   );
 }
