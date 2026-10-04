@@ -662,6 +662,16 @@ describe("DELETE /api/admin/events/[slug]", () => {
     expect(await rowsOf(keep.id)).toEqual([1, 1, 2]);
   });
 
+  it("answers a save racing the delete with a clean 200 or 404, never an error, and leaves no orphan rows", async () => {
+    for (let i = 0; i < 5; i++) {
+      const e = await withData();
+      const [saved, deleted] = await Promise.all([put(e.slug, draft({ name: "Renamed in flight" })), del(e.slug, { confirmName: NAME })]);
+      expect([200, 404]).toContain(saved.status);
+      expect([200, 400]).toContain(deleted.status); // 400: the save renamed it first, so the typed name no longer matches
+      expect(await orphans()).toBe(0);
+    }
+  });
+
   it("refuses with 401 unless the middleware set an admin identity, deleting nothing", async () => {
     const e = await withData();
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {

@@ -46,6 +46,7 @@ export const onRequestPut: PagesFunction<AppEnv, "slug"> = async ({ request, env
       if ("fields" in strict) return invalidInput(strict.fields);
     }
     const result = await saveEventEdit(env.DB, event, parsed.draft, remove.ids);
+    if (result.kind === "not_found") return eventNotFound();
     if (result.kind === "bookings_affected") {
       const message = "Some bookings are on slots this change would remove. Check the list and confirm to remove them.";
       return errorResponse(409, "bookings_affected", message, { affected: result.affected }, noStore);

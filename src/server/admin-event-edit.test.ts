@@ -103,3 +103,34 @@ describe("saveEventEdit: a booking lands between the read and the save", () => {
     expect(removed).toEqual([e.b, e.c].sort());
   });
 });
+
+describe("saveEventEdit: the event is deleted between the read and the save", () => {
+  const strayRows = async (): Promise<number> => (await t.env.DB.prepare(
+    `SELECT (SELECT COUNT(*) FROM bookings WHERE event_id NOT IN (SELECT id FROM events))
+          + (SELECT COUNT(*) FROM breaks WHERE event_id NOT IN (SELECT id FROM events)) AS n`,
+  ).first<{ n: number }>())!.n;
+  const deleteIt = (id: number) => async () => { await t.env.DB.prepare("DELETE FROM events WHERE id = ?").bind(id).run(); };
+
+  it("answers not_found and writes nothing, for a draft with breaks (which would insert rows for a missing event)", async () => {
+    const e = await seed();
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), shortened(), [e.b, e.c], { afterRead: deleteIt(e.id) });
+    expect(result).toEqual({ kind: "not_found" });
+    expect(await snapshot(e.id)).toBe(JSON.stringify([[], [], []]));
+    expect(await strayRows()).toBe(0);
+  });
+
+  it("answers not_found, not saved, for a draft with no breaks (nothing else would fail)", async () => {
+    const e = await seed();
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), shortened({ breaks: [] }), [e.b, e.c], { afterRead: deleteIt(e.id) });
+    expect(result).toEqual({ kind: "not_found" });
+    expect(await strayRows()).toBe(0);
+  });
+
+  it("leaves another event untouched", async () => {
+    const e = await seed();
+    const other = await seed();
+    const before = await snapshot(other.id);
+    await saveEventEdit(t.env.DB, await load(e.slug), shortened(), [e.b, e.c], { afterRead: deleteIt(e.id) });
+    expect(await snapshot(other.id)).toBe(before);
+  });
+});

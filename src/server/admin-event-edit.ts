@@ -9,7 +9,8 @@ import { errorResponse } from "./http";
 
 export type EditResult =
   | { kind: "saved"; event: EventRow; slotCount: number; removed: BookingRef[] }
-  | { kind: "bookings_affected"; affected: BookingRef[] };
+  | { kind: "bookings_affected"; affected: BookingRef[] }
+  | { kind: "not_found" };
 
 export const eventNotFound = (): Response => errorResponse(404, "not_found", "Event not found", {}, noStore);
 
@@ -90,7 +91,8 @@ export interface SaveHooks { afterRead?: () => Promise<void> }
  * nothing is changed and they are returned. Otherwise one batch updates the event, replaces its breaks and
  * deletes exactly those bookings. Its first statement is a guard that fails the whole batch if any booking
  * now sits on a slot the new schedule lacks without being one of those: a booking made after the read
- * (the batch writes nothing then, and the fresh list is returned). Event fields are last write wins.
+ * (the batch writes nothing then, and the fresh list is returned). A second guard fails the batch if the event
+ * was deleted after the read (not_found, nothing written). Event fields are last write wins.
  */
 export async function saveEventEdit(
   db: D1Database, event: EventRow, draft: EventDraft, confirmedIds: number[], hooks: SaveHooks = {},
@@ -106,6 +108,7 @@ export async function saveEventEdit(
   const outside = "slot_start_utc NOT IN (SELECT value FROM json_each(?))";
   try {
     const results = await db.batch([
+      guard(db, "EXISTS (SELECT 1 FROM events WHERE id = ?)", event.id),
       guard(
         db,
         `NOT EXISTS (SELECT 1 FROM bookings WHERE event_id = ? AND ${outside} AND id NOT IN (SELECT value FROM json_each(?)))`,
@@ -137,6 +140,7 @@ export async function saveEventEdit(
     };
   } catch (e) {
     if (!isGuardFailure(e)) throw e;
+    if (!(await db.prepare("SELECT 1 AS n FROM events WHERE id = ?").bind(event.id).first())) return { kind: "not_found" };
     return { kind: "bookings_affected", affected: bookingsOutside(await loadBookings(db, event.id), slots) };
   }
 }

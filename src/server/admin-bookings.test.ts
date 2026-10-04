@@ -152,6 +152,52 @@ describe("addBooking", () => {
   });
 });
 
+describe("an event deleted between the read and the write", () => {
+  const strayRows = async (): Promise<number> => (await t.env.DB.prepare(
+    `SELECT (SELECT COUNT(*) FROM bookings WHERE event_id NOT IN (SELECT id FROM events))
+          + (SELECT COUNT(*) FROM breaks WHERE event_id NOT IN (SELECT id FROM events)) AS n`,
+  ).first<{ n: number }>())!.n;
+  const deleteIt = (id: number) => async () => {
+    await t.env.DB.batch([
+      t.env.DB.prepare("DELETE FROM bookings WHERE event_id = ?").bind(id),
+      t.env.DB.prepare("DELETE FROM breaks WHERE event_id = ?").bind(id),
+      t.env.DB.prepare("DELETE FROM events WHERE id = ?").bind(id),
+    ]);
+  };
+
+  it("add answers a clean 409 event_changed, never an error, and inserts nothing", async () => {
+    const e = await seed();
+    const f = failed(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "Rex", handlerName: "Sam" }, { afterRead: deleteIt(e.id) }));
+    expect(f).toMatchObject({ status: 409, code: "event_changed" });
+    expect(await rows(e.id)).toHaveLength(0);
+    expect(await strayRows()).toBe(0);
+  });
+
+  it("move answers a clean 409 event_changed and leaves no stray rows", async () => {
+    const e = await seed();
+    const a = await insertBooking(t.env.DB, e.id, e.s[0], "Rex", "Sam");
+    const f = failed(await moveBooking(t.env.DB, e.event, a, { fromSlot: e.s[0], toSlot: e.s[5] }, { afterRead: deleteIt(e.id) }));
+    expect(f).toMatchObject({ status: 409, code: "event_changed" });
+    expect(await strayRows()).toBe(0);
+  });
+
+  it("swap answers a clean 409 event_changed and leaves no stray rows", async () => {
+    const e = await seed();
+    const a = await insertBooking(t.env.DB, e.id, e.s[0], "Rex", "Sam");
+    const b = await insertBooking(t.env.DB, e.id, e.s[1], "Bella", "Alex");
+    const f = failed(await swapBookings(t.env.DB, e.event, { a: { id: a, slot: e.s[0] }, b: { id: b, slot: e.s[1] } }, { afterRead: deleteIt(e.id) }));
+    expect(f).toMatchObject({ status: 409, code: "event_changed" });
+    expect(await strayRows()).toBe(0);
+  });
+
+  it("clear answers not_found once the event and its bookings are gone", async () => {
+    const e = await seed();
+    const a = await insertBooking(t.env.DB, e.id, e.s[0], "Rex", "Sam");
+    await deleteIt(e.id)();
+    expect(failed(await clearBooking(t.env.DB, e.event, a))).toMatchObject({ status: 404, code: "not_found" });
+  });
+});
+
 describe("clearBooking", () => {
   it("removes only that booking and returns it", async () => {
     const e = await seed();
