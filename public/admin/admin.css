@@ -150,3 +150,39 @@ legend { padding: 0; font-weight: 600; }
 .confirm .button, .removed .button { min-height: 48px; margin: 0; }
 .button.danger { color: var(--bg); background: var(--danger-text); border-color: var(--danger-text); }
 .removed { margin-top: 1rem; }
+
+/* Schedule page */
+.sched-date { margin: 0 0 1rem; font-weight: 600; }
+.sched { list-style: none; margin: 0 0 1rem; padding: 0; }
+.sched-row, .sched-break {
+  margin-bottom: 0.5rem;
+  padding: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.sched-break { display: flex; gap: var(--gap); color: var(--muted); border-style: dashed; background: transparent; }
+.sched-line { display: flex; flex-wrap: wrap; gap: 0 var(--gap); align-items: baseline; }
+.sched-time { font-weight: 700; font-variant-numeric: tabular-nums; }
+.sched-who { min-width: 0; overflow-wrap: anywhere; }
+.sched-row.free .sched-who { color: var(--muted); }
+.sched-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+.sched-actions .button { min-height: 48px; min-width: 48px; padding: 0.25rem 1rem; }
+.sched-panel { margin: 0.75rem 0 0; }
+.sched-panel h3 { margin: 0 0 0.5rem; font-size: 1rem; overflow-wrap: anywhere; }
+.sched-panel p { overflow-wrap: anywhere; }
+.sched-panel .button { min-height: 48px; margin: 0; }
+.sched-orphans { margin-top: 1.5rem; }
+select {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+  font-size: 1rem; /* 16px minimum, or iOS zooms on focus */
+  color: var(--text);
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 8px;
+}
+select[aria-invalid="true"] { border-color: var(--danger-text); }
