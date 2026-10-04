@@ -30,3 +30,6 @@ Thumbs.db
 .vscode/
 *.swp
 *~
+
+# Per-session working notes (local only)
+session-notes-*.md
