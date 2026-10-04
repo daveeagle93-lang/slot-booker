@@ -49,3 +49,9 @@ Events never delete themselves. The admin list has three sections: **Upcoming** 
 - Upcoming events show a **Full** badge when every slot is booked.
 
 The default privacy notice says the details are kept until an organiser deletes the event, so clear out old events when you no longer need the bookings.
+
+## Known limits
+
+- **The admin event list builds each upcoming event's schedule in the Worker.** Measured in Node on a dev machine (not in workerd), a 500-slot event costs about 0.45 ms, so a list with around 20 events of that size could exceed the Free plan's 10 ms CPU limit. Typical events (about 30 slots) cost well under 1 ms each. Storing the slot count would remove the cost if it ever matters.
+- **Booked counts and the Full badge count every booking row.** Bookings on slots that are no longer in the schedule (orphans) should no longer be creatable now that edits, swaps and public bookings are guarded, but legacy data could contain them, and they would be counted.
+- **Archived events are not included in the Past bulk clear-out.** They can be deleted one at a time, and nothing reminds anyone to, so organisers should delete archived events they no longer need.

@@ -200,14 +200,14 @@ Going live on a custom domain, with Cloudflare Access in front of `/admin/*` and
    npx wrangler whoami
    ```
 
-2. Create the two D1 databases and copy each `database_id` it prints, noting which is which.
+2. Create the two D1 databases and copy each `database_id` it prints, noting which is which. If bookings must stay in the EU, use `--jurisdiction eu` instead of `--location weur` in both commands, before you run them.
 
    ```sh
    npx wrangler d1 create slot-booker-db-preview --location weur
    npx wrangler d1 create slot-booker-db --location weur
    ```
 
-3. Fill in `account.local.json` (git-ignored). Use `--jurisdiction eu` instead of `--location weur` above if bookings must stay in the EU.
+3. Fill in `account.local.json` (git-ignored).
 
    ```sh
    cp account.local.example.json account.local.json
@@ -256,7 +256,7 @@ Going live on a custom domain, with Cloudflare Access in front of `/admin/*` and
    openssl rand -base64 48
    ```
 
-9. Set the two secrets. Each command prompts for its value: paste the **hash line** from step 8 for `ADMIN_PASSWORD_HASH` (not the secret), and the `openssl` output for `ADMIN_SESSION_SECRET`.
+9. Set the two secrets. Each command prompts for its value: paste the **hash line** from step 8 for `ADMIN_PASSWORD_HASH` (not the secret), and the `openssl` output for `ADMIN_SESSION_SECRET`. When you set up production, run step 8 again and use a **different** admin secret and a different `ADMIN_SESSION_SECRET` there: with identical values a stolen preview session cookie would also work on production, and preview code from another branch would handle the production admin secret.
 
    ```sh
    npx wrangler pages secret put ADMIN_PASSWORD_HASH --project-name slot-booker
