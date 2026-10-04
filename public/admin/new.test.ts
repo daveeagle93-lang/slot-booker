@@ -10,9 +10,9 @@ const SESSION = { identity: "ann@example.com", provider: "password", csrfToken: 
 const slots = (...starts: string[]) => starts.map((s) => ({ start: s, end: s }));
 const SLOTS = slots("2026-06-13T08:00:00Z", "2026-06-13T08:20:00Z", "2026-06-13T08:40:00Z");
 const preview = (extra: Record<string, unknown> = {}) => reply(200, { slots: SLOTS, suggestions: [], ...extra });
-const suggestion = (breakIndex: number, suggestedStart = "11:50") => ({
+const suggestion = (breakIndex: number, suggestedStart = "11:50", breakLabel = "") => ({
   breakIndex, droppedSlot: { start: "2026-06-13T10:45:00Z", end: "2026-06-13T11:00:00Z" },
-  overrunMinutes: 5, suggestedBreak: { start: "x", end: "y" }, suggestedLocal: { start: suggestedStart, end: "12:10" },
+  overrunMinutes: 5, suggestedBreak: { start: "x", end: "y" }, suggestedLocal: { start: suggestedStart, end: "12:10" }, breakLabel,
 });
 const CREATED = {
   event: {
@@ -66,6 +66,7 @@ const buttonNamed = (name: string) => $$("button").find((b) => b.textContent ===
 const rowInputs = (n: number) => ({
   start: input(`break-${n}-start`), end: input(`break-${n}-end`),
 });
+const setLabel = (n: number, value: string) => set(`break-${n}-label`, value);
 const setRow = (n: number, start: string, end: string) => {
   const r = rowInputs(n);
   for (const [el, v] of [[r.start, start], [r.end, end]] as const) {
@@ -294,6 +295,107 @@ describe("live preview", () => {
 });
 
 describe("breaks", () => {
+  it("gives each row an optional name field, sent to the preview and on save", async () => {
+    const { calls } = await start();
+    fillAll();
+    buttonNamed("Add break").click();
+    const label = input("break-1-label");
+    expect(document.querySelector("label[for='break-1-label']")!.textContent).toBe("Name (optional)");
+    expect(label.type).toBe("text");
+    expect(label.placeholder).toBe("Lunch");
+    expect(label.maxLength).toBe(40);
+    expect(label.required).toBe(false);
+    setRow(1, "12:00", "12:20");
+    setLabel(1, "  Lunch ");
+    await settle();
+    expect(previewCalls(calls).at(-1)!.body.breaks).toEqual([{ start: "12:00", end: "12:20", label: "  Lunch " }]);
+    submit();
+    await tick();
+    expect(calls.find((c) => c.url === CREATE)!.body.breaks).toEqual([{ start: "12:00", end: "12:20", label: "  Lunch " }]);
+  });
+
+  it("re-previews when the name changes, so the suggestion wording follows it", async () => {
+    const { calls } = await start();
+    fillSchedule();
+    buttonNamed("Add break").click();
+    setRow(1, "12:00", "12:20");
+    await settle();
+    const n = previewCalls(calls).length;
+    setLabel(1, "Tea");
+    await settle();
+    expect(previewCalls(calls)).toHaveLength(n + 1);
+  });
+
+  it("removes a row's name field along with the row, and shows a server error under it", async () => {
+    await start({ create: () => reply(400, { error: { code: "invalid_input", message: "x" }, fields: { "breaks.0.label": "Too long." } }) });
+    fillAll();
+    buttonNamed("Add break").click();
+    setRow(1, "12:00", "12:20");
+    submit();
+    await tick();
+    expect(errorOf("break-1-label")).toBe("Too long.");
+    expect(document.activeElement).toBe(input("break-1-label"));
+    $$(".break-row button")[0].click();
+    expect(document.getElementById("break-1-label")).toBeNull();
+  });
+
+  it("words a suggestion with the break's name when it has one", async () => {
+    await start({ preview: () => preview({ suggestions: [suggestion(0, "13:05", "Lunch")] }) });
+    fillSchedule();
+    buttonNamed("Add break").click();
+    setRow(1, "12:00", "12:20");
+    setLabel(1, "Lunch");
+    await settle();
+    expect($(".suggestion p").textContent).toBe("Move Lunch to 13:05–12:10 to keep the 11:45 session?");
+  });
+
+  it("uses the time wording for an unnamed break", async () => {
+    await start({ preview: () => preview({ suggestions: [suggestion(0, "13:05")] }) });
+    fillSchedule();
+    buttonNamed("Add break").click();
+    setRow(1, "12:00", "12:20");
+    await settle();
+    expect($(".suggestion p").textContent).toBe("Move the 12:00–12:20 break to 13:05–12:10 to keep the 11:45 session?");
+  });
+
+  it("accepting a suggestion changes the times and leaves the name alone", async () => {
+    await start({ preview: (c) => preview({ suggestions: c.body.breaks[0]?.start === "12:00" ? [suggestion(0, "11:50", "Lunch")] : [] }) });
+    fillSchedule();
+    buttonNamed("Add break").click();
+    setRow(1, "12:00", "12:20");
+    setLabel(1, "Lunch");
+    await settle();
+    buttonNamed("Move break").click();
+    expect(rowInputs(1).start.value).toBe("11:50");
+    expect(input("break-1-label").value).toBe("Lunch");
+  });
+
+  it("keeps a declined suggestion hidden whatever the name says", async () => {
+    let label = "Lunch";
+    await start({ preview: () => preview({ suggestions: [suggestion(0, "11:50", label)] }) });
+    fillSchedule();
+    buttonNamed("Add break").click();
+    setRow(1, "12:00", "12:20");
+    await settle();
+    buttonNamed("Keep as it is").click();
+    label = "Tea";
+    setLabel(1, "Tea");
+    await settle();
+    expect($$(".suggestion")).toHaveLength(0);
+  });
+
+  it("shows a hostile name as text in the suggestion", async () => {
+    await start({ preview: () => preview({ suggestions: [suggestion(0, "11:50", HOSTILE)] }) });
+    fillSchedule();
+    buttonNamed("Add break").click();
+    setRow(1, "12:00", "12:20");
+    setLabel(1, HOSTILE);
+    await settle();
+    expect($(".suggestion p").textContent).toBe(`Move ${HOSTILE} to 11:50–12:10 to keep the 11:45 session?`);
+    expect(document.querySelector("img")).toBeNull();
+    expect(document.body.innerHTML).not.toContain("<img");
+  });
+
   it("adds and removes rows, numbering them, and re-previews on removal", async () => {
     const { calls } = await start();
     fillSchedule();
@@ -304,7 +406,7 @@ describe("breaks", () => {
     expect(document.activeElement).toBe(rowInputs(2).start);
     setRow(2, "12:00", "12:20");
     await settle();
-    expect(previewCalls(calls).at(-1)!.body.breaks).toEqual([{ start: "12:00", end: "12:20" }]);
+    expect(previewCalls(calls).at(-1)!.body.breaks).toEqual([{ start: "12:00", end: "12:20", label: "" }]);
     const removes = $$(".break-row button");
     expect(removes[0].getAttribute("aria-label")).toBe("Remove break 1");
     removes[0].click();
@@ -313,7 +415,7 @@ describe("breaks", () => {
     const before = previewCalls(calls).length;
     await settle();
     expect(previewCalls(calls)).toHaveLength(before + 1);
-    expect(previewCalls(calls).at(-1)!.body.breaks).toEqual([{ start: "12:00", end: "12:20" }]);
+    expect(previewCalls(calls).at(-1)!.body.breaks).toEqual([{ start: "12:00", end: "12:20", label: "" }]);
   });
 
   it("ignores blank rows but waits for half-filled rows", async () => {
@@ -341,7 +443,7 @@ describe("breaks", () => {
     setRow(2, "10:00", "10:20");
     setRow(3, "12:00", "12:20"); // payload index 1; row 1 is blank
     await settle();
-    expect(previewCalls(calls).at(-1)!.body.breaks).toEqual([{ start: "10:00", end: "10:20" }, { start: "12:00", end: "12:20" }]);
+    expect(previewCalls(calls).at(-1)!.body.breaks).toEqual([{ start: "10:00", end: "10:20", label: "" }, { start: "12:00", end: "12:20", label: "" }]);
     const card = $(".suggestion");
     expect(card.textContent).toContain("Move the 12:00–12:20 break to 11:50–12:10 to keep the 11:45 session?");
     buttonNamed("Move break").click();
@@ -351,7 +453,7 @@ describe("breaks", () => {
     expect(rowInputs(1).start.value).toBe("");
     expect($$(".suggestion")).toHaveLength(0);
     await settle();
-    expect(previewCalls(calls).at(-1)!.body.breaks).toEqual([{ start: "10:00", end: "10:20" }, { start: "11:50", end: "12:10" }]);
+    expect(previewCalls(calls).at(-1)!.body.breaks).toEqual([{ start: "10:00", end: "10:20", label: "" }, { start: "11:50", end: "12:10", label: "" }]);
   });
 
   it("offers Move break and Keep as it is as large buttons, and re-previews on accept", async () => {
@@ -462,7 +564,8 @@ describe("saving", () => {
     expect(create.init?.headers).toEqual({ "Content-Type": "application/json", "X-CSRF-Token": "tok" });
     expect(create.body).toEqual({
       name: "Trial Day", date: "2026-06-13", start: "09:00", end: "16:00", sessionMinutes: 15, gapMinutes: 5,
-      costPence: 1250, venuePostcode: "SW1A 1AA", details: "Bring water.", breaks: [{ start: "12:00", end: "12:20" }],
+      costPence: 1250, venuePostcode: "SW1A 1AA", details: "Bring water.", breaks: [{ start: "12:00", end: "12:20", label: "" }],
+      idempotencyKey: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
     });
   });
 
@@ -636,6 +739,149 @@ describe("save and preview together", () => {
     submit();
     await settle();
     expect(previewCalls(calls)).toHaveLength(1);
+  });
+});
+
+describe("idempotency key", () => {
+  const creates = (calls: Call[]) => calls.filter((c) => c.url === CREATE);
+  const keyOf = (c: Call): string => c.body.idempotencyKey;
+
+  it("sends a 128-bit key (22 base64url characters) with the create request, and none with the preview", async () => {
+    const { calls } = await start();
+    fillAll();
+    await settle();
+    submit();
+    await tick();
+    expect(keyOf(creates(calls)[0])).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(previewCalls(calls)[0].body).not.toHaveProperty("idempotencyKey");
+  });
+
+  it("reuses one key when Save is retried after a server error", async () => {
+    let status = 500;
+    const { calls } = await start({ create: () => (status === 500 ? reply(500, { error: { code: "internal_error", message: "x" } }) : reply(201, CREATED)) });
+    fillAll();
+    submit();
+    await tick();
+    expect($(".form-error").textContent).toContain("couldn't save the event");
+    status = 201;
+    submit();
+    await tick();
+    expect($("h1").textContent).toBe("Event created");
+    expect(creates(calls)).toHaveLength(2);
+    expect(keyOf(creates(calls)[1])).toBe(keyOf(creates(calls)[0]));
+  });
+
+  it("reuses it after a network failure", async () => {
+    let fail = true;
+    const calls: Call[] = [];
+    document.body.innerHTML = '<main id="app"></main>';
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/admin/session") return reply(200, SESSION);
+      if (url === PREVIEW) return preview();
+      calls.push({ url, init, body: JSON.parse(init!.body as string) });
+      if (fail) throw new TypeError("offline");
+      return reply(201, CREATED);
+    });
+    await init({ document, fetch: fetch as never, navigate: vi.fn(), location: { origin: ORIGIN }, clipboard: null as never });
+    fillAll();
+    submit();
+    await tick();
+    fail = false;
+    submit();
+    await tick();
+    expect($("h1").textContent).toBe("Event created");
+    expect(calls).toHaveLength(2);
+    expect(keyOf(calls[1])).toBe(keyOf(calls[0]));
+  });
+
+  it("keeps the key when the form is edited between attempts (a lost response, then a change)", async () => {
+    let first = true;
+    const { calls } = await start({ create: () => { const lost = first; first = false; return lost ? reply(500) : reply(201, CREATED); } });
+    fillAll();
+    submit();
+    await tick();
+    set("name", "Trial Day, renamed");
+    set("cost", "15");
+    submit();
+    await tick();
+    expect(creates(calls)).toHaveLength(2);
+    expect(creates(calls)[1].body.name).toBe("Trial Day, renamed");
+    expect(keyOf(creates(calls)[1])).toBe(keyOf(creates(calls)[0]));
+  });
+
+  it("keeps the key after a validation error too", async () => {
+    let invalid = true;
+    const { calls } = await start({
+      create: () => (invalid ? reply(400, { error: { code: "invalid_input", message: "x" }, fields: { name: "No." } }) : reply(201, CREATED)),
+    });
+    fillAll();
+    submit();
+    await tick();
+    invalid = false;
+    submit();
+    await tick();
+    expect(keyOf(creates(calls)[1])).toBe(keyOf(creates(calls)[0]));
+  });
+
+  it("uses a different key in a new page session after a successful create", async () => {
+    const first = await start();
+    fillAll();
+    submit();
+    await tick();
+    expect($("h1").textContent).toBe("Event created");
+    const second = await start();
+    fillAll();
+    submit();
+    await tick();
+    expect(keyOf(creates(second.calls)[0])).not.toBe(keyOf(creates(first.calls)[0]));
+  });
+
+  it("shows the server's message as the form error when the key was refused", async () => {
+    await start({
+      create: () => reply(400, { error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: { idempotencyKey: "Reload the page and try again." } }),
+    });
+    fillAll();
+    submit();
+    await tick();
+    expect($(".form-error").textContent).toBe("Reload the page and try again.");
+  });
+
+  describe("a key reused with a changed form (422 idempotency_key_reuse)", () => {
+    const ORIGINAL = { ...CREATED, event: { ...CREATED.event, name: "Original Name", slug: "orig999" }, path: "/e/orig999" };
+    const reuse = { error: { code: "idempotency_key_reuse", message: "An earlier attempt with this key already saved an event, so this change wasn't applied." }, ...ORIGINAL };
+
+    it("shows the original event's created view with a notice that the change wasn't applied", async () => {
+      await start({ create: () => reply(422, reuse) });
+      fillAll();
+      set("name", "Edited Name");
+      submit();
+      await tick();
+      expect($("h1").textContent).toBe("Event created");
+      expect($(".notice").textContent).toContain("already saved");
+      expect($(".notice").textContent).toContain("weren't applied");
+      expect($(".event-name").textContent).toBe("Original Name");
+      expect(input("booking-link").value).toBe("https://club.example/e/orig999");
+      expect(input("whatsapp-text").value).toContain("Original Name");
+      expect(input("whatsapp-text").value).not.toContain("Edited Name");
+      expect(document.querySelector("form")).toBeNull();
+    });
+
+    it("shows the server's message as the form error when no event came with it", async () => {
+      await start({ create: () => reply(422, { error: reuse.error }) });
+      fillAll();
+      submit();
+      await tick();
+      expect($(".form-error").textContent).toBe(reuse.error.message);
+      expect(document.querySelector("form")).not.toBeNull();
+    });
+
+    it("shows no notice for a plain success", async () => {
+      await start();
+      fillAll();
+      submit();
+      await tick();
+      expect(document.querySelector(".notice")).toBeNull();
+    });
   });
 });
 

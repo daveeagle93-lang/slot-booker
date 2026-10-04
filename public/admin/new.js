@@ -1,10 +1,11 @@
-import { formatTime, penceFromPounds, whatsappMessage } from "../lib.js";
+import { formatTime, newIdempotencyKey, penceFromPounds, whatsappMessage } from "../lib.js";
 import { createApi, makeH, writeClipboard } from "./api.js";
 
 const DEBOUNCE_MS = 300;
 const PLACEHOLDER = "Fill in the highlighted fields to see the schedule.";
 const PREVIEW_FAILED = "We couldn't update the preview. Check your connection and keep editing to try again.";
 const SAVE_FAILED = "We couldn't save the event. Check your connection and try again.";
+const SAVED_EARLIER = "We'd already saved an event from this page, so we haven't changed it. Here it is as saved. Any changes you made since weren't applied.";
 // The preview endpoint validates a whole draft but only the schedule fields matter to it.
 const PREVIEW_ONLY = { name: "Preview", costPence: 0, venuePostcode: "AB1 2CD", details: "" };
 const SCHEDULE_KEYS = new Set(["date", "start", "end", "sessionMinutes", "gapMinutes"]);
@@ -25,12 +26,17 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     return;
   }
 
+  // One key per page load, sent with every Save so a retry can't create the event twice, even after edits to
+  // the form. The created view has no way back to the form, so a second event means a new page load and so
+  // a new key.
+  const idempotencyKey = newIdempotencyKey();
+
   // Server errors by form key, with `breaks.<i>...` rewritten to `breaks.<row id>...` (see mapKey).
   let serverErrors = {};
   let attempted = false;
   let saving = false;
   const fields = new Map(); // key -> { key, input (or null), error, touched }
-  const rows = []; // break rows: { id, el, legend, startInput, endInput }
+  const rows = []; // break rows: { id, el, legend, startInput, endInput, labelInput }
   const dismissed = new Set(); // suggestion keys the user declined
   let nextRowId = 1;
   let timer;
@@ -92,6 +98,13 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     const id = nextRowId++;
     const legend = h("legend", {});
     const times = {};
+    const labelId = `break-${id}-label`;
+    const labelInput = h("input", {
+      id: labelId, name: labelId, type: "text", maxlength: "40", placeholder: "Lunch", autocomplete: "off",
+      "aria-describedby": `${labelId}-error`,
+    });
+    const labelError = h("p", { id: `${labelId}-error`, class: "field-error", role: "alert" });
+    fields.set(`breaks.${id}.label`, { key: `breaks.${id}.label`, input: labelInput, error: labelError, touched: false });
     const cells = ["start", "end"].map((which) => {
       const key = `breaks.${id}.${which}`;
       const inputId = `break-${id}-${which}`;
@@ -102,17 +115,19 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       return h("div", { class: "field" }, h("label", { for: inputId }, which === "start" ? "Start" : "End"), input, error);
     });
     const remove = h("button", { type: "button", class: "button remove" }, "Remove");
-    const row = { id, legend, startInput: times.start, endInput: times.end };
+    const row = { id, legend, startInput: times.start, endInput: times.end, labelInput };
     remove.addEventListener("click", () => {
       rows.splice(rows.indexOf(row), 1);
       fields.delete(`breaks.${id}.start`);
       fields.delete(`breaks.${id}.end`);
+      fields.delete(`breaks.${id}.label`);
       row.el.remove();
       numberRows();
       addBreak.focus();
       onScheduleChange();
     });
-    row.el = h("fieldset", { class: "break-row" }, legend, h("div", { class: "field-row" }, ...cells), remove);
+    row.el = h("fieldset", { class: "break-row" }, legend, h("div", { class: "field-row" }, ...cells),
+      h("div", { class: "field" }, h("label", { for: labelId }, "Name (optional)"), labelInput, labelError), remove);
     rows.push(row);
     breakList.append(row.el);
     numberRows();
@@ -205,7 +220,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       rowIds: used.map((r) => r.id),
       payload: {
         ...PREVIEW_ONLY, date: value("date"), start: value("start"), end: value("end"), sessionMinutes, gapMinutes,
-        breaks: used.map((r) => ({ start: r.startInput.value, end: r.endInput.value })),
+        breaks: used.map((r) => ({ start: r.startInput.value, end: r.endInput.value, label: r.labelInput.value })),
       },
     };
   }
@@ -277,10 +292,10 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       if (!row || dismissed.has(key)) continue;
       const move = h("button", { type: "button", class: "button primary" }, "Move break");
       const keep = h("button", { type: "button", class: "button" }, "Keep as it is");
+      const what = s.breakLabel ? s.breakLabel : `the ${row.startInput.value}–${row.endInput.value} break`;
       const card = h("div", { class: "suggestion" },
         h("p", {},
-          `Move the ${row.startInput.value}–${row.endInput.value} break to ${s.suggestedLocal.start}–${s.suggestedLocal.end}`
-          + ` to keep the ${formatTime(s.droppedSlot.start)} session?`),
+          `Move ${what} to ${s.suggestedLocal.start}–${s.suggestedLocal.end} to keep the ${formatTime(s.droppedSlot.start)} session?`),
         h("div", { class: "actions" }, move, keep));
       move.addEventListener("click", () => {
         row.startInput.value = s.suggestedLocal.start;
@@ -321,7 +336,8 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       name: value("name"), date: value("date"), start: value("start"), end: value("end"),
       sessionMinutes: wholeNumber(value("sessionMinutes")), gapMinutes: wholeNumber(value("gapMinutes")),
       costPence: cost.pence, venuePostcode: value("venuePostcode"), details: value("details"),
-      breaks: used.map((r) => ({ start: r.startInput.value, end: r.endInput.value })),
+      breaks: used.map((r) => ({ start: r.startInput.value, end: r.endInput.value, label: r.labelInput.value })),
+      idempotencyKey,
     };
     cancelPreview(); // a late preview response would wipe the errors Save is about to show
     setSaving(true);
@@ -333,6 +349,12 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     }
     setSaving(false);
     if (res?.status === 201 && res.data?.event) return showCreated(res.data);
+    // The page's own earlier attempt was saved: show that event rather than the edited form.
+    if (res?.status === 422 && res.data?.error?.code === "idempotency_key_reuse") {
+      if (res.data.event) return showCreated(res.data, SAVED_EARLIER);
+      formError.textContent = res.data.error.message;
+      return;
+    }
     if (res?.status === 401) return;
     if (res?.status === 400 && res.data?.fields) {
       serverErrors = {};
@@ -358,7 +380,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     progress.textContent = busy ? "Saving the event…" : "";
   }
 
-  function showCreated({ event, path }) {
+  function showCreated({ event, path }, noticeText) {
     cancelPreview();
     const url = location.origin + path;
     const message = whatsappMessage(event, url);
@@ -384,7 +406,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       });
       return button;
     };
-    root.replaceChildren(h("section", { class: "created" },
+    root.replaceChildren(...(noticeText ? [h("p", { class: "notice", role: "status" }, noticeText)] : []), h("section", { class: "created" },
       heading,
       h("p", { class: "event-name" }, event.name),
       h("div", { class: "field" }, h("label", { for: "booking-link" }, "Booking link"), link,
