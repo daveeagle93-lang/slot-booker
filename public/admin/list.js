@@ -66,11 +66,13 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       h("p", {}, h("span", { class: ev.bookings?.open ? "badge open" : "badge closed" },
         ev.bookings?.open ? "Bookings open" : "Bookings closed")),
     ];
-    if (isBookingPath(ev.path)) children.push(...actions(location.origin + ev.path, ev.path));
+    // Only events with a sound booking path get any links, as before.
+    const edit = h("a", { class: "button", href: `/admin/edit?slug=${encodeURIComponent(ev.slug)}` }, "Edit");
+    if (isBookingPath(ev.path)) children.push(...actions(location.origin + ev.path, ev.path, edit));
     return h("li", { class: "event-card" }, ...children);
   }
 
-  function actions(url, path) {
+  function actions(url, path, edit) {
     const copyStatus = h("p", { class: "copy-status", "aria-live": "polite" });
     const fallback = h("div", { class: "field", hidden: true });
     const copy = h("button", { type: "button", class: "button primary" }, "Copy booking link");
@@ -92,7 +94,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       copyStatus.textContent = "Couldn't copy automatically. Copy the link below manually.";
     });
     return [
-      h("div", { class: "actions" }, copy, h("a", { class: "button", href: path }, "Open")),
+      h("div", { class: "actions" }, copy, h("a", { class: "button", href: path }, "Open"), edit),
       copyStatus,
       fallback,
     ];

@@ -1,0 +1,100 @@
+import { isBookingPath } from "../lib.js";
+import { createApi, makeH, writeClipboard } from "./api.js";
+import { bookingLine, mountEventForm } from "./event-form.js";
+
+const SLUG = /^[A-Za-z0-9_-]{16,64}$/;
+
+/** Wires the edit-event page (`/admin/edit?slug=...`) into `#app`. Resolves once the first load has settled. */
+export async function init({ document, fetch, navigate, clipboard, location }) {
+  const root = document.getElementById("app");
+  const api = createApi({ fetch, navigate });
+  const h = makeH(document);
+
+  const show = (...nodes) => root.replaceChildren(...nodes);
+  const back = () => h("a", { class: "button", href: "/admin/" }, "Back to events");
+  const notFound = () => show(h("div", { class: "message", role: "alert" },
+    h("p", {}, "We couldn't find that event. It may have been removed, or the link may be wrong."), back()));
+  const failure = (retry) => {
+    const button = h("button", { type: "button", class: "button" }, "Retry");
+    button.addEventListener("click", retry);
+    show(h("div", { class: "message", role: "alert" }, h("p", {}, "We couldn't load the event. Check your connection and try again."), button));
+  };
+
+  try {
+    if (!(await api.loadSession())) return;
+  } catch {
+    show(h("div", { class: "message", role: "alert" },
+      h("p", {}, "We couldn't check that you're signed in. Check your connection and reload the page.")));
+    return;
+  }
+
+  const slug = new URLSearchParams(location.search).get("slug") ?? "";
+  if (!SLUG.test(slug)) return notFound();
+
+  async function load() {
+    show(h("p", { class: "message", role: "status" }, "Loading the event…"));
+    let res;
+    try {
+      res = await api.request("GET", `/api/admin/events/${encodeURIComponent(slug)}`);
+    } catch {
+      return failure(load);
+    }
+    if (res.status === 401) return;
+    if (res.status === 404) return notFound();
+    if (res.status !== 200 || !res.data?.event) return failure(load);
+    mountEventForm({
+      document, root, api, h, mode: "edit", slug, initial: res.data.event,
+      done: ({ data, confirmed }) => showSaved(data, confirmed),
+    });
+  }
+
+  /**
+   * `confirmed` is the list the admin was shown and agreed to. It is merged with what the server says it
+   * removed, because a retry of a save whose response was lost finds nothing left to remove and answers
+   * `removed: []`: the people still need telling, so the list must not depend on the last response alone.
+   */
+  function showSaved({ event, removed }, confirmed) {
+    const byId = new Map([...confirmed, ...(removed ?? [])].map((b) => [b.id, b]));
+    const bookings = [...byId.values()].sort((a, b) => (a.slotStart < b.slotStart ? -1 : a.slotStart > b.slotStart ? 1 : a.id - b.id));
+    const heading = h("h1", { tabindex: "-1" }, "Saved.");
+    const children = [heading, h("p", { class: "event-name" }, event.name)];
+    if (bookings.length > 0) {
+      const copyStatus = h("p", { class: "copy-status", "aria-live": "polite" });
+      const block = h("textarea", { id: "rebook-text", readonly: true, rows: String(Math.min(bookings.length + 1, 12)) });
+      block.value = bookings.map((b) => `Please rebook: ${bookingLine(b)}`).join("\n");
+      const copy = h("button", { type: "button", class: "button" }, "Copy list");
+      let timer;
+      copy.addEventListener("click", async () => {
+        clearTimeout(timer);
+        if (await writeClipboard(clipboard, block.value)) {
+          copyStatus.textContent = "Copied";
+          timer = setTimeout(() => { copyStatus.textContent = ""; }, 2000);
+        } else {
+          block.focus();
+          block.select();
+          copyStatus.textContent = "Couldn't copy automatically. Copy the selected text manually.";
+        }
+      });
+      children.push(h("section", { class: "removed" },
+        h("h2", {}, "Removed bookings: tell these people to rebook"),
+        h("div", { class: "field" }, h("label", { for: "rebook-text" }, "Message"), block),
+        h("div", { class: "actions" }, copy), copyStatus));
+    }
+    const links = [back()];
+    if (isBookingPath(`/e/${event.slug}`)) links.push(h("a", { class: "button", href: `/e/${event.slug}` }, "Open the booking page"));
+    children.push(h("div", { class: "actions" }, ...links));
+    show(h("section", { class: "created" }, ...children));
+    heading.focus();
+  }
+
+  return load();
+}
+
+// Browser entry only: the page opts in with data-autostart, so importing this module (tests) does nothing.
+if (globalThis.document?.getElementById("app")?.hasAttribute("data-autostart")) {
+  init({
+    document, location, clipboard: navigator.clipboard,
+    fetch: (...args) => fetch(...args),
+    navigate: (url) => location.assign(url),
+  });
+}

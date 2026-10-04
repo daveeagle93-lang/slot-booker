@@ -32,6 +32,7 @@ main.admin { max-width: 40rem; }
 .event-card .booked { color: var(--muted); }
 .event-card .actions { margin-top: 0.75rem; }
 .event-card .button { min-height: 48px; }
+.event-card .actions > :nth-child(3) { grid-column: 1 / -1; }
 
 .badge {
   display: inline-block;
@@ -128,3 +129,24 @@ legend { padding: 0; font-weight: 600; }
 }
 .created .button { min-height: 48px; margin: 0; }
 .created .actions { margin: 0.5rem 0 1rem; }
+
+/* Edit page: bookings that a change would remove */
+.affected:not(:empty), .confirm {
+  margin: 0 0 var(--gap);
+  padding: 0.75rem 1rem;
+  color: var(--notice-text);
+  background: var(--notice-bg);
+  border: 2px solid currentColor;
+  border-radius: var(--radius);
+}
+.affected p { margin: 0 0 0.5rem; }
+.affected-title, .confirm h2 { font-weight: 700; }
+.affected ul, .confirm-list { margin: 0 0 0.5rem; padding-left: 1.25rem; }
+.affected li, .confirm-list li { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.affected-note { font-size: 0.9375rem; }
+.confirm { margin-top: 1rem; }
+.confirm h2 { overflow-wrap: anywhere; }
+.confirm .notice { background: var(--surface); }
+.confirm .button, .removed .button { min-height: 48px; margin: 0; }
+.button.danger { color: var(--bg); background: var(--danger-text); border-color: var(--danger-text); }
+.removed { margin-top: 1rem; }

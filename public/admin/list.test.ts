@@ -60,6 +60,19 @@ describe("list page", () => {
     expect(open.getAttribute("href")).toBe("/e/abc123");
   });
 
+  it("gives each card an Edit link to the edit page, after Copy and Open", async () => {
+    await start([EVENT, { ...EVENT, slug: "def456", path: "/e/def456", name: "Second" }]);
+    const edits = [...document.querySelectorAll<HTMLAnchorElement>(".event-card a")].filter((a) => a.textContent === "Edit");
+    expect(edits.map((a) => a.getAttribute("href"))).toEqual(["/admin/edit?slug=abc123", "/admin/edit?slug=def456"]);
+    expect([...document.querySelectorAll(".event-card")[0].querySelectorAll(".actions > *")].map((n) => n.textContent)).toEqual(["Copy booking link", "Open", "Edit"]);
+  });
+
+  it("escapes the slug in the Edit link", async () => {
+    await start([{ ...EVENT, slug: "a b&c" }]);
+    const edit = [...document.querySelectorAll<HTMLAnchorElement>(".event-card a")].find((a) => a.textContent === "Edit")!;
+    expect(edit.getAttribute("href")).toBe("/admin/edit?slug=a%20b%26c");
+  });
+
   it("shows the empty state", async () => {
     await start([]);
     expect(text()).toContain("No upcoming events yet.");
