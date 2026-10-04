@@ -354,12 +354,25 @@ describe("swapBookings", () => {
     expect(await slotsOf(e.id)).toEqual({ [a]: e.s[1], [b]: e.s[6] });
   });
 
-  it("can swap an orphan with a booking in the schedule", async () => {
+  it("refuses to swap an orphan with a booking in the schedule, in either order, and changes nothing", async () => {
     const e = await seed();
     const a = await insertBooking(t.env.DB, e.id, e.s[1], "Rex", "Sam");
-    const orphan = await insertBooking(t.env.DB, e.id, "2026-10-24T06:00:00Z", "Lost", "Lou");
-    ok(await swap(e, [a, e.s[1]], [orphan, "2026-10-24T06:00:00Z"]));
-    expect(await slotsOf(e.id)).toEqual({ [a]: "2026-10-24T06:00:00Z", [orphan]: e.s[1] });
+    const orphanSlot = "2026-10-24T06:00:00Z";
+    const orphan = await insertBooking(t.env.DB, e.id, orphanSlot, "Lost", "Lou");
+    const before = await rows(e.id);
+    for (const [x, y] of [[[a, e.s[1]], [orphan, orphanSlot]], [[orphan, orphanSlot], [a, e.s[1]]]] as [number, string][][]) {
+      expect(failed(await swap(e, x, y)), `${x} ${y}`).toMatchObject({ status: 400, code: "invalid_slot", message: "That time isn't one of this event's slots." });
+    }
+    expect(await slotsOf(e.id)).toEqual({ [a]: e.s[1], [orphan]: orphanSlot });
+    expect(await rows(e.id)).toEqual(before);
+  });
+
+  it("refuses to swap two orphans", async () => {
+    const e = await seed();
+    const x = await insertBooking(t.env.DB, e.id, "2026-10-24T06:00:00Z", "Lost", "Lou");
+    const y = await insertBooking(t.env.DB, e.id, "2026-10-24T06:15:00Z", "Gone", "Gus");
+    expect(failed(await swap(e, [x, "2026-10-24T06:00:00Z"], [y, "2026-10-24T06:15:00Z"])).code).toBe("invalid_slot");
+    expect(await slotsOf(e.id)).toEqual({ [x]: "2026-10-24T06:00:00Z", [y]: "2026-10-24T06:15:00Z" });
   });
 
   it("refuses with 409 changed, writing nothing, when either booking is no longer where the admin saw it", async () => {

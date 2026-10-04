@@ -163,6 +163,8 @@ export async function swapBookings(
   if (results.length !== 2) return notFound();
   const at = new Map(results.map((r) => [r.id, r.slot_start_utc]));
   if (at.get(a.id) !== a.slot || at.get(b.id) !== b.slot) return changed();
+  // Both must end up on real slots: swapping an orphan with a booked slot would orphan the other booking.
+  if (!findSlot(event, a.slot) || !findSlot(event, b.slot)) return invalidSlot();
   await hooks.afterRead?.();
 
   const bothAt = "(SELECT COUNT(*) FROM bookings WHERE event_id = ? AND ((id = ? AND slot_start_utc = ?) OR (id = ? AND slot_start_utc = ?))) = 2";
