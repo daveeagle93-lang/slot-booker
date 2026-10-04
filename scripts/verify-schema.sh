@@ -105,6 +105,21 @@ plan=$(sql "EXPLAIN QUERY PLAN $PURGE")
 if grep -q 'INDEX login_attempts_window_start' <<<"$plan" && ! grep -q 'SCAN login_attempts' <<<"$plan"; then echo "PASS: purge uses the window_start index"
 else echo "FAIL (purge query plan should use the index and not SCAN login_attempts):"; echo "$plan" | tail -15; FAILS=$((FAILS + 1)); fi
 
+# Break labels (0008): NOT NULL, default empty, loose length backstop.
+expect_count "existing breaks default to an empty label" "SELECT count(*) AS n FROM breaks WHERE event_id = 1 AND label = ''" 2
+expect_ok "break with a label" "INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (2, '2026-06-13T12:00:00Z', '2026-06-13T13:00:00Z', 'Lunch')"
+expect_ok "break with a 100-character label" "INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (2, '2026-06-13T14:00:00Z', '2026-06-13T14:15:00Z', replace(hex(zeroblob(50)), '0', 'x'))"
+expect_fail "break with a 101-character label" "INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (2, '2026-06-13T15:00:00Z', '2026-06-13T15:15:00Z', replace(hex(zeroblob(50)), '0', 'x') || 'y')" "CHECK constraint failed"
+expect_fail "NULL break label" "INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (2, '2026-06-13T15:00:00Z', '2026-06-13T15:15:00Z', NULL)" "NOT NULL constraint failed"
+
+# Event idempotency keys (0008): unique across events when set, nullable otherwise.
+EVI="INSERT INTO events (name, start_utc, end_utc, session_minutes, venue_postcode, slug, idempotency_key) VALUES"
+expect_count "events from before the key have none" "SELECT count(*) AS n FROM events WHERE slug IN ('slug-a-aaaaaaaaaaaaaa', 'slug-b-bbbbbbbbbbbbbb') AND idempotency_key IS NULL" 2
+expect_ok "event with an idempotency key" "$EVI ('Keyed A', '2026-12-12T09:00:00Z', '2026-12-12T16:00:00Z', 15, 'AB1 2CD', 'slug-k-aaaaaaaaaaaaaa', 'evkey-aaaaaaaaaaaaaaaa')"
+expect_fail "duplicate event idempotency key" "$EVI ('Keyed B', '2026-12-19T09:00:00Z', '2026-12-19T16:00:00Z', 15, 'AB1 2CD', 'slug-k-bbbbbbbbbbbbbb', 'evkey-aaaaaaaaaaaaaaaa')" "UNIQUE constraint failed"
+expect_ok "different event idempotency keys coexist" "$EVI ('Keyed B', '2026-12-19T09:00:00Z', '2026-12-19T16:00:00Z', 15, 'AB1 2CD', 'slug-k-bbbbbbbbbbbbbb', 'evkey-bbbbbbbbbbbbbbbb')"
+expect_ok "two NULL-key events coexist alongside keyed ones" "$EVI ('Unkeyed A', '2027-01-09T09:00:00Z', '2027-01-09T16:00:00Z', 15, 'AB1 2CD', 'slug-n-aaaaaaaaaaaaaa', NULL), ('Unkeyed B', '2027-01-16T09:00:00Z', '2027-01-16T16:00:00Z', 15, 'AB1 2CD', 'slug-n-bbbbbbbbbbbbbb', NULL)"
+
 expect_fail "trailing junk after timestamp" "$BK $(row 1 '2026-03-14T10:00:00Zx' 'Bo' 'Ann Lee')" "CHECK constraint failed"
 expect_fail "bad event timestamp format" "$EV ('Bad', '2026-03-14 09:00', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
 expect_fail "event end == start" "$EV ('Bad', '2026-03-14T09:00:00Z', '2026-03-14T09:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
@@ -116,7 +131,7 @@ expect_count "cascade: breaks removed" "SELECT count(*) AS n FROM breaks WHERE e
 expect_count "cascade: bookings removed" "SELECT count(*) AS n FROM bookings WHERE event_id = 1" 0
 expect_count "other event's booking kept" "SELECT count(*) AS n FROM bookings WHERE event_id = 2" 1
 
-# Backfill: a database holding rows from before 0003 / 0004 gets random slugs and tokens (and 0005 leaves keys NULL).
+# Backfill: a database holding rows from before 0003 / 0004 gets random slugs and tokens (0005 and 0008 leave keys NULL, 0008 leaves break labels empty).
 OLD=$(mktemp -d)
 trap 'rm -rf "$STATE" "$OLD"' EXIT
 old() { npx wrangler d1 execute "$DB" --local --persist-to "$OLD" "$@" 2>&1; }
@@ -125,7 +140,10 @@ old --file migrations/0001_init.sql >/dev/null && old --file migrations/0002_ide
   && old --file migrations/0003_event_slug.sql >/dev/null \
   && old --command "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key) VALUES (1, '2026-03-14T09:00:00Z', 'Rex', 'Sam Jones', 'rex', 'sam jones'), (1, '2026-03-14T09:15:00Z', 'Fido', 'Ann Lee', 'fido', 'ann lee')" >/dev/null \
   && old --file migrations/0004_booking_token.sql >/dev/null \
-  && old --file migrations/0005_booking_idempotency_key.sql >/dev/null || { echo "FAIL: backfill setup"; FAILS=$((FAILS + 1)); }
+  && old --file migrations/0005_booking_idempotency_key.sql >/dev/null \
+  && old --command "INSERT INTO breaks (event_id, start_utc, end_utc) VALUES (1, '2026-03-14T12:00:00Z', '2026-03-14T13:00:00Z')" >/dev/null \
+  && old --file migrations/0006_login_attempts.sql >/dev/null && old --file migrations/0007_login_attempts_index.sql >/dev/null \
+  && old --file migrations/0008_break_labels_event_idempotency.sql >/dev/null || { echo "FAIL: backfill setup"; FAILS=$((FAILS + 1)); }
 got=$(old --command "SELECT count(*) AS n FROM events WHERE slug GLOB '[0-9a-f]*' AND length(slug) = 32" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
 if [ "$got" = "1" ]; then echo "PASS (count=1): pre-existing event backfilled with a 32-hex slug"
 else echo "FAIL (backfill): expected 1, got '$got'"; FAILS=$((FAILS + 1)); fi
@@ -138,6 +156,12 @@ else echo "FAIL (token backfill distinct): expected 2, got '$got'"; FAILS=$((FAI
 got=$(old --command "SELECT count(*) AS n FROM bookings WHERE idempotency_key IS NULL" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
 if [ "$got" = "2" ]; then echo "PASS (count=2): pre-existing bookings have no idempotency key"
 else echo "FAIL (idempotency key on old rows): expected 2, got '$got'"; FAILS=$((FAILS + 1)); fi
+got=$(old --command "SELECT count(*) AS n FROM breaks WHERE label = ''" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+if [ "$got" = "1" ]; then echo "PASS (count=1): pre-existing break survived 0008 with an empty label"
+else echo "FAIL (break label on old rows): expected 1, got '$got'"; FAILS=$((FAILS + 1)); fi
+got=$(old --command "SELECT count(*) AS n FROM events WHERE idempotency_key IS NULL" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+if [ "$got" = "1" ]; then echo "PASS (count=1): pre-existing event survived 0008 with no idempotency key"
+else echo "FAIL (event key on old rows): expected 1, got '$got'"; FAILS=$((FAILS + 1)); fi
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS check(s) FAILED"; exit 1; fi
 echo "All schema checks passed"
