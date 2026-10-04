@@ -19,13 +19,13 @@ The default names no data controller and gives no contact. Clubs should add thei
 
 ## Setting them
 
-- In `wrangler.jsonc`, under `vars`:
+- For a deployment, under `vars` in the git-ignored `account.local.json`, then run `npm run configure` (`docs/deploying.md`, step 3):
 
   ```jsonc
   "vars": { "BOOKING_CUTOFF_OFFSET_MINUTES": "-30" }
   ```
 
-  Values are strings. `vars` is not inherited by `env.preview`, so give the preview environment its own `vars` block with the same settings if you want them there.
+  Values are strings. The script writes them into both the top level and `env.preview` of the generated `wrangler.json`, because `vars` is not inherited by `env.preview`. (Without the script, put the same `vars` block in both places in `wrangler.jsonc`, but then your settings are in a committed file.)
 - Locally, put them in `.dev.vars` (see `.dev.vars.example`). Restart `npm run dev` after changing it.
 
-This project uses a Wrangler configuration file, which Cloudflare's [Pages configuration docs](https://developers.cloudflare.com/pages/functions/wrangler-configuration/) say becomes the source of truth: "you cannot edit the same fields in the dashboard once you are using this file". So set deployed variables in `wrangler.jsonc` and redeploy, rather than in the dashboard. (Redeploying is the safe assumption; the docs don't say whether a variable change applies without a new deployment.)
+This project uses a Wrangler configuration file, which Cloudflare's [Pages configuration docs](https://developers.cloudflare.com/pages/functions/wrangler-configuration/) say becomes the source of truth: "you cannot edit the same fields in the dashboard once you are using this file". So set deployed variables through the config file (`account.local.json` and `npm run configure`) and redeploy, rather than in the dashboard. (Redeploying is the safe assumption; the docs don't say whether a variable change applies without a new deployment.)

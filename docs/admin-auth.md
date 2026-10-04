@@ -17,7 +17,7 @@ It fails closed. If `ADMIN_AUTH` is unset, misspelt (`Password`, `none`, ` acces
 | `ADMIN_PASSWORD_HASH` | **yes** | password | `hmac-sha256$<salt>$<mac>`, the hash line from `npm run --silent generate-admin-secret`. Anything else, including the earlier `pbkdf2-sha256$...` format, locks admin out. |
 | `ADMIN_SESSION_SECRET` | **yes** | password | At least 32 random characters. Signs the session cookie and keys the login rate-limit hashes. Shorter counts as not configured. |
 
-The two secrets must never be committed or put in `wrangler.jsonc`. `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are not secrets but are club details, so keep them out of the committed `wrangler.jsonc` as well (`docs/deploying.md` suggests `git update-index --skip-worktree wrangler.jsonc` for local edits). Locally, put all of them in `.dev.vars` (see `.dev.vars.example`) and restart `npm run dev`.
+The two secrets must never be committed or put in `wrangler.jsonc`. `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are not secrets but are club details, so keep them out of the committed `wrangler.jsonc` as well: put them under `vars` in the git-ignored `account.local.json` and run `npm run configure` (`docs/deploying.md`, step 3). Locally, put all of them in `.dev.vars` (see `.dev.vars.example`) and restart `npm run dev`.
 
 ## Password provider
 
