@@ -335,41 +335,72 @@ export async function insertEventWithBreaks(db: D1Database, slug: string, d: Eve
 
 interface ListedEvent { id: number; slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number; gap_minutes: number; cost_pence: number; venue_postcode: string }
 
+interface ListedOld { slug: string; name: string; start_utc: string; end_utc: string; venue_postcode: string; archived: number; booked: number }
+
+/** The first 100 of an ended or archived group (most recently started first) with booked counts, and whether more exist. */
+const olderEvents = (db: D1Database, where: string) =>
+  db.prepare(
+    `WITH page AS (
+       SELECT id, slug, name, start_utc, end_utc, venue_postcode, archived FROM events WHERE ${where}
+       ORDER BY start_utc DESC, id DESC LIMIT ${MAX_LIST + 1}
+     ), counts AS (SELECT event_id, COUNT(*) AS n FROM bookings WHERE event_id IN (SELECT id FROM page) GROUP BY event_id)
+     SELECT page.slug, page.name, page.start_utc, page.end_utc, page.venue_postcode, page.archived, COALESCE(counts.n, 0) AS booked
+     FROM page LEFT JOIN counts ON counts.event_id = page.id ORDER BY page.start_utc DESC, page.id DESC`,
+  );
+
+function olderGroup(rows: ListedOld[]) {
+  return {
+    items: rows.slice(0, MAX_LIST).map((e) => ({
+      slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc, venuePostcode: e.venue_postcode,
+      bookedCount: e.booked, archived: e.archived === 1,
+    })),
+    hasMore: rows.length > MAX_LIST,
+  };
+}
+
 /**
- * Upcoming (not yet finished), non-archived events, soonest first, at most 100. Three queries in all:
- * the events, all their breaks, and booking counts grouped by event.
+ * The admin list in three groups; every event is in exactly one (archived wins, then the end time decides):
+ * `events` (Upcoming: not archived, ends after now, soonest first), `past` (not archived, ended at or before
+ * now) and `archived`, each of the last two at most 100, most recently started first, with a HasMore flag.
+ * One batch of five queries: the upcoming events, their breaks and booking counts, then Past and Archived.
  */
-export async function listUpcomingEvents(db: D1Database, now: Date, cutoffOffsetMinutes: number) {
+export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMinutes: number) {
   const nowIso = `${now.toISOString().slice(0, 19)}Z`;
   const upcoming = `SELECT id FROM events WHERE archived = 0 AND end_utc > ?1 ORDER BY start_utc, id LIMIT ${MAX_LIST}`;
-  const [events, breaks, counts] = await db.batch([
+  const [events, breaks, counts, pastRows, archivedRows] = await db.batch([
     db.prepare(
       `SELECT id, slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode
        FROM events WHERE id IN (${upcoming}) ORDER BY start_utc, id`,
     ).bind(nowIso),
     db.prepare(`SELECT event_id, start_utc, end_utc, label FROM breaks WHERE event_id IN (${upcoming})`).bind(nowIso),
     db.prepare(`SELECT event_id, COUNT(*) AS n FROM bookings WHERE event_id IN (${upcoming}) GROUP BY event_id`).bind(nowIso),
+    olderEvents(db, "archived = 0 AND end_utc <= ?1").bind(nowIso),
+    olderEvents(db, "archived = 1").bind(),
   ]);
   const breaksOf = new Map<number, EventRow["breaks"]>();
   for (const b of (breaks.results as { event_id: number; start_utc: string; end_utc: string; label: string }[])) {
     breaksOf.set(b.event_id, [...(breaksOf.get(b.event_id) ?? []), { start: b.start_utc, end: b.end_utc, label: b.label }]);
   }
   const bookedOf = new Map((counts.results as { event_id: number; n: number }[]).map((r) => [r.event_id, r.n]));
-  return (events.results as unknown as ListedEvent[]).map((e) => {
+  const upcomingList = (events.results as unknown as ListedEvent[]).map((e) => {
     const row = {
       id: e.id, slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc,
       sessionMinutes: e.session_minutes, gapMinutes: e.gap_minutes, costPence: e.cost_pence,
       venuePostcode: e.venue_postcode, details: "", archived: false, breaks: breaksOf.get(e.id) ?? [],
     } satisfies EventRow;
+    const slotCount = generateSchedule({
+      start: row.startUtc, end: row.endUtc, sessionMinutes: row.sessionMinutes, gapMinutes: row.gapMinutes, breaks: row.breaks,
+    }).slots.length;
+    const bookedCount = bookedOf.get(e.id) ?? 0;
     return {
       slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc, costPence: e.cost_pence,
-      venuePostcode: e.venue_postcode,
-      slotCount: generateSchedule({
-        start: row.startUtc, end: row.endUtc, sessionMinutes: row.sessionMinutes, gapMinutes: row.gapMinutes, breaks: row.breaks,
-      }).slots.length,
-      bookedCount: bookedOf.get(e.id) ?? 0,
+      venuePostcode: e.venue_postcode, slotCount, bookedCount, archived: false,
+      full: slotCount > 0 && bookedCount >= slotCount,
       bookings: bookingWindow(row, cutoffOffsetMinutes, now),
       path: `/e/${e.slug}`,
     };
   });
+  const past = olderGroup(pastRows.results as unknown as ListedOld[]);
+  const archived = olderGroup(archivedRows.results as unknown as ListedOld[]);
+  return { events: upcomingList, past: past.items, archived: archived.items, pastHasMore: past.hasMore, archivedHasMore: archived.hasMore };
 }

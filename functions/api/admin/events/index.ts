@@ -1,6 +1,6 @@
 import { refuseUnlessAdmin } from "../../../../src/server/admin-context";
 import {
-  checkEventKey, createdBody, createEvent, findEventByKey, invalidInput, listUpcomingEvents, parseEventDraft, readEventBody,
+  checkEventKey, createdBody, createEvent, findEventByKey, invalidInput, listAdminEvents, parseEventDraft, readEventBody,
   type CreateEventResult,
 } from "../../../../src/server/admin-events";
 import { noStore } from "../../../../src/server/bookings";
@@ -17,10 +17,9 @@ export const onRequestGet: PagesFunction<AppEnv> = async ({ env, data }) => {
   const refused = refuseUnlessAdmin(data);
   if (refused) return refused;
   try {
-    const events = await listUpcomingEvents(env.DB, new Date(), bookingCutoffOffsetMinutes(env.BOOKING_CUTOFF_OFFSET_MINUTES));
-    return json({ events }, 200, noStore);
+    return json(await listAdminEvents(env.DB, new Date(), bookingCutoffOffsetMinutes(env.BOOKING_CUTOFF_OFFSET_MINUTES)), 200, noStore);
   } catch (e) {
-    return internalError("listUpcomingEvents", e);
+    return internalError("listAdminEvents", e);
   }
 };
 

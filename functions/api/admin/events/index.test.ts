@@ -3,7 +3,7 @@ import { identityKey } from "../../../../src/core/identity";
 import { utcToLondon } from "../../../../src/core/london";
 import { generateBookingToken } from "../../../../src/core/slug";
 import type { AppEnv } from "../../../../src/server/env";
-import { countRows, createTestEnv, insertBreak, insertEvent, type TestEnv } from "../../../../src/test/db";
+import { countRows, createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../../../../src/test/db";
 import { onRequestPost as book } from "../../events/[slug]/bookings";
 import { onRequestGet as publicGet } from "../../events/[slug]/index";
 import { onRequestGet, onRequestPost } from "./index";
@@ -455,7 +455,7 @@ describe("GET /api/admin/events", () => {
     const events = ((await (await list({ BOOKING_CUTOFF_OFFSET_MINUTES: "-60" })).json()) as { events: Record<string, unknown>[] }).events;
     expect(events[0]).toEqual({
       slug, name: "Show", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z", costPence: 900,
-      venuePostcode: "ZZ9 9ZZ", slotCount: 10, bookedCount: 2,
+      venuePostcode: "ZZ9 9ZZ", slotCount: 10, bookedCount: 2, archived: false, full: false,
       bookings: { open: true, closesAt: "2026-06-13T07:00:00Z" }, path: `/e/${slug}`,
     });
     expect(events[1]).toMatchObject({ slotCount: 4, bookedCount: 0 });
@@ -486,11 +486,125 @@ describe("GET /api/admin/events", () => {
     expect(got).toEqual(slugs.slice(0, 100)); // slug i is the i-th soonest, so the latest one is dropped
   });
 
+  it("marks an event full only when it has slots and every one is booked", async () => {
+    const a = await insertEvent(t.env.DB, { startUtc: "2026-10-10T08:00:00Z", endUtc: "2026-10-10T08:30:00Z" }); // 2 slots
+    const b = await insertEvent(t.env.DB, { startUtc: "2026-10-11T08:00:00Z", endUtc: "2026-10-11T08:30:00Z" });
+    const c = await insertEvent(t.env.DB, { startUtc: "2026-10-12T08:00:00Z", endUtc: "2026-10-12T08:30:00Z" });
+    await insertBooking(t.env.DB, a.id, "2026-10-10T08:00:00Z", "Rex", "Sam");
+    await insertBooking(t.env.DB, a.id, "2026-10-10T08:15:00Z", "Moss", "Sam");
+    await insertBooking(t.env.DB, b.id, "2026-10-11T08:00:00Z", "Rex", "Sam");
+    // The whole event is one break, so there are no slots at all (not "full"). Inserted directly: the API refuses such a draft.
+    const zero = await insertEvent(t.env.DB, { startUtc: "2026-10-13T08:00:00Z", endUtc: "2026-10-13T08:30:00Z" });
+    await insertBreak(t.env.DB, zero.id, "2026-10-13T08:00:00Z", "2026-10-13T08:30:00Z");
+    const events = ((await (await list()).json()) as { events: { slug: string; slotCount: number; bookedCount: number; full: boolean }[] }).events;
+    expect(events.map((e) => [e.slug, e.slotCount, e.bookedCount, e.full])).toEqual([
+      [a.slug, 2, 2, true], [b.slug, 2, 1, false], [c.slug, 2, 0, false], [zero.slug, 0, 0, false],
+    ]);
+  });
+
   it("refuses with 401 unless the middleware set an admin identity", async () => {
     for (const data of [undefined, {}, { admin: {} }]) {
       const res = await list({}, data);
       expect(res.status).toBe(401);
       expect(res.headers.get("cache-control")).toBe("no-store");
     }
+  });
+});
+
+describe("GET /api/admin/events: Past and Archived", () => {
+  beforeEach(async () => { await t.env.DB.prepare("DELETE FROM events").run(); });
+
+  interface Listing {
+    events: { slug: string }[]; past: Record<string, unknown>[]; archived: Record<string, unknown>[];
+    pastHasMore: boolean; archivedHasMore: boolean;
+  }
+  const listing = async (): Promise<Listing> => (await (await list()).json()) as Listing;
+  const slugs = (xs: { slug?: unknown }[]) => xs.map((x) => x.slug);
+  const at = (start: string, end: string, extra: Record<string, unknown> = {}) => ({ startUtc: start, endUtc: end, ...extra });
+
+  it("puts every event in exactly one group, at the end_utc == now boundary (one second either side)", async () => {
+    const before = await insertEvent(t.env.DB, at("2026-10-01T10:00:00Z", "2026-10-01T11:59:59Z"));
+    const exactly = await insertEvent(t.env.DB, at("2026-10-01T10:00:00Z", "2026-10-01T12:00:00Z"));
+    const after = await insertEvent(t.env.DB, at("2026-10-01T10:00:00Z", "2026-10-01T12:00:01Z"));
+    const body = await listing();
+    expect(slugs(body.events)).toEqual([after.slug]);
+    expect(new Set(slugs(body.past))).toEqual(new Set([before.slug, exactly.slug]));
+    expect(body.archived).toEqual([]);
+    expect(body.pastHasMore).toBe(false);
+    expect(body.archivedHasMore).toBe(false);
+  });
+
+  it("shows an archived event under Archived only, whether it is past or upcoming", async () => {
+    const archivedPast = await insertEvent(t.env.DB, at("2026-09-01T08:00:00Z", "2026-09-01T11:00:00Z", { archived: true }));
+    const archivedUpcoming = await insertEvent(t.env.DB, at("2026-11-01T08:00:00Z", "2026-11-01T11:00:00Z", { archived: true }));
+    const body = await listing();
+    expect(body.events).toEqual([]);
+    expect(body.past).toEqual([]);
+    expect(slugs(body.archived)).toEqual([archivedUpcoming.slug, archivedPast.slug]);
+  });
+
+  it("orders Past most recently started first and Archived most recently started first", async () => {
+    const p1 = await insertEvent(t.env.DB, at("2026-08-01T08:00:00Z", "2026-08-01T09:00:00Z"));
+    const p3 = await insertEvent(t.env.DB, at("2026-09-20T08:00:00Z", "2026-09-20T09:00:00Z"));
+    const p2 = await insertEvent(t.env.DB, at("2026-09-01T08:00:00Z", "2026-09-01T09:00:00Z"));
+    const a1 = await insertEvent(t.env.DB, at("2026-01-01T08:00:00Z", "2026-01-01T09:00:00Z", { archived: true }));
+    const a3 = await insertEvent(t.env.DB, at("2027-01-01T08:00:00Z", "2027-01-01T09:00:00Z", { archived: true }));
+    const a2 = await insertEvent(t.env.DB, at("2026-06-01T08:00:00Z", "2026-06-01T09:00:00Z", { archived: true }));
+    const body = await listing();
+    expect(slugs(body.past)).toEqual([p3.slug, p2.slug, p1.slug]);
+    expect(slugs(body.archived)).toEqual([a3.slug, a2.slug, a1.slug]);
+  });
+
+  it("gives each Past and Archived item exactly its summary fields, with the booked count and no schedule data", async () => {
+    const past = await insertEvent(t.env.DB, { ...at("2026-09-01T08:00:00Z", "2026-09-01T11:00:00Z"), name: "Old show", venuePostcode: "ZZ9 9ZZ", details: "private" });
+    const old = await insertEvent(t.env.DB, { ...at("2026-02-01T08:00:00Z", "2026-02-01T11:00:00Z"), name: "Filed", archived: true });
+    await insertBooking(t.env.DB, past.id, "2026-09-01T08:00:00Z", "Rex", "Sam");
+    await insertBooking(t.env.DB, past.id, "2026-09-01T08:15:00Z", "Moss", "Sam");
+    await insertBooking(t.env.DB, old.id, "2026-02-01T08:00:00Z", "Rex", "Sam");
+    const body = await listing();
+    expect(body.past).toEqual([{
+      slug: past.slug, name: "Old show", startUtc: "2026-09-01T08:00:00Z", endUtc: "2026-09-01T11:00:00Z",
+      venuePostcode: "ZZ9 9ZZ", bookedCount: 2, archived: false,
+    }]);
+    expect(body.archived).toEqual([{
+      slug: old.slug, name: "Filed", startUtc: "2026-02-01T08:00:00Z", endUtc: "2026-02-01T11:00:00Z",
+      venuePostcode: "AB1 2CD", bookedCount: 1, archived: true,
+    }]);
+  });
+
+  it("counts bookings per event, zero where there are none, and keeps them to their own event", async () => {
+    const a = await insertEvent(t.env.DB, at("2026-09-02T08:00:00Z", "2026-09-02T09:00:00Z"));
+    const b = await insertEvent(t.env.DB, at("2026-09-01T08:00:00Z", "2026-09-01T09:00:00Z"));
+    await insertBooking(t.env.DB, a.id, "2026-09-02T08:00:00Z", "Rex", "Sam");
+    expect((await listing()).past.map((e) => [e.slug, e.bookedCount])).toEqual([[a.slug, 1], [b.slug, 0]]);
+  });
+
+  it("returns 100 and sets the HasMore flag when 101 exist, for Past and for Archived, keeping the most recent", async () => {
+    const statement = t.env.DB.prepare(
+      "INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, venue_postcode, archived) VALUES (?, 'E', ?, ?, 15, 'AB1 2CD', ?)",
+    );
+    const iso = (i: number, hour: number) => new Date(Date.UTC(2025, 0, 1 + i, hour)).toISOString().replace(".000Z", "Z");
+    const rows = (prefix: string, archived: number) => Array.from({ length: 101 }, (_, i) =>
+      statement.bind(`${prefix}-${String(i).padStart(3, "0")}-padding-xx`, iso(i, 8), iso(i, 9), archived));
+    await t.env.DB.batch([...rows("past", 0), ...rows("arch", 1)]);
+    const body = await listing();
+    expect(body.past).toHaveLength(100);
+    expect(body.archived).toHaveLength(100);
+    expect(body.pastHasMore).toBe(true);
+    expect(body.archivedHasMore).toBe(true);
+    expect(body.past[0].slug).toBe("past-100-padding-xx"); // most recent first; the oldest (000) is the one left out
+    expect(slugs(body.past)).not.toContain("past-000-padding-xx");
+    expect(body.archived[99].slug).toBe("arch-001-padding-xx");
+  });
+
+  it("does not flag HasMore at exactly 100", async () => {
+    const statement = t.env.DB.prepare(
+      "INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, venue_postcode) VALUES (?, 'E', ?, ?, 15, 'AB1 2CD')",
+    );
+    const iso = (i: number, hour: number) => new Date(Date.UTC(2025, 0, 1 + i, hour)).toISOString().replace(".000Z", "Z");
+    await t.env.DB.batch(Array.from({ length: 100 }, (_, i) => statement.bind(`exact-${String(i).padStart(3, "0")}-padding-xx`, iso(i, 8), iso(i, 9))));
+    const body = await listing();
+    expect(body.past).toHaveLength(100);
+    expect(body.pastHasMore).toBe(false);
   });
 });
