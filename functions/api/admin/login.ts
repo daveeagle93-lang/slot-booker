@@ -6,12 +6,14 @@ import type { AppEnv } from "../../../src/server/env";
 import { errorResponse, json } from "../../../src/server/http";
 
 const MAX_BODY_BYTES = 1024;
-const MAX_PASSWORD_LENGTH = 256;
+// A generated secret is 43 characters; the cap only bounds what gets counted and checked.
+const MAX_PASSWORD_LENGTH = 64;
 
 /**
  * POST /api/admin/login, password provider only (_middleware.ts hides it otherwise and has already
  * checked the Origin). The attempt is counted before the password is checked, so a client over the
- * limit costs no PBKDF2 and parallel guesses cannot beat the limit. The same 401 answers every failure.
+ * limit costs no HMAC check and parallel guesses cannot beat the limit. The same 401 answers every failure,
+ * including a value that is not shaped like a generated secret (those are refused before any hashing).
  */
 export const createLoginHandler = (deps: AuthDeps = {}): PagesFunction<AppEnv> => async ({ request, env }) => {
   const resolved = adminAuthFor(env, deps);
@@ -23,7 +25,7 @@ export const createLoginHandler = (deps: AuthDeps = {}): PagesFunction<AppEnv> =
   if (body instanceof Response) return body;
   const { password } = body;
   if (typeof password !== "string" || password.length < 1 || password.length > MAX_PASSWORD_LENGTH) {
-    return errorResponse(400, "invalid_input", "Enter the password.", {}, noStore);
+    return errorResponse(400, "invalid_input", "Enter the admin secret.", {}, noStore);
   }
 
   const key = await auth.clientKey(request.headers.get("CF-Connecting-IP"));
@@ -36,7 +38,7 @@ export const createLoginHandler = (deps: AuthDeps = {}): PagesFunction<AppEnv> =
       });
     }
     if (!(await auth.checkPassword(password))) {
-      return errorResponse(401, "invalid_credentials", "That password isn't right.", {}, noStore);
+      return errorResponse(401, "invalid_credentials", "That admin secret isn't right.", {}, noStore);
     }
     await clearAttempts(env.DB, key);
   } catch (e) {

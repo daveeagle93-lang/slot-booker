@@ -6,19 +6,20 @@ import { onRequestPost as logout } from "../../../functions/api/admin/logout";
 import { onRequestGet as session } from "../../../functions/api/admin/session";
 import { json } from "../http";
 import type { AppEnv } from "../env";
-import { base64urlEncode, hashPassword, utf8 } from "./crypto";
+import { base64urlEncode, hashAdminSecret, utf8 } from "./crypto";
 import type { AuthDeps } from "./types";
 
 export const ORIGIN = "https://club.example";
 export const NOW = Date.UTC(2026, 9, 4, 12, 0, 0);
-export const TEST_PASSWORD = "correct horse battery staple";
+// A fixed value in the generated form (43 base64url characters, canonical), so tests are repeatable.
+export const TEST_PASSWORD = "AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw";
 export const SESSION_SECRET = "test-only-session-secret-0123456789-abcdef";
 export const ACCESS_TEAM = "club.cloudflareaccess.com";
 export const ACCESS_AUD = "aud-tag-1234567890";
 
 let hash: Promise<string> | undefined;
 export const passwordEnv = async (db: D1Database): Promise<AppEnv> => ({
-  DB: db, ADMIN_AUTH: "password", ADMIN_PASSWORD_HASH: await (hash ??= hashPassword(TEST_PASSWORD)), ADMIN_SESSION_SECRET: SESSION_SECRET,
+  DB: db, ADMIN_AUTH: "password", ADMIN_PASSWORD_HASH: await (hash ??= hashAdminSecret(TEST_PASSWORD)), ADMIN_SESSION_SECRET: SESSION_SECRET,
 });
 export const accessEnv = (db: D1Database): AppEnv => ({
   DB: db, ADMIN_AUTH: "access", ACCESS_TEAM_DOMAIN: ACCESS_TEAM, ACCESS_AUD,

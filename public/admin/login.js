@@ -31,8 +31,11 @@ export async function init({ document, fetch, location }) {
   async function submit(event) {
     event.preventDefault();
     if (submitting) return;
-    if (field.value === "") {
-      error.textContent = "Enter the password.";
+    // Whitespace around a pasted secret is dropped; a generated secret has none inside, and the server
+    // checks exactly what is sent, so this can't make a wrong value pass.
+    const secret = field.value.trim();
+    if (secret === "") {
+      error.textContent = "Enter the admin secret.";
       return;
     }
     submitting = true;
@@ -45,10 +48,10 @@ export async function init({ document, fetch, location }) {
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
         cache: "no-store",
-        body: JSON.stringify({ password: field.value }),
+        body: JSON.stringify({ password: secret }),
       });
       if (res.ok) return location.assign(ADMIN_HOME); // stays disabled while the page changes
-      if (res.status === 401) message = "That password isn't right.";
+      if (res.status === 401) message = "That admin secret isn't right.";
       else if (res.status === 429) message = rateLimitMessage(res.headers.get("Retry-After"));
     } catch { /* offline or blocked: the generic message */ }
     if (message !== GENERIC_ERROR) field.value = "";

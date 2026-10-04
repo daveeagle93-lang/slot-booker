@@ -1,4 +1,4 @@
-// WebCrypto helpers for admin auth. Deliberately no relative imports: scripts/hash-password.ts loads
+// WebCrypto helpers for admin auth. Deliberately no relative imports: scripts/generate-admin-secret.ts loads
 // this file under plain Node, which needs explicit extensions that the type checker here refuses.
 
 const encoder = new TextEncoder();
@@ -35,51 +35,55 @@ export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
-// Password hashing: WebCrypto PBKDF2 is the only password KDF Workers provide natively (no scrypt, argon2 or
-// bcrypt; a WASM or JS one would burn Worker CPU time and bundle size). Production Workers refuse more than
-// 100,000 iterations (https://github.com/cloudflare/workerd/issues/1346), but local workerd and Node do not,
-// so tests could pass with a count that fails when deployed. Hence the count is fixed at the cap here and
-// the verifier refuses anything above it.
-// SHA-256 with a 32-byte output (one block, so no extra work for the defender), not SHA-512, on measured CPU
-// cost: 100,000 iterations took about 40 ms with SHA-512 and 64 bytes, about 26 ms with SHA-256 and 64 bytes
-// (two blocks) and about 10 ms with SHA-256 and 32 bytes, in local workerd. Workers Free allows 10 ms of CPU
-// per request (https://developers.cloudflare.com/workers/platform/limits/). That is a small cut in attacker
-// cost (SHA-512's 64-bit arithmetic is less GPU-friendly) to fit the limit. Even 10 ms is UNVERIFIED on real
-// Workers: if login fails with a CPU-limit error, the fix is the Access provider. See docs/admin-auth.md for
-// why this is still below the OWASP work factor.
-export const PBKDF2_ITERATIONS = 100_000;
-const HASH_PREFIX = "pbkdf2-sha256";
+// The admin secret is generated, not chosen: 32 random bytes, base64url without padding (exactly 43 characters,
+// 256 bits). It is far too random to guess or brute-force from a stored value, so a salted HMAC-SHA-256 is enough
+// to verify it and no slow password KDF is needed (Workers have only PBKDF2 natively, and that is capped at
+// 100,000 iterations and costs real CPU time). Stored as `hmac-sha256$<salt>$<mac>`, mac = HMAC(key = salt, secret).
+const HASH_PREFIX = "hmac-sha256";
 const SALT_BYTES = 16;
-const HASH_BYTES = 32;
+const MAC_BYTES = 32;
+const SECRET_BYTES = 32;
+const SECRET_LENGTH = 43; // base64url of 32 bytes, unpadded
 
-export interface PasswordHash { iterations: number; salt: Uint8Array; hash: Uint8Array }
+export interface AdminSecretHash { salt: Uint8Array; mac: Uint8Array }
 
-async function derive(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey("raw", utf8(password), "PBKDF2", false, ["deriveBits"]);
-  return new Uint8Array(
-    await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations }, key, HASH_BYTES * 8),
-  );
+export function generateAdminSecret(): string {
+  return base64urlEncode(crypto.getRandomValues(new Uint8Array(SECRET_BYTES)));
 }
 
-/** `pbkdf2-sha256$<iterations>$<salt>$<hash>`, the last two base64url. */
-export async function hashPassword(
-  password: string, salt: Uint8Array = crypto.getRandomValues(new Uint8Array(SALT_BYTES)),
+/**
+ * The one accepted spelling of a generated secret. The last character of 43 base64url characters carries only
+ * 4 bits, so other spellings decode to the same bytes; the re-encode check refuses them. Checked before any hashing.
+ */
+export function isCanonicalAdminSecret(text: string): boolean {
+  if (text.length !== SECRET_LENGTH || !/^[A-Za-z0-9_-]+$/.test(text)) return false;
+  const bytes = base64urlDecode(text);
+  return bytes?.length === SECRET_BYTES && base64urlEncode(bytes) === text;
+}
+
+async function mac(salt: Uint8Array, secret: string): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey("raw", salt, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, utf8(secret)));
+}
+
+/** `hmac-sha256$<salt>$<mac>`, both base64url. */
+export async function hashAdminSecret(
+  secret: string, salt: Uint8Array = crypto.getRandomValues(new Uint8Array(SALT_BYTES)),
 ): Promise<string> {
-  const hash = await derive(password, salt, PBKDF2_ITERATIONS);
-  return [HASH_PREFIX, PBKDF2_ITERATIONS, base64urlEncode(salt), base64urlEncode(hash)].join("$");
+  return [HASH_PREFIX, base64urlEncode(salt), base64urlEncode(await mac(salt, secret))].join("$");
 }
 
-/** null if malformed, including any iteration count above what production Workers allow. */
-export function parsePasswordHash(stored: string | undefined): PasswordHash | null {
+/** null if malformed, including every earlier `pbkdf2-sha256$...` value. */
+export function parseAdminSecretHash(stored: string | undefined): AdminSecretHash | null {
   const parts = (stored ?? "").split("$");
-  if (parts.length !== 4 || parts[0] !== HASH_PREFIX || !/^[1-9][0-9]{0,5}$/.test(parts[1])) return null;
-  const iterations = Number(parts[1]);
-  const salt = base64urlDecode(parts[2]);
-  const hash = base64urlDecode(parts[3]);
-  if (iterations > PBKDF2_ITERATIONS || salt?.length !== SALT_BYTES || hash?.length !== HASH_BYTES) return null;
-  return { iterations, salt, hash };
+  if (parts.length !== 3 || parts[0] !== HASH_PREFIX) return null;
+  const salt = base64urlDecode(parts[1]);
+  const macBytes = base64urlDecode(parts[2]);
+  if (salt?.length !== SALT_BYTES || macBytes?.length !== MAC_BYTES) return null;
+  return { salt, mac: macBytes };
 }
 
-export async function verifyPassword(password: string, stored: PasswordHash): Promise<boolean> {
-  return timingSafeEqual(await derive(password, stored.salt, stored.iterations), stored.hash);
+export async function verifyAdminSecret(secret: string, stored: AdminSecretHash): Promise<boolean> {
+  if (!isCanonicalAdminSecret(secret)) return false;
+  return timingSafeEqual(await mac(stored.salt, secret), stored.mac);
 }

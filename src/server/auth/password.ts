@@ -1,4 +1,4 @@
-import { parsePasswordHash, verifyPassword, type PasswordHash } from "./crypto";
+import { parseAdminSecretHash, verifyAdminSecret, type AdminSecretHash } from "./crypto";
 import { clientKey } from "./ratelimit";
 import { clearedSessionCookie, issueSession, readSession, sessionCookie } from "./session";
 import type { AdminAuth, AdminSession, AuthDeps } from "./types";
@@ -15,14 +15,14 @@ export interface PasswordAuth extends AdminAuth {
   clientKey(ip: string | null): Promise<string>;
 }
 
-export interface PasswordConfig { hash: PasswordHash; sessionSecret: string }
+export interface PasswordConfig { hash: AdminSecretHash; sessionSecret: string }
 
 /** The usable settings, or a reason fit for logs (never a value) why not. */
 export function parsePasswordConfig(
   env: { ADMIN_PASSWORD_HASH?: string; ADMIN_SESSION_SECRET?: string },
 ): PasswordConfig | string {
-  const hash = parsePasswordHash(env.ADMIN_PASSWORD_HASH);
-  if (!hash) return "ADMIN_PASSWORD_HASH is missing or malformed (or its iteration count is above 100000)";
+  const hash = parseAdminSecretHash(env.ADMIN_PASSWORD_HASH);
+  if (!hash) return "ADMIN_PASSWORD_HASH is missing or malformed: it must be hmac-sha256$<salt>$<mac>, so run `npm run generate-admin-secret` (earlier pbkdf2-sha256 values no longer work)";
   const sessionSecret = env.ADMIN_SESSION_SECRET;
   if (!sessionSecret || sessionSecret.length < MIN_SESSION_SECRET_LENGTH) {
     return `ADMIN_SESSION_SECRET is missing or shorter than ${MIN_SESSION_SECRET_LENGTH} characters`;
@@ -34,7 +34,7 @@ export function createPasswordAuth({ hash, sessionSecret }: PasswordConfig, deps
   const now = deps.now ?? Date.now;
   return {
     kind: "password",
-    checkPassword: (password) => verifyPassword(password, hash),
+    checkPassword: (password) => verifyAdminSecret(password, hash),
     async startSession() {
       const { value, sid } = await issueSession(sessionSecret, now());
       return { session: { identity: "admin", csrfBinding: sid }, setCookie: sessionCookie(value) };

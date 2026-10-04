@@ -33,6 +33,7 @@ const submit = async (value: string) => {
   $("#login-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
   await vi.waitFor(() => expect(button().disabled).toBe(false)); // disabled synchronously, re-enabled when settled
 };
+const SECRET = "AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw";
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 afterEach(() => { document.body.innerHTML = ""; });
@@ -46,9 +47,13 @@ describe("login page markup", () => {
     expect(html).not.toMatch(/<script(?![^>]*\bsrc=)/i);
     expect(html).not.toMatch(/<style|style=|\son[a-z]+=/i);
   });
-  it("has one password field that password managers recognise, and an alert region", () => {
+  it("has one secret field that password managers recognise, a 43-character limit, and an alert region", () => {
     expect(html.match(/<input/g)).toHaveLength(1);
     expect(html).toMatch(/<input[^>]*type="password"[^>]*autocomplete="current-password"|<input[^>]*autocomplete="current-password"[^>]*type="password"/);
+    expect(html).toContain('<label for="password">Admin secret</label>');
+    expect(html).toMatch(/<input[^>]*maxlength="43"/);
+    expect(html).toMatch(/<input[^>]*spellcheck="false"/);
+    expect(html).toMatch(/<input[^>]*autocapitalize="off"/);
     expect(html).toContain('role="alert"');
     expect(html).not.toMatch(/action=/);
   });
@@ -82,11 +87,11 @@ describe("login page", () => {
     expect($("#login-status").textContent).toContain("isn't set up");
   });
 
-  it("posts the password as JSON, disables the button meanwhile, and navigates on success", async () => {
+  it("posts the secret as JSON, disables the button meanwhile, and navigates on success", async () => {
     let release!: (r: Response) => void;
     const { calls, location } = await start((call) =>
       call.url === "/api/admin/session" ? SIGNED_OUT() : new Promise<Response>((resolve) => { release = resolve; }));
-    password().value = "hunter2 hunter2 hunter2";
+    password().value = SECRET;
     $("#login-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await flush();
     expect(button().disabled).toBe(true);
@@ -95,10 +100,27 @@ describe("login page", () => {
     expect(post.init?.method).toBe("POST");
     expect((post.init?.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
     expect(post.init?.credentials).toBe("same-origin");
-    expect(JSON.parse(post.init?.body as string)).toEqual({ password: "hunter2 hunter2 hunter2" });
+    expect(JSON.parse(post.init?.body as string)).toEqual({ password: SECRET });
     expect(location.assign).not.toHaveBeenCalled();
     release(reply(200, { identity: "admin", csrfToken: "t" }));
     await vi.waitFor(() => expect(location.assign).toHaveBeenCalledWith("/admin/"));
+  });
+
+  it("trims whitespace around a pasted secret, and treats whitespace alone as empty", async () => {
+    const { calls } = await start((call) => call.url === "/api/admin/session" ? SIGNED_OUT() : reply(401, {}));
+    await submit(`  ${SECRET}\t `);
+    expect(JSON.parse(calls[1].init?.body as string)).toEqual({ password: SECRET });
+    password().value = " \t ";
+    $("#login-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+    expect(calls).toHaveLength(2);
+    expect(error().textContent).toBe("Enter the admin secret.");
+  });
+
+  it("sends interior whitespace and other characters as typed, leaving the server to refuse them", async () => {
+    const { calls } = await start((call) => call.url === "/api/admin/session" ? SIGNED_OUT() : reply(401, {}));
+    await submit("abc def");
+    expect(JSON.parse(calls[1].init?.body as string)).toEqual({ password: "abc def" });
   });
 
   it("ignores a second submit while one is in flight", async () => {
@@ -109,12 +131,12 @@ describe("login page", () => {
     expect(calls.filter((c) => c.url === "/api/admin/login")).toHaveLength(1);
   });
 
-  it("shows a generic error in the alert region, re-enables the button and clears the field on a wrong password", async () => {
+  it("shows a generic error in the alert region, re-enables the button and clears the field on a wrong secret", async () => {
     const { location } = await start((call) =>
       call.url === "/api/admin/session" ? SIGNED_OUT() : reply(401, { error: { code: "invalid_credentials" } }));
-    await submit("not the password");
+    await submit("not the secret");
     expect(error().getAttribute("role")).toBe("alert");
-    expect(error().textContent).toBe("That password isn't right.");
+    expect(error().textContent).toBe("That admin secret isn't right.");
     expect(button().disabled).toBe(false);
     expect(password().value).toBe("");
     expect(location.assign).not.toHaveBeenCalled();
@@ -149,12 +171,12 @@ describe("login page", () => {
     expect(button().disabled).toBe(false);
   });
 
-  it("does not post an empty password", async () => {
+  it("does not post an empty secret", async () => {
     const { calls } = await start(SIGNED_OUT);
     $("#login-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await flush();
     expect(calls).toHaveLength(1);
-    expect(error().textContent).toBe("Enter the password.");
+    expect(error().textContent).toBe("Enter the admin secret.");
   });
 
   it("still shows the form if the session check itself fails", async () => {
