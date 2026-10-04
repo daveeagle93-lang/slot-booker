@@ -5,7 +5,7 @@ import type { AppEnv } from "../../../../../src/server/env";
 import { countRows, createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../../../../../src/test/db";
 import { onRequestPost as book } from "../../../events/[slug]/bookings";
 import { onRequestGet as publicGet } from "../../../events/[slug]/index";
-import { onRequestGet, onRequestPut } from "./index";
+import { onRequestDelete, onRequestGet, onRequestPut } from "./index";
 
 const ADMIN = { admin: { identity: "test@example.com", csrfBinding: "x" } };
 const NOW = "2026-10-01T12:00:00Z";
@@ -568,5 +568,114 @@ describe("PUT /api/admin/events/[slug]: invalid requests", () => {
       expect(res.headers.get("cache-control")).toBe("no-store");
     }
     expect(await snapshot(id)).toBe(before);
+  });
+});
+
+// ---- DELETE ----
+
+const del = (slug: string, body: unknown, o: PutOptions = {}): Promise<Response> => {
+  const headers: Record<string, string> = {};
+  if (o.contentType !== null) headers["Content-Type"] = o.contentType ?? "application/json";
+  return Promise.resolve(
+    onRequestDelete({
+      request: new Request(`http://localhost/api/admin/events/${slug}`, { method: "DELETE", headers, body: o.raw ?? JSON.stringify(body) }),
+      env: (o.env ?? t.env) as AppEnv, params: { slug }, data: o.data ? o.data[0] : ADMIN,
+    } as unknown as Parameters<typeof onRequestDelete>[0]),
+  );
+};
+
+/** [events, breaks, bookings] rows stored for one event: proves what a refused or successful delete did. */
+async function rowsOf(eventId: number): Promise<number[]> {
+  const n = async (sql: string) => (await t.env.DB.prepare(sql).bind(eventId).first<{ n: number }>())!.n;
+  return [
+    await n("SELECT COUNT(*) AS n FROM events WHERE id = ?"), await n("SELECT COUNT(*) AS n FROM breaks WHERE event_id = ?"),
+    await n("SELECT COUNT(*) AS n FROM bookings WHERE event_id = ?"),
+  ];
+}
+const orphans = async (): Promise<number> => (await t.env.DB.prepare(
+  `SELECT (SELECT COUNT(*) FROM bookings WHERE event_id NOT IN (SELECT id FROM events))
+        + (SELECT COUNT(*) FROM breaks WHERE event_id NOT IN (SELECT id FROM events)) AS n`,
+).first<{ n: number }>())!.n;
+
+describe("DELETE /api/admin/events/[slug]", () => {
+  const NAME = "Saturday trial day";
+  async function withData(name = NAME) {
+    const e = await seed({ name });
+    await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Alpha", "Ann");
+    await insertBooking(t.env.DB, e.id, "2026-10-24T08:15:00Z", "Bravo", "Bob");
+    return e;
+  }
+
+  it("refuses a missing, empty, mis-cased, padded or non-string name with 400 confirmation_mismatch, deleting nothing", async () => {
+    const e = await withData();
+    for (const body of [{}, { confirmName: "" }, { confirmName: "saturday trial day" }, { confirmName: `${NAME} ` }, { confirmName: ` ${NAME}` },
+      { confirmName: "Saturday  trial day" }, { confirmName: null }, { confirmName: 5 }, { confirmName: [NAME] }, { confirmName: { name: NAME } },
+      { confirmName: true }, { name: NAME }]) {
+      const res = await del(e.slug, body);
+      expect(res.status).toBe(400);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(await res.json()).toEqual({ error: { code: "confirmation_mismatch", message: "Type the event's name exactly to delete it." } });
+      expect(await rowsOf(e.id)).toEqual([1, 1, 2]);
+    }
+  });
+
+  it("compares the raw strings: another Unicode form of the name does not match", async () => {
+    const e = await withData("Caf\u00e9 trial"); // precomposed e-acute
+    const res = await del(e.slug, { confirmName: "Cafe\u0301 trial" }); // e + combining acute
+    expect(res.status).toBe(400);
+    expect(await rowsOf(e.id)).toEqual([1, 1, 2]);
+    expect((await del(e.slug, { confirmName: "Caf\u00e9 trial" })).status).toBe(200);
+  });
+
+  it("deletes the event, its breaks and its bookings, and answers what went, leaving another event untouched", async () => {
+    const e = await withData();
+    const other = await withData("Other day");
+    const res = await del(e.slug, { confirmName: NAME });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await res.json()).toEqual({ deleted: { slug: e.slug, name: NAME, bookings: 2 } });
+    expect(await rowsOf(e.id)).toEqual([0, 0, 0]);
+    expect(await rowsOf(other.id)).toEqual([1, 1, 2]);
+    expect(await orphans()).toBe(0);
+    expect((await get(e.slug)).status).toBe(404);
+  });
+
+  it("reports zero bookings for an event with none, and deletes an archived or past event too", async () => {
+    const empty = await insertEvent(t.env.DB, { name: "Quiet", archived: true, startUtc: "2026-01-01T08:00:00Z", endUtc: "2026-01-01T09:00:00Z" });
+    const res = await del(empty.slug, { confirmName: "Quiet" });
+    expect(await res.json()).toEqual({ deleted: { slug: empty.slug, name: "Quiet", bookings: 0 } });
+    expect(await rowsOf(empty.id)).toEqual([0, 0, 0]);
+  });
+
+  it("returns 404 for an unknown or malformed slug, and for a second delete, deleting nothing else", async () => {
+    const keep = await withData("Keeper");
+    for (const slug of [generateSlug(), "nope"]) {
+      const res = await del(slug, { confirmName: "anything" });
+      expect(res.status).toBe(404);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(((await res.json()) as { error: { code: string } }).error.code).toBe("not_found");
+    }
+    const e = await withData();
+    expect((await del(e.slug, { confirmName: NAME })).status).toBe(200);
+    const again = await del(e.slug, { confirmName: NAME });
+    expect(again.status).toBe(404);
+    expect(await rowsOf(keep.id)).toEqual([1, 1, 2]);
+  });
+
+  it("refuses with 401 unless the middleware set an admin identity, deleting nothing", async () => {
+    const e = await withData();
+    for (const data of [undefined, {}, { admin: { identity: "" } }]) {
+      expect((await del(e.slug, { confirmName: NAME }, { data: [data] })).status).toBe(401);
+    }
+    expect(await rowsOf(e.id)).toEqual([1, 1, 2]);
+  });
+
+  it("returns 415, 400 and 413 for bad bodies, deleting nothing", async () => {
+    const e = await withData();
+    expect((await del(e.slug, { confirmName: NAME }, { contentType: "text/plain" })).status).toBe(415);
+    expect((await del(e.slug, undefined, { raw: "" })).status).toBe(400);
+    expect((await del(e.slug, undefined, { raw: "[1]" })).status).toBe(400);
+    expect((await del(e.slug, { confirmName: NAME, padding: "x".repeat(40_000) })).status).toBe(413);
+    expect(await rowsOf(e.id)).toEqual([1, 1, 2]);
   });
 });

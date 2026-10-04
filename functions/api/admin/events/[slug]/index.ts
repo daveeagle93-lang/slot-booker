@@ -1,5 +1,6 @@
 import { refuseUnlessAdmin } from "../../../../../src/server/admin-context";
 import { checkRemoveIds, editFailed, eventDetail, eventNotFound, eventView, saveEventEdit } from "../../../../../src/server/admin-event-edit";
+import { deleteEvent } from "../../../../../src/server/admin-event-lifecycle";
 import { invalidInput, parseEventDraft, readEventBody } from "../../../../../src/server/admin-events";
 import { noStore } from "../../../../../src/server/bookings";
 import type { AppEnv } from "../../../../../src/server/env";
@@ -52,5 +53,29 @@ export const onRequestPut: PagesFunction<AppEnv, "slug"> = async ({ request, env
     return json({ event: eventView(result.event), slotCount: result.slotCount, removed: result.removed }, 200, noStore);
   } catch (e) {
     return editFailed("saveEventEdit", e);
+  }
+};
+
+/**
+ * Permanently deletes the event, its breaks and its bookings. `confirmName` must be the event's name exactly;
+ * the server checks it, not only the page, and a wrong or missing name deletes nothing (see deleteEvent).
+ */
+export const onRequestDelete: PagesFunction<AppEnv, "slug"> = async ({ request, env, data, params }) => {
+  const refused = refuseUnlessAdmin(data);
+  if (refused) return refused;
+  try {
+    const body = await readEventBody(request);
+    if (body instanceof Response) return body;
+    const result = await deleteEvent(env.DB, String(params.slug), body.confirmName);
+    switch (result.kind) {
+      case "not_found":
+        return eventNotFound();
+      case "confirmation_mismatch":
+        return errorResponse(400, "confirmation_mismatch", "Type the event's name exactly to delete it.", {}, noStore);
+      case "deleted":
+        return json({ deleted: { slug: result.slug, name: result.name, bookings: result.bookings } }, 200, noStore);
+    }
+  } catch (e) {
+    return editFailed("deleteEvent", e);
   }
 };
