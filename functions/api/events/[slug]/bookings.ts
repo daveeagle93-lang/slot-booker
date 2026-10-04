@@ -1,6 +1,7 @@
 import { createBooking, findSlot, noStore, readJsonObject, validateBookingInput } from "../../../../src/server/bookings";
 import { eventSummary, loadEventBySlug } from "../../../../src/server/events";
 import { errorResponse, json } from "../../../../src/server/http";
+import { bookingIcsUrl } from "../../../../src/server/ics";
 
 export const onRequestPost: PagesFunction<Env, "slug"> = async ({ request, env, params }) => {
   const event = await loadEventBySlug(env.DB, String(params.slug));
@@ -25,7 +26,11 @@ export const onRequestPost: PagesFunction<Env, "slug"> = async ({ request, env, 
   }
   switch (result.kind) {
     case "created":
-      return json({ booking: result.booking, event: eventSummary(event) }, 201, noStore);
+      return json({
+        booking: result.booking,
+        event: eventSummary(event),
+        icsUrl: bookingIcsUrl(event.slug, result.booking.slot.start, result.booking.dogName, result.booking.handlerName),
+      }, 201, noStore);
     case "duplicate_booking":
       return errorResponse(409, "duplicate_booking", "That dog and handler already have a booking for this event.", {}, noStore);
     case "slot_taken":

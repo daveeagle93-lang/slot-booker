@@ -62,6 +62,7 @@ describe("POST /api/events/:slug/bookings", () => {
         slug, name: "Summer show", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z",
         costPence: 1250, venuePostcode: "AB1 2CD", details: "Bring water", archived: false,
       },
+      icsUrl: `/api/events/${slug}/ics?slot=2026-06-13T08%3A15%3A00Z&dog=Zo%C3%AB&handler=Sam%20%20%20Jones`,
     });
     const stored = await rows(id);
     expect(stored).toHaveLength(1);
