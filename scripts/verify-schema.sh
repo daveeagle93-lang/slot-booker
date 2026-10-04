@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Applies the migrations to a throwaway local D1 and checks the schema's
+# constraints. Exits non-zero if any expectation fails. Run from anywhere.
+set -u
+cd "$(dirname "$0")/.."
+
+DB=slot-booker-db
+STATE=$(mktemp -d)
+trap 'rm -rf "$STATE"' EXIT
+FAILS=0
+
+wr() { npx wrangler d1 "$@" --local --persist-to "$STATE"; }
+sql() { wr execute "$DB" --command "$1" --json 2>&1; }
+
+# expect_ok LABEL SQL
+expect_ok() {
+  if out=$(sql "$2") && ! grep -q '"success": false' <<<"$out"; then echo "PASS (accepted): $1"
+  else echo "FAIL (should be accepted): $1"; echo "$out" | tail -5; FAILS=$((FAILS + 1)); fi
+}
+# expect_fail LABEL SQL ERROR_TEXT: must fail with the given error text
+expect_fail() {
+  out=$(sql "$2")
+  if grep -q "$3" <<<"$out"; then echo "PASS (rejected, $3): $1"
+  else echo "FAIL (should be rejected with '$3'): $1"; echo "$out" | tail -5; FAILS=$((FAILS + 1)); fi
+}
+# expect_count LABEL SQL EXPECTED
+expect_count() {
+  got=$(sql "$2" | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+  if [ "$got" = "$3" ]; then echo "PASS (count=$3): $1"
+  else echo "FAIL ($1): expected $3, got '$got'"; FAILS=$((FAILS + 1)); fi
+}
+
+wr migrations apply "$DB" || { echo "FAIL: migration did not apply"; exit 1; }
+
+expect_count "foreign keys are on" "SELECT foreign_keys AS n FROM pragma_foreign_keys" 1
+
+EV="INSERT INTO events (name, start_utc, end_utc, session_minutes, venue_postcode) VALUES"
+expect_ok "insert event 1" "$EV ('Test A', '2026-03-14T09:00:00Z', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')"
+expect_ok "insert event 2" "$EV ('Test B', '2026-06-13T09:00:00Z', '2026-06-13T16:00:00Z', 15, 'AB1 2CD')"
+expect_ok "insert breaks" "INSERT INTO breaks (event_id, start_utc, end_utc) VALUES (1, '2026-03-14T12:00:00Z', '2026-03-14T13:00:00Z'), (1, '2026-03-14T14:00:00Z', '2026-03-14T14:15:00Z')"
+
+BK="INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name) VALUES"
+expect_ok "first booking" "$BK (1, '2026-03-14T09:00:00Z', 'Rex', 'Sam Jones')"
+expect_fail "duplicate (event, slot)" "$BK (1, '2026-03-14T09:00:00Z', 'Fido', 'Ann Lee')" "UNIQUE constraint failed"
+expect_fail "duplicate dog+handler, exact" "$BK (1, '2026-03-14T09:15:00Z', 'Rex', 'Sam Jones')" "UNIQUE constraint failed"
+expect_fail "duplicate dog+handler, case/whitespace variants" "$BK (1, '2026-03-14T09:15:00Z', ' rex ', 'sam jones')" "UNIQUE constraint failed"
+expect_ok "same handler, different dog, same event" "$BK (1, '2026-03-14T09:15:00Z', 'Fido', 'Sam Jones')"
+expect_ok "same dog+handler, different event" "$BK (2, '2026-06-13T09:00:00Z', 'Rex', 'Sam Jones')"
+expect_ok "no ab+c / a+bc collision" "$BK (1, '2026-03-14T09:30:00Z', 'ab', 'c'), (1, '2026-03-14T09:45:00Z', 'a', 'bc')"
+expect_fail "blank dog name" "$BK (1, '2026-03-14T10:00:00Z', '  ', 'Ann Lee')" "CHECK constraint failed"
+expect_fail "bad booking timestamp format" "$BK (1, '2026-03-14 10:00', 'Bo', 'Ann Lee')" "CHECK constraint failed"
+expect_fail "booking for missing event" "$BK (99, '2026-03-14T10:00:00Z', 'Bo', 'Ann Lee')" "FOREIGN KEY constraint failed"
+
+expect_fail "trailing junk after timestamp" "$BK (1, '2026-03-14T10:00:00Zx', 'Bo', 'Ann Lee')" "CHECK constraint failed"
+expect_fail "bad event timestamp format" "$EV ('Bad', '2026-03-14 09:00', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
+expect_fail "event end == start" "$EV ('Bad', '2026-03-14T09:00:00Z', '2026-03-14T09:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
+expect_fail "event end < start" "$EV ('Bad', '2026-03-14T09:00:00Z', '2026-03-14T08:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
+expect_fail "break end <= start" "INSERT INTO breaks (event_id, start_utc, end_utc) VALUES (1, '2026-03-14T12:00:00Z', '2026-03-14T12:00:00Z')" "CHECK constraint failed"
+
+expect_ok "delete event 1" "DELETE FROM events WHERE id = 1"
+expect_count "cascade: breaks removed" "SELECT count(*) AS n FROM breaks WHERE event_id = 1" 0
+expect_count "cascade: bookings removed" "SELECT count(*) AS n FROM bookings WHERE event_id = 1" 0
+expect_count "other event's booking kept" "SELECT count(*) AS n FROM bookings WHERE event_id = 2" 1
+
+if [ "$FAILS" -ne 0 ]; then echo "$FAILS check(s) FAILED"; exit 1; fi
+echo "All schema checks passed"
