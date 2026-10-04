@@ -61,8 +61,20 @@ export async function insertEvent(db: D1Database, o: EventOverrides = {}): Promi
   return { id: row!.id, slug };
 }
 
-export async function insertBreak(db: D1Database, eventId: number, startUtc: string, endUtc: string): Promise<void> {
-  await db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc) VALUES (?, ?, ?)").bind(eventId, startUtc, endUtc).run();
+export async function insertBreak(db: D1Database, eventId: number, startUtc: string, endUtc: string, label = ""): Promise<void> {
+  await db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (?, ?, ?, ?)").bind(eventId, startUtc, endUtc, label).run();
+}
+
+/** A booking straight into the table (no slot or window checks); the identity keys are the lower-cased names. */
+export async function insertBooking(db: D1Database, eventId: number, slotStartUtc: string, dogName: string, handlerName: string): Promise<number> {
+  const row = await db
+    .prepare(
+      `INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token)
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    )
+    .bind(eventId, slotStartUtc, dogName, handlerName, dogName.toLowerCase(), handlerName.toLowerCase(), generateSlug())
+    .first<{ id: number }>();
+  return row!.id;
 }
 
 /** Row count of a table, for asserting that a failed request left nothing behind. */
