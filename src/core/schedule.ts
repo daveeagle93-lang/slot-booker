@@ -15,6 +15,8 @@
  * no more than `nearMissMinutes`, a suggestion proposes moving the break LATER (to start where
  * the dropped session would have ended, keeping its duration). The schedule itself is always
  * computed against the breaks as given; breaks are never moved or changed, and never moved earlier.
+ * A suggestion is suppressed (the schedule is unaffected) if the moved break would overlap any
+ * other break (merely touching is fine) or would end after `end` (ending exactly at `end` is fine).
  */
 export interface TimeRange { start: string; end: string }
 export interface ScheduleInput {
@@ -81,15 +83,15 @@ export function generateSchedule(input: ScheduleInput): ScheduleResult {
     if (sessionEnd > end) break;
     const overrun = breaks.find((b) => b.start > cursor && b.start < sessionEnd);
     if (overrun) {
-      if (sessionEnd - overrun.start <= nearMiss) {
+      const movedStart = sessionEnd;
+      const movedEnd = sessionEnd + overrun.end - overrun.start;
+      const collides = breaks.some((b) => b !== overrun && movedStart < b.end && b.start < movedEnd);
+      if (sessionEnd - overrun.start <= nearMiss && !collides && movedEnd <= end) {
         suggestions.push({
           droppedSlot: { start: toIso(cursor), end: toIso(sessionEnd) },
           break: { start: toIso(overrun.start), end: toIso(overrun.end) },
           overrunMinutes: (sessionEnd - overrun.start) / MINUTE,
-          suggestedBreak: {
-            start: toIso(sessionEnd),
-            end: toIso(sessionEnd + overrun.end - overrun.start),
-          },
+          suggestedBreak: { start: toIso(movedStart), end: toIso(movedEnd) },
         });
       }
       cursor = overrun.end;

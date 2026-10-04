@@ -211,6 +211,87 @@ describe("generateSchedule", () => {
     expect(result.suggestions[0]?.overrunMinutes).toBe(20);
   });
 
+  it("suppresses the suggestion when the moved break would overlap the next break, leaving slots unchanged", () => {
+    const result = generateSchedule({
+      start: "2026-06-06T09:00:00Z",
+      end: "2026-06-06T12:00:00Z",
+      sessionMinutes: 30,
+      gapMinutes: 5,
+      breaks: [
+        { start: "2026-06-06T10:00:00Z", end: "2026-06-06T10:30:00Z" },
+        { start: "2026-06-06T10:30:00Z", end: "2026-06-06T11:00:00Z" },
+      ],
+    });
+    // The dropped 09:35-10:05 session would move the first break to 10:05-10:35, into the second.
+    expect(result.slots).toEqual([
+      { start: "2026-06-06T09:00:00Z", end: "2026-06-06T09:30:00Z" },
+      { start: "2026-06-06T11:00:00Z", end: "2026-06-06T11:30:00Z" },
+    ]);
+    expect(result.suggestions).toEqual([]);
+  });
+
+  it("suppresses the suggestion when the moved break would run past the event end, leaving slots unchanged", () => {
+    const result = generateSchedule({
+      start: "2026-06-06T09:00:00Z",
+      end: "2026-06-06T10:30:00Z",
+      sessionMinutes: 30,
+      gapMinutes: 5,
+      breaks: [{ start: "2026-06-06T10:00:00Z", end: "2026-06-06T10:30:00Z" }],
+    });
+    // The suggested break 10:05-10:35 would end after the 10:30 event end.
+    expect(result.slots).toEqual([
+      { start: "2026-06-06T09:00:00Z", end: "2026-06-06T09:30:00Z" },
+    ]);
+    expect(result.suggestions).toEqual([]);
+  });
+
+  it("keeps the suggestion when the moved break exactly touches the start of the next break", () => {
+    const result = generateSchedule({
+      start: "2026-06-06T09:00:00Z",
+      end: "2026-06-06T12:00:00Z",
+      sessionMinutes: 30,
+      gapMinutes: 5,
+      breaks: [
+        { start: "2026-06-06T10:00:00Z", end: "2026-06-06T10:30:00Z" },
+        { start: "2026-06-06T10:35:00Z", end: "2026-06-06T11:00:00Z" },
+      ],
+    });
+    // The suggested break 10:05-10:35 ends exactly where the second break starts: not an overlap.
+    expect(result.slots).toEqual([
+      { start: "2026-06-06T09:00:00Z", end: "2026-06-06T09:30:00Z" },
+      { start: "2026-06-06T11:00:00Z", end: "2026-06-06T11:30:00Z" },
+    ]);
+    expect(result.suggestions).toEqual([
+      {
+        droppedSlot: { start: "2026-06-06T09:35:00Z", end: "2026-06-06T10:05:00Z" },
+        break: { start: "2026-06-06T10:00:00Z", end: "2026-06-06T10:30:00Z" },
+        overrunMinutes: 5,
+        suggestedBreak: { start: "2026-06-06T10:05:00Z", end: "2026-06-06T10:35:00Z" },
+      },
+    ]);
+  });
+
+  it("keeps the suggestion when the moved break ends exactly at the event end", () => {
+    const result = generateSchedule({
+      start: "2026-06-06T09:00:00Z",
+      end: "2026-06-06T10:35:00Z",
+      sessionMinutes: 30,
+      gapMinutes: 5,
+      breaks: [{ start: "2026-06-06T10:00:00Z", end: "2026-06-06T10:30:00Z" }],
+    });
+    expect(result.slots).toEqual([
+      { start: "2026-06-06T09:00:00Z", end: "2026-06-06T09:30:00Z" },
+    ]);
+    expect(result.suggestions).toEqual([
+      {
+        droppedSlot: { start: "2026-06-06T09:35:00Z", end: "2026-06-06T10:05:00Z" },
+        break: { start: "2026-06-06T10:00:00Z", end: "2026-06-06T10:30:00Z" },
+        overrunMinutes: 5,
+        suggestedBreak: { start: "2026-06-06T10:05:00Z", end: "2026-06-06T10:35:00Z" },
+      },
+    ]);
+  });
+
   it("lets a session that ends exactly at a break start fit", () => {
     const result = generateSchedule({
       start: "2026-06-06T09:00:00Z",
