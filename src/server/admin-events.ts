@@ -1,6 +1,7 @@
 import { londonToUtc, LondonTimeError, utcToLondon } from "../core/london";
 import { DEFAULT_NEAR_MISS_MINUTES, generateSchedule, type TimeRange } from "../core/schedule";
-import { INVISIBLE, noStore, readJsonObject } from "./bookings";
+import { generateSlug } from "../core/slug";
+import { IDEMPOTENCY_KEY, INVISIBLE, noStore, readJsonObject } from "./bookings";
 import { bookingWindow, type EventRow } from "./events";
 import { errorResponse } from "./http";
 
@@ -168,16 +169,24 @@ export function parseEventDraft(
   return { draft };
 }
 
+export const readEventBody = (request: Request): Promise<Record<string, unknown> | Response> =>
+  readJsonObject(request, MAX_BODY_BYTES);
+
+export const invalidInput = (fields: Fields): Response =>
+  errorResponse(400, "invalid_input", "Check the highlighted fields.", { fields }, noStore);
+
 /** Reads and validates a draft from the request body, or returns the error response to send. */
 export async function readEventDraft(request: Request, requireFuture: boolean): Promise<EventDraft | Response> {
-  const body = await readJsonObject(request, MAX_BODY_BYTES);
+  const body = await readEventBody(request);
   if (body instanceof Response) return body;
   const parsed = parseEventDraft(body, { now: new Date(), requireFuture });
-  if ("fields" in parsed) {
-    return errorResponse(400, "invalid_input", "Check the highlighted fields.", { fields: parsed.fields }, noStore);
-  }
+  if ("fields" in parsed) return invalidInput(parsed.fields);
   return parsed.draft;
 }
+
+/** The create request's idempotency key, or the field error to report. */
+export const checkEventKey = (value: unknown): { key: string } | { message: string } =>
+  typeof value === "string" && IDEMPOTENCY_KEY.test(value) ? { key: value } : { message: "Reload the page and try again." };
 
 export interface PreviewSuggestion {
   /** Index in the draft's breaks of the break this is about. */
@@ -221,16 +230,103 @@ export function previewSchedule(draft: EventDraft): { slots: TimeRange[]; sugges
   return { slots, suggestions: usable };
 }
 
+/** An event as stored, with the breaks as stored: all that create answers with and compares. */
+export interface SavedEvent {
+  slug: string; name: string; startUtc: string; endUtc: string; sessionMinutes: number; gapMinutes: number;
+  costPence: number; venuePostcode: string; details: string;
+  breaks: { startUtc: string; endUtc: string; label: string }[];
+}
+
+export interface CreateEventResult { kind: "created" | "replayed" | "idempotency_key_reuse"; saved: SavedEvent }
+
+/** The create response body: the same for a first create, a replay and the original shown on a reuse. */
+export const createdBody = (e: SavedEvent) => ({
+  event: {
+    slug: e.slug, name: e.name, startUtc: e.startUtc, endUtc: e.endUtc, sessionMinutes: e.sessionMinutes,
+    gapMinutes: e.gapMinutes, costPence: e.costPence, venuePostcode: e.venuePostcode, details: e.details,
+  },
+  path: `/e/${e.slug}`,
+  slotCount: generateSchedule({
+    start: e.startUtc, end: e.endUtc, sessionMinutes: e.sessionMinutes, gapMinutes: e.gapMinutes,
+    breaks: e.breaks.map((b) => ({ start: b.startUtc, end: b.endUtc })),
+  }).slots.length,
+});
+
+const breakKey = (b: { startUtc: string; endUtc: string; label: string }): string => JSON.stringify([b.startUtc, b.endUtc, b.label]);
+
+/** The same event, breaks compared as a set so their order doesn't matter. */
+function sameEvent(saved: SavedEvent, d: EventDraft): boolean {
+  const mine = d.breaks.map(breakKey).sort();
+  const theirs = saved.breaks.map(breakKey).sort();
+  return saved.name === d.name && saved.startUtc === d.startUtc && saved.endUtc === d.endUtc
+    && saved.sessionMinutes === d.sessionMinutes && saved.gapMinutes === d.gapMinutes && saved.costPence === d.costPence
+    && saved.venuePostcode === d.venuePostcode && saved.details === d.details
+    && mine.length === theirs.length && mine.every((k, i) => k === theirs[i]);
+}
+
+/**
+ * What the idempotency key says: a replay if an event saved under it matches the draft, a reuse (carrying
+ * the saved event as stored, never the draft) if it differs, or null if no event holds the key. One batch,
+ * so the event and its breaks come from the same moment.
+ */
+export async function findEventByKey(
+  db: D1Database, key: string, d: EventDraft,
+): Promise<{ kind: "replayed" | "idempotency_key_reuse"; saved: SavedEvent } | null> {
+  const [events, breaks] = await db.batch([
+    db.prepare(
+      `SELECT slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details
+       FROM events WHERE idempotency_key = ?`,
+    ).bind(key),
+    db.prepare(
+      `SELECT start_utc, end_utc, label FROM breaks
+       WHERE event_id = (SELECT id FROM events WHERE idempotency_key = ?) ORDER BY start_utc, end_utc, label`,
+    ).bind(key),
+  ]);
+  const e = (events.results as {
+    slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number; gap_minutes: number;
+    cost_pence: number; venue_postcode: string; details: string;
+  }[])[0];
+  if (!e) return null;
+  const saved: SavedEvent = {
+    slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc, sessionMinutes: e.session_minutes,
+    gapMinutes: e.gap_minutes, costPence: e.cost_pence, venuePostcode: e.venue_postcode, details: e.details,
+    breaks: (breaks.results as { start_utc: string; end_utc: string; label: string }[])
+      .map((b) => ({ startUtc: b.start_utc, endUtc: b.end_utc, label: b.label })),
+  };
+  return { kind: sameEvent(saved, d) ? "replayed" : "idempotency_key_reuse", saved };
+}
+
+/**
+ * Creates the event unless the key already holds one. The key is looked up first, then the insert is
+ * tried, and if it fails on a UNIQUE constraint the key is looked up again: a simultaneous request with
+ * the same key may have won, and the unique index decides. If the key still holds nothing, the failure
+ * was something else (a slug clash) and is rethrown.
+ */
+export async function createEvent(db: D1Database, d: EventDraft, key: string): Promise<CreateEventResult> {
+  const prior = await findEventByKey(db, key, d);
+  if (prior) return prior;
+  const slug = generateSlug();
+  try {
+    await insertEventWithBreaks(db, slug, d, key);
+  } catch (e) {
+    if (!(e instanceof Error) || !e.message.includes("UNIQUE constraint failed")) throw e;
+    const won = await findEventByKey(db, key, d);
+    if (won) return won;
+    throw e;
+  }
+  return { kind: "created", saved: { ...d, slug } };
+}
+
 /**
  * Inserts the event and all its breaks in one batch, so either all of it is stored or none.
  * Assumes a validated draft; the table CHECK constraints are the last line of defence.
  */
-export async function insertEventWithBreaks(db: D1Database, slug: string, d: EventDraft): Promise<void> {
+export async function insertEventWithBreaks(db: D1Database, slug: string, d: EventDraft, idempotencyKey: string): Promise<void> {
   await db.batch([
     db.prepare(
-      `INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(slug, d.name, d.startUtc, d.endUtc, d.sessionMinutes, d.gapMinutes, d.costPence, d.venuePostcode, d.details),
+      `INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, idempotency_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(slug, d.name, d.startUtc, d.endUtc, d.sessionMinutes, d.gapMinutes, d.costPence, d.venuePostcode, d.details, idempotencyKey),
     ...d.breaks.map((b) =>
       db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES ((SELECT id FROM events WHERE slug = ?), ?, ?, ?)")
         .bind(slug, b.startUtc, b.endUtc, b.label)),

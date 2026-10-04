@@ -47,7 +47,12 @@ const list = (vars: Partial<AppEnv> = {}, ...data: unknown[]): Promise<Response>
     } as unknown as Parameters<typeof onRequestGet>[0]),
   );
 
+let keyCounter = 0;
+/** A fresh valid idempotency key per call. */
+const newKey = () => `admin-key-${String(++keyCounter).padStart(10, "0")}`;
+
 const draft = (over: Record<string, unknown> = {}) => ({
+  idempotencyKey: newKey(),
   name: "Saturday trial day", date: "2026-10-24", start: "09:00", end: "12:00", sessionMinutes: 15, gapMinutes: 0,
   costPence: 1500, venuePostcode: "ab1  2cd", details: "Bring water", breaks: [{ start: "10:00", end: "10:30" }], ...over,
 });
@@ -187,7 +192,12 @@ describe("POST /api/admin/events", () => {
   it("returns a generic 500, without leaking the cause, when the batch fails", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const db = { batch: () => Promise.reject(new Error("D1_ERROR: secret detail")), prepare: () => ({ bind: () => ({}) }) };
+      // The first batch is the idempotency lookup (a miss); the second is the insert, which fails.
+      let batches = 0;
+      const db = {
+        batch: () => (batches++ === 0 ? Promise.resolve([{ results: [] }, { results: [] }]) : Promise.reject(new Error("D1_ERROR: secret detail"))),
+        prepare: () => ({ bind: () => ({}) }),
+      };
       const res = await post(draft(), { env: { DB: db } });
       expect(res.status).toBe(500);
       expect(res.headers.get("cache-control")).toBe("no-store");
@@ -195,6 +205,7 @@ describe("POST /api/admin/events", () => {
       expect(JSON.parse(text).error.code).toBe("internal_error");
       expect(text).not.toContain("secret");
       expect(error).toHaveBeenCalled();
+      expect(batches).toBe(2);
     } finally {
       error.mockRestore();
     }
@@ -219,6 +230,197 @@ describe("POST /api/admin/events", () => {
     expect(res.status).toBe(413);
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(await countRows(t.env.DB, "events")).toBe(events);
+  });
+});
+
+describe("POST /api/admin/events: idempotency key", () => {
+  const eventRows = async (key: string) =>
+    (await t.env.DB.prepare("SELECT id, slug FROM events WHERE idempotency_key = ?").bind(key).all<{ id: number; slug: string }>()).results;
+  const breakRows = async (id: number) =>
+    (await t.env.DB.prepare("SELECT start_utc, end_utc, label FROM breaks WHERE event_id = ? ORDER BY start_utc").bind(id).all()).results;
+  const LUNCH = { start: "10:00", end: "10:30", label: "Lunch" };
+
+  it("is stored with the event", async () => {
+    const body = draft();
+    const { event } = (await (await post(body)).json()) as Created;
+    expect(await eventRows(body.idempotencyKey)).toEqual([{ id: expect.any(Number), slug: event.slug }]);
+  });
+
+  it.each([["missing", undefined], ["too short", "short"], ["too long", "k".repeat(65)], ["badly formed", "has spaces in it 123456"], ["a number", 1234567890123456]])(
+    "refuses a %s key with 400 and fields.idempotencyKey, writing nothing", async (_n, idempotencyKey) => {
+      const events = await countRows(t.env.DB, "events");
+      const res = await post(draft({ idempotencyKey }));
+      expect(res.status).toBe(400);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(await res.json()).toEqual({
+        error: { code: "invalid_input", message: "Check the highlighted fields." },
+        fields: { idempotencyKey: "Reload the page and try again." },
+      });
+      expect(await countRows(t.env.DB, "events")).toBe(events);
+    });
+
+  it("reports a bad key together with the other field errors", async () => {
+    const res = await post(draft({ idempotencyKey: undefined, name: "" }));
+    expect(((await res.json()) as { fields: unknown }).fields).toEqual({
+      name: "Enter the event name.", idempotencyKey: "Reload the page and try again.",
+    });
+  });
+
+  it("is not needed by the preview, which stores nothing", async () => {
+    const { idempotencyKey: _omitted, ...withoutKey } = draft();
+    const res = await preview({
+      request: new Request("http://localhost/p", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withoutKey) }),
+      env: {}, data: ADMIN,
+    } as unknown as Parameters<typeof preview>[0]);
+    expect(res.status).toBe(200);
+  });
+
+  it("answers the same key and the same payload with the original event: 201, replayed, one event, one set of breaks", async () => {
+    const body = draft({ breaks: [LUNCH, { start: "11:00", end: "11:10" }] });
+    const first = await post(body);
+    expect(first.status).toBe(201);
+    expect(first.headers.get("idempotent-replayed")).toBeNull();
+    const created = await first.text();
+    // The same request again, spelled differently where validation normalises (postcode, padding, break order).
+    const again = await post({
+      ...body, name: "  Saturday trial day ", venuePostcode: "AB1 2CD",
+      breaks: [{ start: "11:00", end: "11:10" }, { ...LUNCH, label: " Lunch " }],
+    });
+    expect(again.status).toBe(201);
+    expect(again.headers.get("idempotent-replayed")).toBe("true");
+    expect(again.headers.get("cache-control")).toBe("no-store");
+    expect(await again.text()).toBe(created);
+    const rows = await eventRows(body.idempotencyKey);
+    expect(rows).toHaveLength(1);
+    expect(await breakRows(rows[0].id)).toHaveLength(2);
+  });
+
+  it("gives different keys different events", async () => {
+    const a = await create();
+    const b = await create();
+    expect(a.event.slug).not.toBe(b.event.slug);
+  });
+
+  it.each([
+    ["the name", { name: "Sunday trial day" }],
+    ["a break time", { breaks: [{ ...LUNCH, end: "10:35" }] }],
+    ["a break label", { breaks: [{ ...LUNCH, label: "Tea" }] }],
+    ["a break label (removed)", { breaks: [{ start: "10:00", end: "10:30" }] }],
+    ["the number of breaks", { breaks: [LUNCH, { start: "11:00", end: "11:10" }] }],
+    ["the cost", { costPence: 1600 }],
+    ["the session length", { sessionMinutes: 20 }],
+    ["the details", { details: "Bring tea" }],
+    ["the date", { date: "2026-10-25", start: "09:00", end: "12:00" }],
+  ])("refuses the same key when %s changes: 422 with the original event, still one event", async (_n, changed) => {
+    const body = draft({ breaks: [LUNCH] });
+    const first = await post(body);
+    const created = await first.text();
+    const events = await countRows(t.env.DB, "events");
+    const res = await post({ ...body, ...changed });
+    expect(res.status).toBe(422);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("idempotent-replayed")).toBeNull();
+    expect(await res.json()).toEqual({
+      error: {
+        code: "idempotency_key_reuse",
+        message: "An earlier attempt with this key already saved an event, so this change wasn't applied.",
+      },
+      ...JSON.parse(created),
+    });
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+    const [row] = await eventRows(body.idempotencyKey);
+    expect(await breakRows(row.id)).toEqual([{ start_utc: "2026-10-24T09:00:00Z", end_utc: "2026-10-24T09:30:00Z", label: "Lunch" }]);
+  });
+
+  it("creates one event from two simultaneous requests with the same key, and both name the same slug", async () => {
+    const body = draft({ breaks: [LUNCH] });
+    const events = await countRows(t.env.DB, "events");
+    const [a, b] = await Promise.all([post(body), post(body)]);
+    expect([a.status, b.status]).toEqual([201, 201]);
+    expect([a, b].filter((r) => r.headers.get("idempotent-replayed") === "true")).toHaveLength(1);
+    const [ba, bb] = (await Promise.all([a.json(), b.json()])) as Created[];
+    expect(ba).toEqual(bb);
+    expect(await countRows(t.env.DB, "events")).toBe(events + 1);
+    const rows = await eventRows(body.idempotencyKey);
+    expect(rows.map((r) => r.slug)).toEqual([ba.event.slug]);
+    expect(await breakRows(rows[0].id)).toHaveLength(1);
+  });
+
+  it("two simultaneous requests with the same key but different payloads: one wins, the other gets 422 with the winner", async () => {
+    const key = newKey();
+    const events = await countRows(t.env.DB, "events");
+    const [a, b] = await Promise.all([post(draft({ idempotencyKey: key, name: "One" })), post(draft({ idempotencyKey: key, name: "Two" }))]);
+    expect([a.status, b.status].sort()).toEqual([201, 422]);
+    const [ba, bb] = (await Promise.all([a.json(), b.json()])) as Created[];
+    expect(ba.event.slug).toBe(bb.event.slug);
+    expect(await countRows(t.env.DB, "events")).toBe(events + 1);
+  });
+
+  it("recovers when the lookup missed but the insert hits the unique key (a simultaneous request won in between)", async () => {
+    // The first batch is the lookup: pretend it ran just before the other request committed.
+    const racing = () => {
+      let batches = 0;
+      const calls = () => batches;
+      const db = {
+        prepare: (q: string) => t.env.DB.prepare(q),
+        batch: (statements: D1PreparedStatement[]) =>
+          batches++ === 0 ? Promise.resolve([{ results: [] }, { results: [] }]) : t.env.DB.batch(statements),
+      };
+      return { db, calls };
+    };
+    const body = draft({ breaks: [LUNCH] });
+    const created = await (await post(body)).text();
+    const events = await countRows(t.env.DB, "events");
+
+    const same = racing();
+    const res = await post(body, { env: { DB: same.db } });
+    expect(same.calls()).toBe(3); // lookup (stubbed), failed insert, lookup again
+    expect(res.status).toBe(201);
+    expect(res.headers.get("idempotent-replayed")).toBe("true");
+    expect(await res.text()).toBe(created);
+
+    const different = racing();
+    const changed = await post({ ...body, name: "Other" }, { env: { DB: different.db } });
+    expect(changed.status).toBe(422);
+    expect(((await changed.json()) as Created).event.name).toBe("Saturday trial day");
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+  });
+
+  describe("after the event's start has passed", () => {
+    it("still answers a replay of the same request with the original event", async () => {
+      const body = draft({ date: "2026-10-24" });
+      const created = await (await post(body)).text();
+      vi.setSystemTime(new Date("2026-10-24T08:00:00Z"));
+      const res = await post(body);
+      expect(res.status).toBe(201);
+      expect(res.headers.get("idempotent-replayed")).toBe("true");
+      expect(await res.text()).toBe(created);
+    });
+
+    it("answers a changed request with 422 and the original", async () => {
+      const body = draft({ date: "2026-10-24" });
+      await post(body);
+      vi.setSystemTime(new Date("2026-10-24T08:00:00Z"));
+      expect((await post({ ...body, name: "Changed" })).status).toBe(422);
+    });
+
+    it("still refuses a new key for a past date, with the date error", async () => {
+      vi.setSystemTime(new Date("2026-10-24T08:00:00Z"));
+      const events = await countRows(t.env.DB, "events");
+      const res = await post(draft({ date: "2026-10-24" }));
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { fields: unknown }).fields).toEqual({ date: "The event must start in the future." });
+      expect(await countRows(t.env.DB, "events")).toBe(events);
+    });
+
+    it("reports every error for a past date with other mistakes, whatever the key", async () => {
+      const body = draft({ date: "2026-10-24", name: "" });
+      await post(draft({ date: "2026-10-24", idempotencyKey: body.idempotencyKey }));
+      vi.setSystemTime(new Date("2026-10-24T08:00:00Z"));
+      const res = await post(body);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { fields: unknown }).fields).toEqual({ name: "Enter the event name.", date: "The event must start in the future." });
+    });
   });
 });
 

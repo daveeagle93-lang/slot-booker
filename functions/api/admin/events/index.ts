@@ -1,10 +1,12 @@
 import { refuseUnlessAdmin } from "../../../../src/server/admin-context";
-import { insertEventWithBreaks, listUpcomingEvents, previewSchedule, readEventDraft } from "../../../../src/server/admin-events";
+import {
+  checkEventKey, createdBody, createEvent, findEventByKey, invalidInput, listUpcomingEvents, parseEventDraft, readEventBody,
+  type CreateEventResult,
+} from "../../../../src/server/admin-events";
 import { noStore } from "../../../../src/server/bookings";
 import { bookingCutoffOffsetMinutes } from "../../../../src/server/config";
 import type { AppEnv } from "../../../../src/server/env";
 import { errorResponse, json } from "../../../../src/server/http";
-import { generateSlug } from "../../../../src/core/slug";
 
 const internalError = (what: string, e: unknown): Response => {
   console.error(`${what} failed:`, e instanceof Error ? e.message : String(e));
@@ -25,20 +27,37 @@ export const onRequestGet: PagesFunction<AppEnv> = async ({ env, data }) => {
 export const onRequestPost: PagesFunction<AppEnv> = async ({ request, env, data }) => {
   const refused = refuseUnlessAdmin(data);
   if (refused) return refused;
-  const draft = await readEventDraft(request, true);
-  if (draft instanceof Response) return draft;
-  const slug = generateSlug();
+  const body = await readEventBody(request);
+  if (body instanceof Response) return body;
+  // The key belongs to this endpoint only: the preview stores nothing, so it doesn't send one.
+  const key = checkEventKey(body.idempotencyKey);
+  const now = new Date();
+  const parsed = parseEventDraft(body, { now, requireFuture: true });
+  if ("message" in key) return invalidInput({ ...("fields" in parsed ? parsed.fields : {}), idempotencyKey: key.message });
+
+  let result: CreateEventResult | null;
   try {
-    await insertEventWithBreaks(env.DB, slug, draft);
+    if ("draft" in parsed) {
+      result = await createEvent(env.DB, parsed.draft, key.key);
+    } else {
+      // Only a start that is no longer in the future (or too far ahead) may be wrong: a retry of a request that
+      // was already saved is still answered with its event, as booking retries are after the window closes.
+      const lenient = parseEventDraft(body, { now, requireFuture: false });
+      if ("fields" in lenient) return invalidInput(parsed.fields);
+      result = await findEventByKey(env.DB, key.key, lenient.draft);
+      if (!result) return invalidInput(parsed.fields);
+    }
   } catch (e) {
-    return internalError("insertEventWithBreaks", e);
+    return internalError("createEvent", e);
   }
-  return json({
-    event: {
-      slug, name: draft.name, startUtc: draft.startUtc, endUtc: draft.endUtc, sessionMinutes: draft.sessionMinutes,
-      gapMinutes: draft.gapMinutes, costPence: draft.costPence, venuePostcode: draft.venuePostcode, details: draft.details,
-    },
-    path: `/e/${slug}`,
-    slotCount: previewSchedule(draft).slots.length,
-  }, 201, noStore);
+  switch (result.kind) {
+    case "created":
+      return json(createdBody(result.saved), 201, noStore);
+    case "replayed":
+      return json(createdBody(result.saved), 201, { ...noStore, "Idempotent-Replayed": "true" });
+    case "idempotency_key_reuse": {
+      const message = "An earlier attempt with this key already saved an event, so this change wasn't applied.";
+      return errorResponse(422, "idempotency_key_reuse", message, createdBody(result.saved), noStore);
+    }
+  }
 };

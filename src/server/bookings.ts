@@ -6,7 +6,7 @@ import { errorResponse } from "./http";
 
 const MAX_BODY_BYTES = 4096;
 const MAX_NAME_CODE_POINTS = 80;
-const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,64}$/;
+export const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,64}$/;
 // Soft hyphen, zero-width space, LRM/RLM, bidi controls, word joiner and invisible operators, BOM.
 // ZWNJ/ZWJ (U+200C/D) are allowed: emoji sequences and some scripts need them.
 export const INVISIBLE = /[\u00AD\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/u;

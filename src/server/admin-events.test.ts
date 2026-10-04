@@ -403,11 +403,12 @@ describe("insertEventWithBreaks", () => {
   it("stores the event and every break", async () => {
     const d = draftOf({ breaks: [{ start: "10:00", end: "10:15" }, { start: "11:00", end: "11:15" }] });
     const slug = generateSlug();
-    await insertEventWithBreaks(t.env.DB, slug, d);
+    await insertEventWithBreaks(t.env.DB, slug, d, "insert-key-aaaaaaaaaaaaaa");
     const row = await t.env.DB.prepare("SELECT * FROM events WHERE slug = ?").bind(slug).first<Record<string, unknown>>();
     expect(row).toMatchObject({
       name: "Saturday trial day", start_utc: "2026-10-24T08:00:00Z", end_utc: "2026-10-24T11:00:00Z",
       session_minutes: 15, gap_minutes: 0, cost_pence: 1500, venue_postcode: "AB1 2CD", details: "Bring water", archived: 0,
+      idempotency_key: "insert-key-aaaaaaaaaaaaaa",
     });
     const { results } = await t.env.DB.prepare("SELECT start_utc, end_utc FROM breaks WHERE event_id = ? ORDER BY start_utc").bind(row!.id).all();
     expect(results).toEqual([
@@ -419,7 +420,7 @@ describe("insertEventWithBreaks", () => {
   it("stores each break's label, and loadEventBySlug returns them with the times, in start order", async () => {
     const d = draftOf({ breaks: [{ start: "11:00", end: "11:15" }, { start: "10:00", end: "10:15", label: "Lunch 🍽" }] });
     const slug = generateSlug();
-    await insertEventWithBreaks(t.env.DB, slug, d);
+    await insertEventWithBreaks(t.env.DB, slug, d, "insert-key-cccccccccccccc");
     const event = await loadEventBySlug(t.env.DB, slug);
     expect(event?.breaks).toEqual([
       { start: "2026-10-24T09:00:00Z", end: "2026-10-24T09:15:00Z", label: "Lunch 🍽" },
@@ -434,7 +435,7 @@ describe("insertEventWithBreaks", () => {
     const events = await countRows(t.env.DB, "events");
     const breaks = await countRows(t.env.DB, "breaks");
     const slug = generateSlug();
-    await expect(insertEventWithBreaks(t.env.DB, slug, bad)).rejects.toThrow();
+    await expect(insertEventWithBreaks(t.env.DB, slug, bad, "insert-key-bbbbbbbbbbbbbb")).rejects.toThrow();
     expect(await countRows(t.env.DB, "events")).toBe(events);
     expect(await countRows(t.env.DB, "breaks")).toBe(breaks);
     expect(await t.env.DB.prepare("SELECT 1 FROM events WHERE slug = ?").bind(slug).first()).toBeNull();
