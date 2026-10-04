@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { experimental_readRawConfig, unstable_readConfig } from "wrangler";
-import { GENERATED_MARKER, buildConfig, describeJsonError, isGenerated, parseAccount, renderConfig } from "../../scripts/configure-core";
+import { GENERATED_MARKER, buildConfig, describeJsonError, describeReadError, isGenerated, parseAccount, renderConfig } from "../../scripts/configure-core";
 
 const PROD = "3f2b8c1e-5a4d-4e6f-9b7a-1c2d3e4f5a6b";
 const PREVIEW = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
@@ -54,6 +54,20 @@ describe("describeJsonError", () => {
 
   it("counts lines from the text, not from the message", () => {
     expect(describeJsonError(new Error("Unexpected token at position 4"), "ab\ncd\nef")).toBe("account.local.json is not valid JSON (line 2, column 2)");
+  });
+});
+
+describe("describeReadError", () => {
+  it("reports the error code only", () => {
+    const e = Object.assign(new Error("EACCES: permission denied, open '/home/x/account.local.json'"), { code: "EACCES" });
+    expect(describeReadError(e)).toBe("Couldn't read account.local.json (EACCES).");
+    expect(describeReadError(Object.assign(new Error("m"), { code: "EISDIR" }))).toBe("Couldn't read account.local.json (EISDIR).");
+  });
+
+  it("omits the code when there is none or it is not a plain error code", () => {
+    expect(describeReadError(new Error("boom"))).toBe("Couldn't read account.local.json.");
+    expect(describeReadError("nope")).toBe("Couldn't read account.local.json.");
+    expect(describeReadError({ code: "sk-live secret text" })).toBe("Couldn't read account.local.json.");
   });
 });
 

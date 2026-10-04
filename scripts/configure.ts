@@ -11,7 +11,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { experimental_readRawConfig } from "wrangler";
-import { buildConfig, describeJsonError, isGenerated, parseAccount, renderConfig } from "./configure-core.ts";
+import { buildConfig, describeJsonError, describeReadError, isGenerated, parseAccount, renderConfig } from "./configure-core.ts";
 
 const root = join(import.meta.dirname, "..");
 const templatePath = join(root, "wrangler.jsonc");
@@ -51,6 +51,11 @@ let raw: unknown;
 let accountText = "";
 try {
   accountText = readFileSync(accountPath, "utf8");
+} catch (e) {
+  console.error(describeReadError(e));
+  process.exit(1);
+}
+try {
   raw = JSON.parse(accountText);
 } catch (e) {
   console.error(describeJsonError(e, accountText));
