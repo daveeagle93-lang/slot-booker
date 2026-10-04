@@ -1,5 +1,6 @@
 import { identityKey } from "../core/identity";
 import { generateSchedule, type TimeRange } from "../core/schedule";
+import { generateBookingToken } from "../core/slug";
 import { computeSlotViews, type EventRow } from "./events";
 import { errorResponse } from "./http";
 
@@ -13,7 +14,7 @@ export const noStore = { "Cache-Control": "no-store" };
 export interface BookingInput { slot: string; dogName: string; handlerName: string }
 
 export type BookingResult =
-  | { kind: "created"; booking: { slot: TimeRange; dogName: string; handlerName: string } }
+  | { kind: "created"; booking: { slot: TimeRange; dogName: string; handlerName: string }; token: string }
   | { kind: "duplicate_booking" }
   | { kind: "slot_taken"; freeSlots: TimeRange[] };
 
@@ -111,12 +112,13 @@ export async function createBooking(
 ): Promise<BookingResult> {
   const dogKey = identityKey(input.dogName);
   const handlerKey = identityKey(input.handlerName);
+  const token = generateBookingToken();
   try {
     await db
       .prepare(
-        "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token) VALUES (?, ?, ?, ?, ?, ?, ?)",
       )
-      .bind(event.id, slot.start, input.dogName, input.handlerName, dogKey, handlerKey)
+      .bind(event.id, slot.start, input.dogName, input.handlerName, dogKey, handlerKey, token)
       .run();
   } catch (e) {
     if (!(e instanceof Error) || !e.message.includes("UNIQUE constraint failed")) throw e;
@@ -140,5 +142,5 @@ export async function createBooking(
       freeSlots: views.filter((s) => s.status === "free").map(({ start, end }) => ({ start, end })),
     };
   }
-  return { kind: "created", booking: { slot, dogName: input.dogName, handlerName: input.handlerName } };
+  return { kind: "created", booking: { slot, dogName: input.dogName, handlerName: input.handlerName }, token };
 }

@@ -71,6 +71,14 @@ expect_count "old ASCII-only index is gone" "SELECT count(*) AS n FROM sqlite_ma
 expect_ok "booking with forgotten keys (first)" "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name) VALUES (3, '2026-09-12T09:15:00Z', 'Mo', 'Al')"
 expect_fail "booking with forgotten keys (second) fails loudly" "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name) VALUES (3, '2026-09-12T09:30:00Z', 'Bo', 'Cy')" "UNIQUE constraint failed"
 
+# Booking tokens (0004): unique when set, nullable otherwise.
+BKT="INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token) VALUES"
+expect_ok "booking with a token" "$BKT (3, '2026-09-12T11:00:00Z', 'Ta', 'Ua', 'ta', 'ua', 'token-aaaaaaaaaaaaaaaa')"
+expect_fail "duplicate token" "$BKT (3, '2026-09-12T11:15:00Z', 'Tb', 'Ub', 'tb', 'ub', 'token-aaaaaaaaaaaaaaaa')" "UNIQUE constraint failed"
+expect_ok "bookings with different tokens coexist" "$BKT (3, '2026-09-12T11:15:00Z', 'Tb', 'Ub', 'tb', 'ub', 'token-bbbbbbbbbbbbbbbb')"
+expect_ok "two NULL-token bookings coexist" "$BK $(row 3 '2026-09-12T11:30:00Z' 'Tc' 'Uc'), $(row 3 '2026-09-12T11:45:00Z' 'Td' 'Ud')"
+expect_count "both NULL-token bookings stored" "SELECT count(*) AS n FROM bookings WHERE event_id = 3 AND dog_key IN ('tc', 'td') AND token IS NULL" 2
+
 expect_fail "trailing junk after timestamp" "$BK $(row 1 '2026-03-14T10:00:00Zx' 'Bo' 'Ann Lee')" "CHECK constraint failed"
 expect_fail "bad event timestamp format" "$EV ('Bad', '2026-03-14 09:00', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
 expect_fail "event end == start" "$EV ('Bad', '2026-03-14T09:00:00Z', '2026-03-14T09:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
@@ -82,16 +90,24 @@ expect_count "cascade: breaks removed" "SELECT count(*) AS n FROM breaks WHERE e
 expect_count "cascade: bookings removed" "SELECT count(*) AS n FROM bookings WHERE event_id = 1" 0
 expect_count "other event's booking kept" "SELECT count(*) AS n FROM bookings WHERE event_id = 2" 1
 
-# Backfill: a database holding an event from before 0003 gets a random slug.
+# Backfill: a database holding rows from before 0003 / 0004 gets random slugs and tokens.
 OLD=$(mktemp -d)
 trap 'rm -rf "$STATE" "$OLD"' EXIT
 old() { npx wrangler d1 execute "$DB" --local --persist-to "$OLD" "$@" 2>&1; }
 old --file migrations/0001_init.sql >/dev/null && old --file migrations/0002_identity_keys.sql >/dev/null \
   && old --command "INSERT INTO events (name, start_utc, end_utc, session_minutes, venue_postcode) VALUES ('Old', '2026-03-14T09:00:00Z', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')" >/dev/null \
-  && old --file migrations/0003_event_slug.sql >/dev/null || { echo "FAIL: backfill setup"; FAILS=$((FAILS + 1)); }
+  && old --file migrations/0003_event_slug.sql >/dev/null \
+  && old --command "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key) VALUES (1, '2026-03-14T09:00:00Z', 'Rex', 'Sam Jones', 'rex', 'sam jones'), (1, '2026-03-14T09:15:00Z', 'Fido', 'Ann Lee', 'fido', 'ann lee')" >/dev/null \
+  && old --file migrations/0004_booking_token.sql >/dev/null || { echo "FAIL: backfill setup"; FAILS=$((FAILS + 1)); }
 got=$(old --command "SELECT count(*) AS n FROM events WHERE slug GLOB '[0-9a-f]*' AND length(slug) = 32" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
 if [ "$got" = "1" ]; then echo "PASS (count=1): pre-existing event backfilled with a 32-hex slug"
 else echo "FAIL (backfill): expected 1, got '$got'"; FAILS=$((FAILS + 1)); fi
+got=$(old --command "SELECT count(*) AS n FROM bookings WHERE token NOT GLOB '*[^0-9a-f]*' AND length(token) = 32" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+if [ "$got" = "2" ]; then echo "PASS (count=2): pre-existing bookings backfilled with 32-hex tokens"
+else echo "FAIL (token backfill): expected 2, got '$got'"; FAILS=$((FAILS + 1)); fi
+got=$(old --command "SELECT count(DISTINCT token) AS n FROM bookings" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+if [ "$got" = "2" ]; then echo "PASS (count=2): backfilled tokens are distinct"
+else echo "FAIL (token backfill distinct): expected 2, got '$got'"; FAILS=$((FAILS + 1)); fi
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS check(s) FAILED"; exit 1; fi
 echo "All schema checks passed"

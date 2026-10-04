@@ -14,7 +14,7 @@ const SLOTS = [
   slot("2026-06-13T08:40:00Z", "2026-06-13T08:55:00Z"),
   slot("2026-06-13T09:00:00Z", "2026-06-13T09:15:00Z"),
 ];
-const ICS_URL = "/api/events/abc/ics?slot=x&dog=Biscuit&handler=Ann";
+const ICS_URL = "/api/events/abc/bookings/tok0123456789abcdef01/ics";
 
 const reply = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });

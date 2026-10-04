@@ -31,7 +31,7 @@ export const onRequestPost: PagesFunction<Env, "slug"> = async ({ request, env, 
       return json({
         booking: result.booking,
         event: eventSummary(event),
-        icsUrl: bookingIcsUrl(event.slug, result.booking.slot.start, result.booking.dogName, result.booking.handlerName),
+        icsUrl: bookingIcsUrl(event.slug, result.token),
       }, 201, noStore);
     case "duplicate_booking":
       return errorResponse(409, "duplicate_booking", "That dog and handler already have a booking for this event.", {}, noStore);

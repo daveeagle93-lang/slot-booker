@@ -28,9 +28,7 @@ describe("bookingUid", () => {
 });
 
 describe("bookingIcsUrl", () => {
-  it("is a relative URL with each value percent-encoded", () => {
-    expect(bookingIcsUrl("abc", "2026-06-13T08:15:00Z", "Zoë & Co?", "Sam/Jones #1")).toBe(
-      "/api/events/abc/ics?slot=2026-06-13T08%3A15%3A00Z&dog=Zo%C3%AB%20%26%20Co%3F&handler=Sam%2FJones%20%231",
-    );
+  it("is a relative URL made of the slug and the token only", () => {
+    expect(bookingIcsUrl("abc", "tok_en-1")).toBe("/api/events/abc/bookings/tok_en-1/ics");
   });
 });

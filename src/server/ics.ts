@@ -1,11 +1,13 @@
 import { buildBookingIcs } from "../core/ics";
-import { identityKey } from "../core/identity";
+import { isValidToken } from "../core/slug";
 import { findSlot } from "./bookings";
 import type { EventRow } from "./events";
 
 /**
- * Stable per booking identity within an event (not per slot), so if an admin moves the slot,
- * calendars update the existing entry instead of duplicating it.
+ * Stable per booking identity within an event (not per slot or token), so if an admin moves the
+ * slot, calendars treat it as the same entry instead of duplicating it. A moved booking keeps its
+ * UID but SEQUENCE and DTSTAMP stay fixed (0 and created_at), so calendar clients may ignore the
+ * update; revisit when the admin move feature adds a per-booking revision.
  */
 export async function bookingUid(slug: string, dogKey: string, handlerKey: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${slug}|${dogKey}|${handlerKey}`));
@@ -13,27 +15,26 @@ export async function bookingUid(slug: string, dogKey: string, handlerKey: strin
   return `${hex.slice(0, 32)}@slot-booker`;
 }
 
-export const bookingIcsUrl = (slug: string, slot: string, dog: string, handler: string): string =>
-  `/api/events/${slug}/ics?slot=${encodeURIComponent(slot)}&dog=${encodeURIComponent(dog)}&handler=${encodeURIComponent(handler)}`;
+export const bookingIcsUrl = (slug: string, token: string): string => `/api/events/${slug}/bookings/${token}/ics`;
 
-/** The .ics for an existing booking, or null if there is no such booking (or its slot is no longer scheduled). */
-export async function loadBookingIcs(
-  db: D1Database, event: EventRow, slot: string, dog: string, handler: string,
-): Promise<string | null> {
-  const dogKey = identityKey(dog);
-  const handlerKey = identityKey(handler);
-  if (slot === "" || dogKey === "" || handlerKey === "") return null;
+/**
+ * The .ics for the booking with this token, or null if there is none (or its slot is no longer
+ * scheduled). The token is 128 random bits, so it cannot be guessed, and the caller must give every
+ * miss the same response, so a miss reveals nothing about who has booked.
+ */
+export async function loadBookingIcs(db: D1Database, event: EventRow, token: string): Promise<string | null> {
+  if (!isValidToken(token)) return null;
   const booking = await db
     .prepare(
-      "SELECT dog_name, handler_name, created_at FROM bookings WHERE event_id = ? AND slot_start_utc = ? AND dog_key = ? AND handler_key = ?",
+      "SELECT slot_start_utc, dog_name, handler_name, dog_key, handler_key, created_at FROM bookings WHERE event_id = ? AND token = ?",
     )
-    .bind(event.id, slot, dogKey, handlerKey)
-    .first<{ dog_name: string; handler_name: string; created_at: string }>();
+    .bind(event.id, token)
+    .first<{ slot_start_utc: string; dog_name: string; handler_name: string; dog_key: string; handler_key: string; created_at: string }>();
   if (!booking) return null;
-  const range = findSlot(event, slot);
+  const range = findSlot(event, booking.slot_start_utc);
   if (!range) return null;
   return buildBookingIcs({
-    uid: await bookingUid(event.slug, dogKey, handlerKey),
+    uid: await bookingUid(event.slug, booking.dog_key, booking.handler_key),
     dtstamp: booking.created_at,
     slot: range,
     dogName: booking.dog_name,

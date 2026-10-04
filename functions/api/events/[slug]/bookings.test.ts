@@ -57,7 +57,8 @@ describe("POST /api/events/:slug/bookings", () => {
     const res = await post(slug, entry("2026-06-13T08:15:00Z", "  Zoë ", "Sam   Jones\t"));
     expect(res.status).toBe(201);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await res.json()).toEqual({
+    const payload = await res.json();
+    expect(payload).toEqual({
       booking: {
         slot: { start: "2026-06-13T08:15:00Z", end: "2026-06-13T08:30:00Z" },
         dogName: "Zoë", handlerName: "Sam   Jones",
@@ -66,10 +67,11 @@ describe("POST /api/events/:slug/bookings", () => {
         slug, name: "Summer show", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z",
         costPence: 1250, venuePostcode: "AB1 2CD", details: "Bring water", archived: false,
       },
-      icsUrl: `/api/events/${slug}/ics?slot=2026-06-13T08%3A15%3A00Z&dog=Zo%C3%AB&handler=Sam%20%20%20Jones`,
+      icsUrl: expect.stringMatching(new RegExp(`^/api/events/${slug}/bookings/[A-Za-z0-9_-]{22}/ics$`)),
     });
     const stored = await rows(id);
     expect(stored).toHaveLength(1);
+    expect((payload as { icsUrl: string }).icsUrl).toBe(`/api/events/${slug}/bookings/${stored[0].token}/ics`);
     expect(stored[0]).toMatchObject({
       event_id: id, slot_start_utc: "2026-06-13T08:15:00Z", dog_name: "Zoë", handler_name: "Sam   Jones",
       dog_key: identityKey("Zoë"), handler_key: identityKey("Sam Jones"),

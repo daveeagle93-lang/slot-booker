@@ -69,7 +69,7 @@ npx wrangler d1 migrations apply slot-booker-db --remote
 npx wrangler d1 migrations list slot-booker-db --remote
 ```
 
-The first command should list 0001, 0002 and 0003 as pending; the last should list none. `apply` asks for confirmation and takes a backup first.
+The first command should list 0001 to 0004 as pending; the last should list none. `apply` asks for confirmation and takes a backup first.
 
 ## 5. Create the Pages project and deploy a preview
 
@@ -95,3 +95,10 @@ The first should return `{"ok":true}`. The second should return a JSON 404 (`not
 
 - `npm run seed:local` only writes to the local database. A fresh remote database has no events, so a preview has nothing to book until an event is inserted (an admin UI is planned for later).
 - Custom domains, production deployment and secrets are out of scope here.
+
+## Before a real event
+
+- Data residency: if bookings must stay in the EU, create the database with `--jurisdiction eu` (step 2).
+- Preview and production share one database (step 3), and preview URLs are public. Split them before any real booking is made.
+- The booking API has no rate limiting or bot protection yet. Add something like Cloudflare Turnstile before posting the link publicly.
+- The booking form has no privacy notice. Add one before collecting real names.

@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { identityKey } from "../src/core/identity.ts";
 import { generateSchedule } from "../src/core/schedule.ts";
-import { generateSlug } from "../src/core/slug.ts";
+import { generateBookingToken, generateSlug } from "../src/core/slug.ts";
 
 const DB = "slot-booker-db";
 const PORT = 8788; // wrangler pages dev default
@@ -81,8 +81,8 @@ const bookings = [
 if (withBookings) {
   for (const b of bookings) {
     sql.push(
-      `INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key)
-       VALUES ((SELECT id FROM events WHERE slug = ${q(slug)}), ${q(b.slot.start)}, ${q(b.dog)}, ${q(b.handler)}, ${q(identityKey(b.dog))}, ${q(identityKey(b.handler))});`);
+      `INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token)
+       VALUES ((SELECT id FROM events WHERE slug = ${q(slug)}), ${q(b.slot.start)}, ${q(b.dog)}, ${q(b.handler)}, ${q(identityKey(b.dog))}, ${q(identityKey(b.handler))}, ${q(generateBookingToken())});`);
   }
 }
 
