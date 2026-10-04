@@ -161,7 +161,7 @@ The first should print `401` (it prints `503` if `ADMIN_AUTH` or its secrets are
 ## Not covered
 
 - Custom domains and production deployment are out of scope here.
-- Editing events, managing bookings, archiving and deleting events, and the lineup export are not built yet. Events created in the admin pages can't be changed afterwards.
+- Managing bookings, archiving and deleting events, and the lineup export are not built yet.
 
 ## Before a real event
 
