@@ -44,6 +44,17 @@ describe("session cookie", () => {
     expect(await readSession(SECRET, "", NOW)).toBeNull();
   });
 
+  it("accepts the request if any one of several same-named cookies verifies, in either order", async () => {
+    const { value, sid } = await issueSession(SECRET, NOW);
+    const forged = await signed({ sid: SID, iat: SEC, exp: SEC + 3600 }, "y".repeat(40));
+    for (const junk of ["junk", "", "v1.a.b", "v1..", forged]) {
+      expect(await readSession(SECRET, `${header(junk)}; ${header(value)}`, NOW), `junk first: ${junk}`).toBe(sid);
+      expect(await readSession(SECRET, `${header(value)}; ${header(junk)}`, NOW), `junk last: ${junk}`).toBe(sid);
+    }
+    expect(await readSession(SECRET, `${header("junk")}; a=1; ${header("v1.x.y")}; ${header(value)}; b=2`, NOW)).toBe(sid);
+    expect(await readSession(SECRET, `${header("junk")}; ${header(forged)}`, NOW)).toBeNull(); // none verifies
+  });
+
   it("accepts correctly signed claims (control for the rejections below)", async () => {
     expect(await readSession(SECRET, header(await signed({ sid: SID, iat: SEC, exp: SEC + 3600 })), NOW)).toBe(SID);
   });

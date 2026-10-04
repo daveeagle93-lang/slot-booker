@@ -7,6 +7,7 @@
 import { hashPassword } from "../src/server/auth/crypto.ts";
 
 const MIN_LENGTH = 14;
+const MAX_LENGTH = 256; // UTF-16 code units: what the login form (maxlength) and POST /api/admin/login (password.length) accept
 
 function die(message: string): never {
   process.stderr.write(`${message}\n`);
@@ -62,4 +63,5 @@ if (process.stdin.isTTY) {
   password = await readStdin();
 }
 if ([...password].length < MIN_LENGTH) die(`The password must be at least ${MIN_LENGTH} characters.`);
+if (password.length > MAX_LENGTH) die(`The password must be at most ${MAX_LENGTH} characters (UTF-16 code units; an emoji counts as 2), or the login page can't send it.`);
 process.stdout.write(`${await hashPassword(password)}\n`);

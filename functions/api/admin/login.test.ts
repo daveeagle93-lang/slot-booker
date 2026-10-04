@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SESSION_COOKIE } from "../../../src/server/auth/session";
 import { csrfToken } from "../../../src/server/auth/csrf";
-import { adminApp, NOW, ORIGIN, passwordEnv, TEST_PASSWORD } from "../../../src/server/auth/test-harness";
+import { clientKey } from "../../../src/server/auth/ratelimit";
+import { adminApp, NOW, ORIGIN, passwordEnv, SESSION_SECRET, TEST_PASSWORD } from "../../../src/server/auth/test-harness";
 import type { AppEnv } from "../../../src/server/env";
 import { createTestEnv, type TestEnv } from "../../../src/test/db";
 
@@ -79,6 +80,20 @@ describe("POST /api/admin/login", () => {
     expect(await rows()).toEqual(before);
   });
 
+  it("refuses a body over 1 KB with 413 even when it is streamed without a Content-Length", async () => {
+    const ip = newIp();
+    const before = await rows();
+    const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+    const streamed = (body: Uint8Array) => app(env, "/api/admin/login", {
+      method: "POST", headers: { Origin: ORIGIN, "Content-Type": "application/json", "CF-Connecting-IP": ip },
+      body: new ReadableStream({ start(c) { c.enqueue(body.slice(0, 100)); c.enqueue(body.slice(100)); c.close(); } }), duplex: "half",
+    } as RequestInit);
+    expect((await streamed(bytes({ password: "wrong", pad: "x".repeat(900) }))).status).toBe(401); // about 0.9 KB: fine
+    expect((await streamed(bytes({ password: "wrong", pad: "x".repeat(1100) }))).status).toBe(413); // over 1 KB, no Content-Length
+    expect(derive).toHaveBeenCalledTimes(1);
+    expect((await rows()).length).toBe(before.length + 1);
+  });
+
   it("rejects a cross-origin or origin-less login with 403, before any counting or hashing", async () => {
     const ip = newIp();
     const before = (await rows()).length;
@@ -139,6 +154,18 @@ describe("POST /api/admin/login", () => {
     expect((await login(TEST_PASSWORD, b)).status).toBe(200);
     expect(JSON.stringify(await rows())).not.toContain(a);
     expect(JSON.stringify(await rows())).not.toContain(b);
+  });
+
+  it("counts the addresses of one IPv6 /64 together, under a key made with the session secret", async () => {
+    const inPrefix = (n: number) => `2001:db8:0:${nextIp}::${n.toString(16)}`;
+    for (let i = 1; i <= 5; i++) expect((await login("wrong", inPrefix(i))).status).toBe(401);
+    expect((await login("wrong", inPrefix(6))).status).toBe(429);
+    expect((await login(TEST_PASSWORD, inPrefix(7))).status).toBe(429);
+    const stored = (await rows()).map((r) => r.key);
+    expect(stored).toContain(await clientKey(inPrefix(1), SESSION_SECRET));
+    expect(JSON.stringify(stored)).not.toContain("db8");
+    nextIp++;
+    expect((await login(TEST_PASSWORD, `2001:db8:0:${nextIp}::1`)).status).toBe(200); // the next /64 is a different client
   });
 
   it("shares one counter between requests with no client address", async () => {

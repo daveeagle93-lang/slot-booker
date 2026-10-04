@@ -27,19 +27,30 @@ export async function issueSession(secret: string, nowMs: number): Promise<{ val
   return { value: `v1.${payload}.${base64urlEncode(new Uint8Array(signature))}`, sid };
 }
 
-function cookieValue(header: string | null): string | null {
-  if (!header || header.length > MAX_COOKIE_HEADER) return null;
+/** Every value the header carries for the session cookie, in order: a duplicate must not hide a valid one. */
+function cookieValues(header: string | null): string[] {
+  if (!header || header.length > MAX_COOKIE_HEADER) return [];
+  const values: string[] = [];
   for (const part of header.split(";")) {
     const eq = part.indexOf("=");
-    if (eq !== -1 && part.slice(0, eq).trim() === SESSION_COOKIE) return part.slice(eq + 1).trim();
+    if (eq !== -1 && part.slice(0, eq).trim() === SESSION_COOKIE) values.push(part.slice(eq + 1).trim());
+  }
+  return values;
+}
+
+/** The session id if any one of the request's session cookies is genuine and current; null otherwise. */
+export async function readSession(secret: string, cookieHeader: string | null, nowMs: number): Promise<string | null> {
+  for (const value of cookieValues(cookieHeader)) {
+    const sid = await readCookieValue(secret, value, nowMs);
+    if (sid !== null) return sid;
   }
   return null;
 }
 
-/** The session id if the request's cookie is genuine and current; null otherwise. Signature first, then claims. */
-export async function readSession(secret: string, cookieHeader: string | null, nowMs: number): Promise<string | null> {
-  const parts = cookieValue(cookieHeader)?.split(".");
-  if (parts?.length !== 3 || parts[0] !== "v1") return null;
+/** Signature first, then claims. */
+async function readCookieValue(secret: string, value: string, nowMs: number): Promise<string | null> {
+  const parts = value.split(".");
+  if (parts.length !== 3 || parts[0] !== "v1") return null;
   const signature = base64urlDecode(parts[2]);
   if (!signature) return null;
   // crypto.subtle.verify compares in constant time.

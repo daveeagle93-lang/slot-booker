@@ -1,4 +1,5 @@
 import { parsePasswordHash, verifyPassword, type PasswordHash } from "./crypto";
+import { clientKey } from "./ratelimit";
 import { clearedSessionCookie, issueSession, readSession, sessionCookie } from "./session";
 import type { AdminAuth, AdminSession, AuthDeps } from "./types";
 
@@ -10,6 +11,8 @@ export interface PasswordAuth extends AdminAuth {
   /** A new session and the Set-Cookie header value that carries it. */
   startSession(): Promise<{ session: AdminSession; setCookie: string }>;
   clearCookie(): string;
+  /** The login rate-limit key for a client address, keyed with the session secret so stored keys are not reversible. */
+  clientKey(ip: string | null): Promise<string>;
 }
 
 export interface PasswordConfig { hash: PasswordHash; sessionSecret: string }
@@ -37,6 +40,7 @@ export function createPasswordAuth({ hash, sessionSecret }: PasswordConfig, deps
       return { session: { identity: "admin", csrfBinding: sid }, setCookie: sessionCookie(value) };
     },
     clearCookie: clearedSessionCookie,
+    clientKey: (ip) => clientKey(ip, sessionSecret),
     async authenticate(request) {
       try {
         const sid = await readSession(sessionSecret, request.headers.get("Cookie"), now());

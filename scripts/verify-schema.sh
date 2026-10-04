@@ -97,6 +97,14 @@ expect_fail "NULL attempts" "INSERT INTO login_attempts (key, window_start) VALU
 expect_fail "NULL window_start" "INSERT INTO login_attempts (key, attempts) VALUES ('hash-d', 1)" "NOT NULL constraint failed"
 expect_count "login attempts stored" "SELECT count(*) AS n FROM login_attempts" 2
 
+# Login attempts index (0007): the purge by age must search the index, not scan the table.
+expect_count "window_start index exists" "SELECT count(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'login_attempts_window_start'" 1
+# Keep this statement in step with PURGE_SQL in src/server/auth/ratelimit.ts (a unit test checks the real one).
+PURGE="DELETE FROM login_attempts WHERE rowid IN (SELECT rowid FROM login_attempts WHERE window_start < 0 LIMIT 100)"
+plan=$(sql "EXPLAIN QUERY PLAN $PURGE")
+if grep -q 'INDEX login_attempts_window_start' <<<"$plan" && ! grep -q 'SCAN login_attempts' <<<"$plan"; then echo "PASS: purge uses the window_start index"
+else echo "FAIL (purge query plan should use the index and not SCAN login_attempts):"; echo "$plan" | tail -15; FAILS=$((FAILS + 1)); fi
+
 expect_fail "trailing junk after timestamp" "$BK $(row 1 '2026-03-14T10:00:00Zx' 'Bo' 'Ann Lee')" "CHECK constraint failed"
 expect_fail "bad event timestamp format" "$EV ('Bad', '2026-03-14 09:00', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
 expect_fail "event end == start" "$EV ('Bad', '2026-03-14T09:00:00Z', '2026-03-14T09:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"

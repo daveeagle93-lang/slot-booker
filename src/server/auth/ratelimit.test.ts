@@ -1,27 +1,102 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestEnv, type TestEnv } from "../../test/db";
-import { clearAttempts, clientKey, countAttempt } from "./ratelimit";
+import { utf8 } from "./crypto";
+import { clearAttempts, clientKey, countAttempt, PURGE_SQL, rateLimitBucket } from "./ratelimit";
 
 let t: TestEnv;
 beforeAll(async () => { t = await createTestEnv(); });
 afterAll(async () => { await t.dispose(); });
 
 const T0 = 1_800_000_000;
+const SECRET = "test-only-session-secret-0123456789-abcdef";
+const keyOf = (ip: string | null) => clientKey(ip, SECRET);
 const rows = async () => (await t.env.DB.prepare("SELECT * FROM login_attempts ORDER BY key").all<{ key: string; attempts: number; window_start: number }>()).results;
 
+describe("rateLimitBucket", () => {
+  it.each([
+    [null, "unknown"],
+    ["", "unknown"],
+    ["203.0.113.9", "203.0.113.9"],
+    // IPv6: the first four hextets (the /64), lower-case, without leading zeros.
+    ["2001:0db8:0000:0042:0000:0000:0000:0001", "2001:db8:0:42::/64"],
+    ["2001:db8:0:42::1", "2001:db8:0:42::/64"],
+    ["2001:DB8:0:42:AAAA:BBBB:CCCC:DDDD", "2001:db8:0:42::/64"],
+    ["2001:db8:0:42:aaaa:bbbb:cccc:dddd", "2001:db8:0:42::/64"],
+    // "::" at the start, in the middle and at the end
+    ["::1", "0:0:0:0::/64"],
+    ["::", "0:0:0:0::/64"],
+    ["::5:6:7:8", "0:0:0:0::/64"],
+    ["2001:db8::1", "2001:db8:0:0::/64"],
+    ["2001:db8:1:2:3::", "2001:db8:1:2::/64"],
+    ["2001:db8:1::", "2001:db8:1:0::/64"],
+    ["1:2:3:4:5:6:7::", "1:2:3:4::/64"],
+    ["::2:3:4:5:6:7:8", "0:2:3:4::/64"],
+    // zone ids are dropped
+    ["fe80::1%eth0", "fe80:0:0:0::/64"],
+    ["fe80::1%25eth0", "fe80:0:0:0::/64"],
+    // IPv4-mapped addresses are the IPv4 address
+    ["::ffff:203.0.113.9", "203.0.113.9"],
+    ["::FFFF:203.0.113.9", "203.0.113.9"],
+    ["0:0:0:0:0:ffff:203.0.113.9", "203.0.113.9"],
+    ["::ffff:cb00:7109", "203.0.113.9"],
+    ["::ffff:010.0.0.1", "10.0.0.1"],
+    // not IPv4-mapped: another prefix, or a mapped-looking address with something in the first 80 bits
+    ["::fffe:203.0.113.9", "0:0:0:0::/64"],
+    ["1::ffff:203.0.113.9", "1:0:0:0::/64"],
+    // garbage comes back as it was, and never throws
+    ["not an address", "not an address"],
+    ["2001:db8::1::2", "2001:db8::1::2"],
+    ["2001:db8:0:42:0:0:0:0:1", "2001:db8:0:42:0:0:0:0:1"],
+    ["1:2:3:4:5:6:7:8::", "1:2:3:4:5:6:7:8::"],
+    ["12345::1", "12345::1"],
+    ["g::1", "g::1"],
+    ["::ffff:256.0.0.1", "::ffff:256.0.0.1"],
+    ["::ffff:1.2.3", "::ffff:1.2.3"],
+    [":", ":"],
+    [":::", ":::"],
+    [" ", " "],
+    ["%eth0", "%eth0"],
+  ])("%j -> %j", (ip, bucket) => {
+    expect(rateLimitBucket(ip)).toBe(bucket);
+  });
+
+  it("puts two addresses in one /64 in one bucket, and different /64s in different buckets", () => {
+    expect(rateLimitBucket("2001:db8:0:42::1")).toBe(rateLimitBucket("2001:db8:0:42:ffff:ffff:ffff:ffff"));
+    expect(rateLimitBucket("2001:db8:0:42::1")).not.toBe(rateLimitBucket("2001:db8:0:43::1"));
+    expect(rateLimitBucket("2001:db8:0:42::1")).not.toBe(rateLimitBucket("2001:db9:0:42::1"));
+  });
+});
+
 describe("clientKey", () => {
-  it("is the hex SHA-256 of the address, with one shared key when there is none", async () => {
-    expect(await clientKey("203.0.113.9")).toMatch(/^[0-9a-f]{64}$/);
-    expect(await clientKey("203.0.113.9")).toBe(await clientKey("203.0.113.9"));
-    expect(await clientKey("203.0.113.9")).not.toBe(await clientKey("203.0.113.10"));
-    expect(await clientKey(null)).toBe(await clientKey(null));
-    expect(await clientKey("203.0.113.9")).not.toBe("203.0.113.9");
+  it("is 64 hex characters, the same for the same bucket and secret", async () => {
+    expect(await keyOf("203.0.113.9")).toMatch(/^[0-9a-f]{64}$/);
+    expect(await keyOf("203.0.113.9")).toBe(await keyOf("203.0.113.9"));
+    expect(await keyOf("203.0.113.9")).not.toBe(await keyOf("203.0.113.10"));
+    expect(await keyOf(null)).toBe(await keyOf(null));
+    expect(await keyOf("203.0.113.9")).not.toBe("203.0.113.9");
+  });
+
+  it("is keyed with the secret: another secret gives another key", async () => {
+    expect(await clientKey("203.0.113.9", SECRET)).not.toBe(await clientKey("203.0.113.9", `${SECRET}x`));
+  });
+
+  it("is HMAC-SHA-256 under the secret of a domain-separated bucket, so it cannot be recomputed from the address", async () => {
+    const hmac = await crypto.subtle.importKey("raw", utf8(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const expected = [...new Uint8Array(await crypto.subtle.sign("HMAC", hmac, utf8("slot-booker-ratelimit-v1:203.0.113.9")))]
+      .map((b) => b.toString(16).padStart(2, "0")).join("");
+    expect(await keyOf("203.0.113.9")).toBe(expected);
+  });
+
+  it("is one key for every address of an IPv6 /64, and one per address for IPv4", async () => {
+    expect(await keyOf("2001:db8:0:42::1")).toBe(await keyOf("2001:db8:0:42:dead:beef:0:1"));
+    expect(await keyOf("2001:db8:0:42::1")).not.toBe(await keyOf("2001:db8:0:43::1"));
+    expect(await keyOf("::ffff:203.0.113.9")).toBe(await keyOf("203.0.113.9"));
   });
 });
 
 describe("countAttempt", () => {
   it("allows five attempts per window, then refuses with the seconds left", async () => {
-    const key = await clientKey("198.51.100.1");
+    const key = await keyOf("198.51.100.1");
     for (let i = 1; i <= 5; i++) expect((await countAttempt(t.env.DB, key, T0 + i)).allowed, `attempt ${i}`).toBe(true);
     const sixth = await countAttempt(t.env.DB, key, T0 + 100);
     expect(sixth).toEqual({ allowed: false, retryAfterSeconds: 900 - 99 });
@@ -29,7 +104,7 @@ describe("countAttempt", () => {
   });
 
   it("starts a new window exactly 900 s after the first attempt of the old one", async () => {
-    const key = await clientKey("198.51.100.2");
+    const key = await keyOf("198.51.100.2");
     for (let i = 0; i < 6; i++) await countAttempt(t.env.DB, key, T0);
     expect((await countAttempt(t.env.DB, key, T0 + 899)).allowed).toBe(false);
     expect((await countAttempt(t.env.DB, key, T0 + 900)).allowed).toBe(true);
@@ -38,21 +113,21 @@ describe("countAttempt", () => {
   });
 
   it("counts per key", async () => {
-    const a = await clientKey("198.51.100.3");
-    const b = await clientKey("198.51.100.4");
+    const a = await keyOf("198.51.100.3");
+    const b = await keyOf("198.51.100.4");
     for (let i = 0; i < 6; i++) await countAttempt(t.env.DB, a, T0);
     expect((await countAttempt(t.env.DB, a, T0)).allowed).toBe(false);
     expect((await countAttempt(t.env.DB, b, T0)).allowed).toBe(true);
   });
 
   it("never lets parallel attempts exceed the limit", async () => {
-    const key = await clientKey("198.51.100.5");
+    const key = await keyOf("198.51.100.5");
     const results = await Promise.all(Array.from({ length: 12 }, () => countAttempt(t.env.DB, key, T0)));
     expect(results.filter((r) => r.allowed)).toHaveLength(5);
   });
 
   it("clearAttempts forgets a client", async () => {
-    const key = await clientKey("198.51.100.6");
+    const key = await keyOf("198.51.100.6");
     for (let i = 0; i < 6; i++) await countAttempt(t.env.DB, key, T0);
     await clearAttempts(t.env.DB, key);
     expect((await rows()).some((r) => r.key === key)).toBe(false);
@@ -60,20 +135,60 @@ describe("countAttempt", () => {
   });
 
   it("purges rows whose window ended more than a day ago, and keeps the rest", async () => {
-    const old = await clientKey("198.51.100.7");
-    const recent = await clientKey("198.51.100.8");
+    const old = await keyOf("198.51.100.7");
+    const recent = await keyOf("198.51.100.8");
     await countAttempt(t.env.DB, old, T0);
     await countAttempt(t.env.DB, recent, T0 + 86_400);
-    await countAttempt(t.env.DB, await clientKey("198.51.100.9"), T0 + 86_400 + 900); // window of `old` ended exactly a day ago
+    await countAttempt(t.env.DB, await keyOf("198.51.100.9"), T0 + 86_400 + 900); // window of `old` ended exactly a day ago
     expect((await rows()).some((r) => r.key === old)).toBe(true);
-    await countAttempt(t.env.DB, await clientKey("198.51.100.9"), T0 + 86_400 + 901);
+    await countAttempt(t.env.DB, await keyOf("198.51.100.9"), T0 + 86_400 + 901);
     const keys = (await rows()).map((r) => r.key);
     expect(keys).not.toContain(old);
     expect(keys).toContain(recent);
   });
 
-  it("stores only hashes", async () => {
-    await countAttempt(t.env.DB, await clientKey("192.0.2.77"), T0);
-    expect(JSON.stringify(await rows())).not.toContain("192.0.2.77");
+  it("stores only 64-hex keys, never the address or its bucket", async () => {
+    for (const ip of ["192.0.2.77", "2001:db8:77:1::5"]) await countAttempt(t.env.DB, await keyOf(ip), T0);
+    const stored = await rows();
+    expect(stored.length).toBeGreaterThanOrEqual(2);
+    for (const r of stored) expect(r.key).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(stored)).not.toContain("192.0.2.77");
+    expect(JSON.stringify(stored)).not.toContain("2001");
+    expect(JSON.stringify(stored)).not.toContain("db8");
+    expect(stored.map((r) => r.key)).toContain(await keyOf("192.0.2.77"));
+  });
+});
+
+describe("the purge of old rows", () => {
+  const T = T0 + 10_000_000; // later than any other test's rows, which are then all purgeable
+  const insertOld = async (n: number, prefix: string, windowStart: number) => {
+    await t.env.DB.batch(Array.from({ length: n }, (_, i) =>
+      t.env.DB.prepare("INSERT INTO login_attempts (key, attempts, window_start) VALUES (?, 1, ?)").bind(`${prefix}${i}`, windowStart)));
+  };
+  const count = async (prefix: string) =>
+    (await t.env.DB.prepare("SELECT COUNT(*) AS n FROM login_attempts WHERE key LIKE ?").bind(`${prefix}%`).first<{ n: number }>())!.n;
+
+  it("uses the window_start index instead of scanning the table", async () => {
+    const plan = (await t.env.DB.prepare(`EXPLAIN QUERY PLAN ${PURGE_SQL}`).bind(0).all<{ detail: string }>()).results.map((r) => r.detail).join("\n");
+    expect(plan).toMatch(/USING (COVERING )?INDEX login_attempts_window_start/);
+    expect(plan).not.toMatch(/SCAN login_attempts/);
+  });
+
+  it("deletes only rows whose window ended more than a day ago", async () => {
+    await insertOld(3, "gone-", T - 86_400 - 901);
+    await insertOld(3, "kept-edge-", T - 86_400 - 900); // window ended exactly a day ago
+    await insertOld(3, "kept-new-", T - 10);
+    await countAttempt(t.env.DB, await keyOf("198.51.100.20"), T);
+    expect([await count("gone-"), await count("kept-edge-"), await count("kept-new-")]).toEqual([0, 3, 3]);
+  });
+
+  it("removes at most 100 rows per attempt, so a backlog is cleared over several attempts", async () => {
+    await insertOld(250, "backlog-", T - 3 * 86_400);
+    const left: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      await countAttempt(t.env.DB, await keyOf("198.51.100.21"), T);
+      left.push(await count("backlog-"));
+    }
+    expect(left).toEqual([150, 50, 0, 0]);
   });
 });

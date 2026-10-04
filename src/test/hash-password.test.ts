@@ -35,6 +35,19 @@ describe("scripts/hash-password.ts", () => {
     expect(run("12345678901234\n").status).toBe(0);
   });
 
+  it("refuses a password the login form could never send: over 256 UTF-16 code units", () => {
+    const tooLong = run(`${"a".repeat(257)}\n`);
+    expect(tooLong.status).toBe(1);
+    expect(tooLong.stdout).toBe("");
+    expect(tooLong.stderr).toContain("at most 256");
+    expect(run(`${"a".repeat(256)}\n`).status).toBe(0);
+    // 129 emoji are 129 code points but 258 UTF-16 units, and login checks password.length
+    const emoji = run(`${"\u{1F600}".repeat(129)}\n`);
+    expect(emoji.status).toBe(1);
+    expect(emoji.stderr).toContain("at most 256");
+    expect(run(`${"\u{1F600}".repeat(128)}\n`).status).toBe(0);
+  });
+
   it("refuses a password given as an argument, and does not echo it", () => {
     const out = run("", ["a-perfectly-long-password"]);
     expect(out.status).toBe(1);

@@ -1,6 +1,6 @@
 import { adminAuthFor, type AuthDeps } from "../../../src/server/auth";
 import { csrfToken } from "../../../src/server/auth/csrf";
-import { clearAttempts, clientKey, countAttempt } from "../../../src/server/auth/ratelimit";
+import { clearAttempts, countAttempt } from "../../../src/server/auth/ratelimit";
 import { declaresOversizeBody, noStore, payloadTooLarge, readJsonObject } from "../../../src/server/bookings";
 import type { AppEnv } from "../../../src/server/env";
 import { errorResponse, json } from "../../../src/server/http";
@@ -19,14 +19,14 @@ export const createLoginHandler = (deps: AuthDeps = {}): PagesFunction<AppEnv> =
   const { auth } = resolved;
 
   if (Number(request.headers.get("Content-Length")) > MAX_BODY_BYTES) return payloadTooLarge();
-  const body = await readJsonObject(request);
+  const body = await readJsonObject(request, MAX_BODY_BYTES);
   if (body instanceof Response) return body;
   const { password } = body;
   if (typeof password !== "string" || password.length < 1 || password.length > MAX_PASSWORD_LENGTH) {
     return errorResponse(400, "invalid_input", "Enter the password.", {}, noStore);
   }
 
-  const key = await clientKey(request.headers.get("CF-Connecting-IP"));
+  const key = await auth.clientKey(request.headers.get("CF-Connecting-IP"));
   const nowSeconds = Math.floor((deps.now ?? Date.now)() / 1000);
   try {
     const attempt = await countAttempt(env.DB, key, nowSeconds);
