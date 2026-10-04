@@ -52,12 +52,29 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
    * `confirmed` is the list the admin was shown and agreed to. It is merged with what the server says it
    * removed, because a retry of a save whose response was lost finds nothing left to remove and answers
    * `removed: []`: the people still need telling, so the list must not depend on the last response alone.
+   * But a confirmed booking the server did not remove may instead have been moved elsewhere meanwhile, so
+   * the event is fetched again and anyone who still has a booking is left off the list.
    */
-  function showSaved({ event, removed }, confirmed) {
-    const byId = new Map([...confirmed, ...(removed ?? [])].map((b) => [b.id, b]));
+  async function showSaved({ event, removed }, confirmed) {
+    const gone = new Set((removed ?? []).map((b) => b.id));
+    let fallback = confirmed.filter((b) => !gone.has(b.id));
+    let notice = "";
+    if (fallback.length > 0) {
+      let res = null;
+      try { res = await api.request("GET", `/api/admin/events/${encodeURIComponent(slug)}`); } catch { /* reported below */ }
+      if (res?.status === 200 && Array.isArray(res.data?.slots) && Array.isArray(res.data?.orphans)) {
+        const present = new Set([...res.data.slots.map((s) => s.booking?.id), ...res.data.orphans.map((o) => o.id)]);
+        fallback = fallback.filter((b) => !present.has(b.id));
+      } else {
+        fallback = [];
+        notice = "Couldn't check who still has a booking; check the schedule.";
+      }
+    }
+    const byId = new Map([...fallback, ...(removed ?? [])].map((b) => [b.id, b]));
     const bookings = [...byId.values()].sort((a, b) => (a.slotStart < b.slotStart ? -1 : a.slotStart > b.slotStart ? 1 : a.id - b.id));
     const heading = h("h1", { tabindex: "-1" }, "Saved.");
     const children = [heading, h("p", { class: "event-name" }, event.name)];
+    if (notice) children.push(h("p", { class: "note", role: "alert" }, notice));
     if (bookings.length > 0) {
       const copyStatus = h("p", { class: "copy-status", "aria-live": "polite" });
       const block = h("textarea", { id: "rebook-text", readonly: true, rows: String(Math.min(bookings.length + 1, 12)) });

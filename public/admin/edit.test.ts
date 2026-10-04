@@ -509,6 +509,70 @@ describe("the result view", () => {
     expect(input("rebook-text").value).toBe("Please rebook: 10:05 — Rex — Sam Smith\nPlease rebook: 10:25 — Flo — Pat Jones");
   });
 
+  it("does not fetch the event again when the server removed everything the admin confirmed", async () => {
+    const { calls } = await start({ preview: () => preview([REX, FLO]), put: () => reply(200, { ...SAVED, removed: [FLO, REX] }) });
+    await tick();
+    submit();
+    await tick();
+    buttonNamed("Remove 2 bookings and save").click();
+    await tick();
+    expect(calls.filter((c) => c.url === EVENT_URL && c.init?.method !== "PUT")).toHaveLength(1); // the first load only
+    expect($(".note")).toBeNull();
+  });
+
+  it("leaves out a confirmed booking that is still on the event (moved to a surviving slot, in a slot or among the orphans)", async () => {
+    const present = {
+      ...DETAIL,
+      slots: [{ start: EVENT.startUtc, end: EVENT.startUtc, booking: { id: 11, dogName: "Rex", handlerName: "Sam Smith" } }],
+      orphans: [{ id: 14, slotStart: "2026-06-13T07:00:00Z", dogName: "Other", handlerName: "Ola" }],
+    };
+    const OTHER = { id: 14, slotStart: "2026-06-13T07:00:00Z", dogName: "Other", handlerName: "Ola" };
+    let gets = 0;
+    await start({
+      preview: () => preview([REX, FLO, OTHER]), put: () => reply(200, { ...SAVED, removed: [FLO] }),
+      get: () => reply(200, ++gets === 1 ? DETAIL : present),
+    });
+    await tick();
+    submit();
+    await tick();
+    buttonNamed("Remove 3 bookings and save").click();
+    await tick();
+    expect(gets).toBe(2);
+    expect(input("rebook-text").value).toBe("Please rebook: 10:25 — Flo — Pat Jones");
+    expect($(".note")).toBeNull();
+  });
+
+  it("shows no list when every confirmed booking is still on the event", async () => {
+    const present = { ...DETAIL, slots: [{ start: EVENT.startUtc, end: EVENT.startUtc, booking: { id: 11, dogName: "Rex", handlerName: "Sam Smith" } }] };
+    let gets = 0;
+    await start({ preview: () => preview([REX]), put: () => reply(200, { ...SAVED, removed: [] }), get: () => reply(200, ++gets === 1 ? DETAIL : present) });
+    await tick();
+    submit();
+    await tick();
+    buttonNamed("Remove 1 booking and save").click();
+    await tick();
+    expect(document.querySelector("#rebook-text")).toBeNull();
+    expect($("h1").textContent).toBe("Saved.");
+  });
+
+  it("shows only what the server removed, and says the check failed, when the event can't be fetched again", async () => {
+    for (const failing of [() => reply(500, { error: { code: "internal_error" } }), () => { throw new TypeError("offline"); }]) {
+      let gets = 0;
+      await start({
+        preview: () => preview([REX, FLO]), put: () => reply(200, { ...SAVED, removed: [FLO] }),
+        get: () => (++gets === 1 ? reply(200, DETAIL) : failing()),
+      });
+      await tick();
+      submit();
+      await tick();
+      buttonNamed("Remove 2 bookings and save").click();
+      await tick();
+      expect(gets).toBe(2);
+      expect(input("rebook-text").value).toBe("Please rebook: 10:25 — Flo — Pat Jones");
+      expect($(".note").textContent).toBe("Couldn't check who still has a booking; check the schedule.");
+    }
+  });
+
   it("falls back to selecting the text when the clipboard fails", async () => {
     await start({
       preview: () => preview([REX]), put: () => reply(200, { ...SAVED, removed: [REX] }),
