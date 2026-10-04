@@ -9,16 +9,20 @@ afterAll(() => t.dispose());
 
 const SLOT = "2026-06-13T08:00:00Z";
 
-interface PostOptions { contentType?: string | null; raw?: string; env?: { DB: D1Database } }
+interface PostOptions {
+  contentType?: string | null; raw?: string; env?: { DB: D1Database };
+  headers?: Record<string, string>; stream?: ReadableStream<Uint8Array>;
+}
 
 const post = (slug: string, body: unknown, o: PostOptions = {}): Promise<Response> => {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...o.headers };
   if (o.contentType !== null) headers["Content-Type"] = o.contentType ?? "application/json";
   return Promise.resolve(
     onRequestPost({
       request: new Request(`http://localhost/api/events/${slug}/bookings`, {
-        method: "POST", headers, body: o.raw ?? JSON.stringify(body),
-      }),
+        method: "POST", headers, body: o.stream ?? o.raw ?? JSON.stringify(body),
+        ...(o.stream ? { duplex: "half" } : {}),
+      } as RequestInit),
       env: o.env ?? t.env,
       params: { slug },
     } as unknown as Parameters<typeof onRequestPost>[0]),
@@ -172,6 +176,19 @@ describe("POST /api/events/:slug/bookings", () => {
     });
   });
 
+  it("sends nosniff and noindex on success and on errors", async () => {
+    const { slug } = await insertEvent(t.env.DB);
+    for (const res of [
+      await post(slug, entry(SLOT, "Rex", "Sam Jones")), // 201
+      await post(slug, entry(SLOT, "Fido", "Ann Lee")), // 409
+      await post("unknownslug0123456789", entry(SLOT, "Rex", "Sam")), // 404
+      await post(slug, undefined, { raw: "{nope" }), // 400
+    ]) {
+      expect(res.headers.get("x-content-type-options"), String(res.status)).toBe("nosniff");
+      expect(res.headers.get("x-robots-tag"), String(res.status)).toBe("noindex");
+    }
+  });
+
   describe("rejections", () => {
     it("returns 404 for an unknown or malformed slug", async () => {
       for (const slug of ["unknownslug0123456789", "short", "../etc/passwd"]) {
@@ -260,6 +277,68 @@ describe("POST /api/events/:slug/bookings", () => {
       expect(await rows(id)).toHaveLength(0);
     });
 
+    it("returns 413 from the declared Content-Length alone, before any database lookup", async () => {
+      const exploding = { prepare: () => { throw new Error("database touched"); } } as unknown as D1Database;
+      for (const slug of ["unknownslug0123456789", "short"]) {
+        const res = await post(slug, entry(SLOT, "Rex", "Sam"), { headers: { "Content-Length": "4097" }, env: { DB: exploding } });
+        expect(res.status, slug).toBe(413);
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        expect(((await res.json()) as ErrorBody).error.code).toBe("payload_too_large");
+      }
+    });
+
+    it("accepts a declared Content-Length of exactly 4096 (and ignores a nonsense value)", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      const base = JSON.stringify({ ...entry(SLOT, "Rex", "Sam Jones"), padding: "" });
+      const raw = JSON.stringify({ ...entry(SLOT, "Rex", "Sam Jones"), padding: "x".repeat(4096 - base.length) });
+      expect(new TextEncoder().encode(raw).length).toBe(4096);
+      expect((await post(slug, undefined, { raw, headers: { "Content-Length": "4096" } })).status).toBe(201);
+      const { slug: other } = await insertEvent(t.env.DB);
+      expect((await post(other, entry(SLOT, "Rex", "Sam"), { headers: { "Content-Length": "abc" } })).status).toBe(201);
+    });
+
+    it("counts the cap in bytes: 2000 two-byte characters is over 4096 bytes", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const res = await post(slug, { ...entry(SLOT, "Rex", "Sam"), padding: "é".repeat(2100) });
+      expect(res.status).toBe(413);
+      expect(await rows(id)).toHaveLength(0);
+    });
+
+    it("returns 413 for an oversized streamed body with no Content-Length, and cancels the stream", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const chunk = new TextEncoder().encode("x".repeat(1024));
+      let pulled = 0;
+      let cancelled = false;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulled++;
+          if (pulled > 1000) return controller.close();
+          controller.enqueue(chunk);
+        },
+        cancel() { cancelled = true; },
+      });
+      const res = await post(slug, undefined, { stream });
+      expect(res.status).toBe(413);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("payload_too_large");
+      expect(cancelled).toBe(true);
+      expect(pulled).toBeLessThan(20); // stopped reading soon after the cap, not after 1000 KB
+      expect(await rows(id)).toHaveLength(0);
+    });
+
+    it("still reads a normal streamed body in several chunks", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      const bytes = new TextEncoder().encode(JSON.stringify(entry(SLOT, "Zoë", "Sam")));
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (let i = 0; i < bytes.length; i += 7) controller.enqueue(bytes.slice(i, i + 7)); // splits multi-byte ë
+          controller.close();
+        },
+      });
+      const res = await post(slug, undefined, { stream });
+      expect(res.status).toBe(201);
+      expect(((await res.json()) as { booking: { dogName: string } }).booking.dogName).toBe("Zoë");
+    });
+
     it("returns 400 invalid_input naming each bad name field", async () => {
       const { id, slug } = await insertEvent(t.env.DB);
       const cases: [string, Record<string, unknown>, string[]][] = [
@@ -289,6 +368,63 @@ describe("POST /api/events/:slug/bookings", () => {
       expect(await rows(id)).toHaveLength(1);
     });
 
+    it("rejects a lone surrogate with 400 and inserts nothing (it would break the icsUrl after the insert)", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      // The escape survives JSON.parse as a real lone surrogate.
+      const raw = `{"slot":"${SLOT}","dogName":"Rex\\ud800","handlerName":"Sam"}`;
+      const res = await post(slug, undefined, { raw });
+      expect(res.status).toBe(400);
+      const parsed = (await res.json()) as ErrorBody;
+      expect(parsed.error.code).toBe("invalid_input");
+      expect(Object.keys(parsed.fields ?? {})).toEqual(["dogName"]);
+      expect(await rows(id)).toHaveLength(0);
+      const handler = `{"slot":"${SLOT}","dogName":"Rex","handlerName":"\\udc00Sam"}`;
+      expect(Object.keys(((await (await post(slug, undefined, { raw: handler })).json()) as ErrorBody).fields ?? {})).toEqual(["handlerName"]);
+      expect(await rows(id)).toHaveLength(0);
+    });
+
+    describe("invisible and direction-changing characters", () => {
+      const groups: [string, string[]][] = [
+        ["soft hyphen", ["\u00AD"]],
+        ["zero-width space", ["\u200B"]],
+        ["LRM and RLM", ["\u200E", "\u200F"]],
+        ["bidi embeddings and overrides", ["\u202A", "\u202B", "\u202C", "\u202D", "\u202E"]],
+        ["word joiner and invisible operators", ["\u2060", "\u2061", "\u2062", "\u2063", "\u2064"]],
+        ["bidi isolates", ["\u2066", "\u2067", "\u2068", "\u2069"]],
+        ["BOM / zero-width no-break space", ["\uFEFF"]],
+      ];
+      it.each(groups)("rejects %s inside, at the start and at the end of either name", async (_label, chars) => {
+        const { id, slug } = await insertEvent(t.env.DB);
+        for (const ch of chars) {
+          for (const make of [(n: string) => `Re${ch}x${n}`, (n: string) => `${ch}${n}`, (n: string) => `${n}${ch}`]) {
+            const res = await post(slug, entry(SLOT, make("Rex"), make("Sam")));
+            const label = JSON.stringify(make("Rex"));
+            expect(res.status, label).toBe(400);
+            const parsed = (await res.json()) as ErrorBody;
+            expect(parsed.error.code, label).toBe("invalid_input");
+            expect(Object.keys(parsed.fields ?? {}).sort(), label).toEqual(["dogName", "handlerName"]);
+            expect(parsed.fields?.dogName, label).toBe("The dog's name can't contain invisible or direction-changing characters.");
+          }
+        }
+        expect(await rows(id)).toHaveLength(0);
+      });
+
+      it("rejects a name made only of zero-width spaces (it would otherwise look blank but pass the blank check)", async () => {
+        const { id, slug } = await insertEvent(t.env.DB);
+        const res = await post(slug, entry(SLOT, "\u200B\u200B", "Sam"));
+        expect(res.status).toBe(400);
+        expect(Object.keys(((await res.json()) as ErrorBody).fields ?? {})).toEqual(["dogName"]);
+        expect(await rows(id)).toHaveLength(0);
+      });
+
+      it("keeps ZWJ and ZWNJ, which emoji sequences and some scripts need", async () => {
+        const { id, slug } = await insertEvent(t.env.DB);
+        expect((await post(slug, entry(SLOT, "👨\u200D👩\u200D👧", "Sam"))).status).toBe(201);
+        expect((await post(slug, entry("2026-06-13T08:15:00Z", "می\u200Cخواهم", "Sam"))).status).toBe(201);
+        expect(await rows(id)).toHaveLength(2);
+      });
+    });
+
     it("counts the 80-character limit in code points, not UTF-16 units", async () => {
       const { slug } = await insertEvent(t.env.DB);
       expect((await post(slug, entry(SLOT, "🐕".repeat(80), "Sam"))).status).toBe(201);
@@ -312,7 +448,9 @@ describe("POST /api/events/:slug/bookings", () => {
         const text = await res.text();
         expect((JSON.parse(text) as ErrorBody).error.code).toBe("internal_error");
         expect(text).not.toMatch(/SECRET|D1_ERROR|INSERT/);
-        expect(spy).toHaveBeenCalled();
+        expect(spy).toHaveBeenCalledTimes(1);
+        // Strings only: never the raw error object (its stack and cause can carry SQL and bound values).
+        expect(spy.mock.calls[0]).toEqual(["createBooking failed:", "D1_ERROR: SECRET sql detail"]);
       } finally {
         spy.mockRestore();
       }

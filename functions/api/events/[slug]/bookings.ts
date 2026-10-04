@@ -1,9 +1,11 @@
-import { createBooking, findSlot, noStore, readJsonObject, validateBookingInput } from "../../../../src/server/bookings";
+import { createBooking, declaresOversizeBody, findSlot, noStore, payloadTooLarge, readJsonObject, validateBookingInput } from "../../../../src/server/bookings";
 import { eventSummary, loadEventBySlug } from "../../../../src/server/events";
 import { errorResponse, json } from "../../../../src/server/http";
 import { bookingIcsUrl } from "../../../../src/server/ics";
 
 export const onRequestPost: PagesFunction<Env, "slug"> = async ({ request, env, params }) => {
+  // Before any lookup, so oversized requests cost no database work.
+  if (declaresOversizeBody(request)) return payloadTooLarge();
   const event = await loadEventBySlug(env.DB, String(params.slug));
   if (!event) return errorResponse(404, "not_found", "Event not found", {}, noStore);
   if (event.archived) return errorResponse(410, "event_archived", "This event is closed to bookings.", {}, noStore);
@@ -21,7 +23,7 @@ export const onRequestPost: PagesFunction<Env, "slug"> = async ({ request, env, 
   try {
     result = await createBooking(env.DB, event, slot, input);
   } catch (e) {
-    console.error("createBooking failed", e);
+    console.error("createBooking failed:", e instanceof Error ? e.message : String(e));
     return errorResponse(500, "internal_error", "Something went wrong. Please try again.", {}, noStore);
   }
   switch (result.kind) {

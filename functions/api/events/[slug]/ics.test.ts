@@ -57,6 +57,8 @@ describe("GET /api/events/:slug/ics", () => {
     expect(res.headers.get("content-type")).toBe("text/calendar; charset=utf-8");
     expect(res.headers.get("content-disposition")).toBe('inline; filename="booking.ics"');
     expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("x-robots-tag")).toBe("noindex");
     const ev = vevent(await res.text());
     expect(ev.summary).toContain("Rex");
     expect(ev.summary).toContain("Summer show");

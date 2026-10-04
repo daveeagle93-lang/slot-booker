@@ -3,8 +3,11 @@ import { generateSchedule, type TimeRange } from "../core/schedule";
 import { computeSlotViews, type EventRow } from "./events";
 import { errorResponse } from "./http";
 
-const MAX_BODY_CHARS = 4096;
+const MAX_BODY_BYTES = 4096;
 const MAX_NAME_CODE_POINTS = 80;
+// Soft hyphen, zero-width space, LRM/RLM, bidi controls, word joiner and invisible operators, BOM.
+// ZWNJ/ZWJ (U+200C/D) are allowed: emoji sequences and some scripts need them.
+const INVISIBLE = /[\u00AD\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/u;
 export const noStore = { "Cache-Control": "no-store" };
 
 export interface BookingInput { slot: string; dogName: string; handlerName: string }
@@ -14,16 +17,40 @@ export type BookingResult =
   | { kind: "duplicate_booking" }
   | { kind: "slot_taken"; freeSlots: TimeRange[] };
 
+export const payloadTooLarge = (): Response =>
+  errorResponse(413, "payload_too_large", "That request is too large.", {}, noStore);
+
+/** True if the client declares a body over the cap; lets the handler refuse before touching the database. */
+export const declaresOversizeBody = (request: Request): boolean =>
+  Number(request.headers.get("Content-Length")) > MAX_BODY_BYTES;
+
+/** Reads the body as text, cancelling the stream and returning null as soon as it passes the byte cap. */
+async function readCappedText(request: Request): Promise<string | null> {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return text + decoder.decode();
+    bytes += value.byteLength;
+    if (bytes > MAX_BODY_BYTES) {
+      await reader.cancel();
+      return null;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+}
+
 /** Returns the parsed JSON object, or the error response to send. */
 export async function readJsonObject(request: Request): Promise<Record<string, unknown> | Response> {
   const type = (request.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
   if (type !== "application/json") {
     return errorResponse(415, "unsupported_media_type", "Send the request as application/json.", {}, noStore);
   }
-  const text = await request.text();
-  if (text.length > MAX_BODY_CHARS) {
-    return errorResponse(413, "payload_too_large", "That request is too large.", {}, noStore);
-  }
+  const text = await readCappedText(request);
+  if (text === null) return payloadTooLarge();
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -38,6 +65,10 @@ export async function readJsonObject(request: Request): Promise<Record<string, u
 
 function checkName(value: unknown, label: string): { name: string } | { message: string } {
   if (typeof value !== "string") return { message: `Enter the ${label}.` };
+  if (!value.isWellFormed()) return { message: `The ${label} can't contain unpaired surrogate characters.` };
+  if (INVISIBLE.test(value)) {
+    return { message: `The ${label} can't contain invisible or direction-changing characters.` };
+  }
   const name = value.trim();
   if (name === "") return { message: `Enter the ${label}.` };
   if ([...name].length > MAX_NAME_CODE_POINTS) {

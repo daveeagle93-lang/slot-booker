@@ -1,6 +1,6 @@
 import { noStore } from "../../../../src/server/bookings";
 import { loadEventBySlug } from "../../../../src/server/events";
-import { errorResponse } from "../../../../src/server/http";
+import { apiHeaders, errorResponse } from "../../../../src/server/http";
 import { loadBookingIcs } from "../../../../src/server/ics";
 
 export const onRequestGet: PagesFunction<Env, "slug"> = async ({ request, env, params }) => {
@@ -16,6 +16,7 @@ export const onRequestGet: PagesFunction<Env, "slug"> = async ({ request, env, p
       "Content-Type": "text/calendar; charset=utf-8",
       "Content-Disposition": 'inline; filename="booking.ics"',
       ...noStore,
+      ...apiHeaders,
     },
   });
 };

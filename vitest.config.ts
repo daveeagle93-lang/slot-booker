@@ -1,4 +1,9 @@
+/// <reference types="node" />
 import { defineConfig } from "vitest/config";
+
+// Not London, so tests that need Europe/London must ask for it explicitly rather than pass by luck.
+// Set before defineConfig so the test worker processes inherit it.
+process.env.TZ = "Pacific/Auckland";
 
 export default defineConfig({
   test: {
