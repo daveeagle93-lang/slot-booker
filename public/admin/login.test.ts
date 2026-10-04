@@ -2,7 +2,7 @@
 /// <reference types="node" />
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { init } from "./login.js";
+import { init, trimAdminSecret } from "./login.js";
 
 const reply = (status: number, body: unknown = {}, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
@@ -47,11 +47,11 @@ describe("login page markup", () => {
     expect(html).not.toMatch(/<script(?![^>]*\bsrc=)/i);
     expect(html).not.toMatch(/<style|style=|\son[a-z]+=/i);
   });
-  it("has one secret field that password managers recognise, a 43-character limit, and an alert region", () => {
+  it("has one secret field that password managers recognise, a limit that does not truncate a padded secret, and an alert region", () => {
     expect(html.match(/<input/g)).toHaveLength(1);
     expect(html).toMatch(/<input[^>]*type="password"[^>]*autocomplete="current-password"|<input[^>]*autocomplete="current-password"[^>]*type="password"/);
     expect(html).toContain('<label for="password">Admin secret</label>');
-    expect(html).toMatch(/<input[^>]*maxlength="43"/);
+    expect(html).toMatch(/<input[^>]*maxlength="256"/); // the server's cap on the raw value
     expect(html).toMatch(/<input[^>]*spellcheck="false"/);
     expect(html).toMatch(/<input[^>]*autocapitalize="off"/);
     expect(html).toContain('role="alert"');
@@ -115,6 +115,26 @@ describe("login page", () => {
     await flush();
     expect(calls).toHaveLength(2);
     expect(error().textContent).toBe("Enter the admin secret.");
+  });
+
+  it("trims NBSP and zero-width characters too, and keeps a padded paste whole in the field", async () => {
+    const { calls } = await start((call) => call.url === "/api/admin/session" ? SIGNED_OUT() : reply(401, {}));
+    const padded = ` \u00A0\u200B${SECRET}\uFEFF\u00AD\n`;
+    const limit = Number(password().getAttribute("maxlength"));
+    expect(limit).toBeGreaterThanOrEqual(padded.length);
+    await submit(padded.slice(0, limit)); // what the browser would keep of the paste
+    expect(JSON.parse(calls[1].init?.body as string)).toEqual({ password: SECRET });
+  });
+
+  it("trims exactly the code units the server helper does, for every UTF-16 code unit", async () => {
+    // Loaded through a variable path so the public type-check (DOM lib) does not pull in the server file.
+    const serverModule = "../../src/server/auth/crypto";
+    const { trimAdminSecret: trimOnServer } = (await import(/* @vite-ignore */ serverModule)) as { trimAdminSecret: (s: string) => string };
+    for (let code = 0; code <= 0xffff; code++) {
+      const c = String.fromCharCode(code);
+      expect(trimAdminSecret(`${c}a${c}`), `U+${code.toString(16)}`).toBe(trimOnServer(`${c}a${c}`));
+    }
+    expect(trimAdminSecret("\u200B a \u200B")).toBe("a");
   });
 
   it("sends interior whitespace and other characters as typed, leaving the server to refuse them", async () => {

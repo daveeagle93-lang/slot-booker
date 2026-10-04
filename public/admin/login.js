@@ -8,6 +8,20 @@ function rateLimitMessage(retryAfter) {
   return `Too many attempts. Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
 }
 
+// Same trimming as trimAdminSecret in src/server/auth/crypto.ts (this page cannot import from src/); login.test.ts
+// checks the two agree. Whitespace plus the invisible characters String.prototype.trim leaves in.
+const INVISIBLE = "\u200B\u200C\u200D\u2060\u180E\u00AD";
+const isIgnorable = (char) => char.trim() === "" || INVISIBLE.includes(char);
+
+/** Drops whitespace and invisible characters from both ends only. */
+export function trimAdminSecret(input) {
+  let start = 0;
+  let end = input.length;
+  while (start < end && isIgnorable(input[start])) start++;
+  while (end > start && isIgnorable(input[end - 1])) end--;
+  return input.slice(start, end);
+}
+
 /** Wires the sign-in page. Resolves once the session check has settled. */
 export async function init({ document, fetch, location }) {
   const status = document.getElementById("login-status");
@@ -31,9 +45,9 @@ export async function init({ document, fetch, location }) {
   async function submit(event) {
     event.preventDefault();
     if (submitting) return;
-    // Whitespace around a pasted secret is dropped; a generated secret has none inside, and the server
-    // checks exactly what is sent, so this can't make a wrong value pass.
-    const secret = field.value.trim();
+    // Whitespace and zero-width characters around a pasted secret are dropped; a generated secret has none,
+    // and the server checks what is sent (and trims the same way), so this can't make a wrong value pass.
+    const secret = trimAdminSecret(field.value);
     if (secret === "") {
       error.textContent = "Enter the admin secret.";
       return;

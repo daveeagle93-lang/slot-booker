@@ -61,6 +61,21 @@ export function isCanonicalAdminSecret(text: string): boolean {
   return bytes?.length === SECRET_BYTES && base64urlEncode(bytes) === text;
 }
 
+// Characters people pick up copying a secret from chat apps or PDFs. String.prototype.trim covers whitespace (NBSP,
+// BOM, line and paragraph separators and every Zs space) but not these; a generated secret contains none of them.
+// public/admin/login.js repeats this set and its test checks the two agree, so change both together.
+const INVISIBLE = "\u200B\u200C\u200D\u2060\u180E\u00AD";
+const isIgnorable = (char: string): boolean => char.trim() === "" || INVISIBLE.includes(char);
+
+/** Drops whitespace and invisible characters from both ends only; anything inside the text is kept (and so still fails). */
+export function trimAdminSecret(input: string): string {
+  let start = 0;
+  let end = input.length;
+  while (start < end && isIgnorable(input[start])) start++;
+  while (end > start && isIgnorable(input[end - 1])) end--;
+  return input.slice(start, end);
+}
+
 async function mac(salt: Uint8Array, secret: string): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey("raw", salt, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return new Uint8Array(await crypto.subtle.sign("HMAC", key, utf8(secret)));

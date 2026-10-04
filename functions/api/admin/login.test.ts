@@ -72,7 +72,7 @@ describe("POST /api/admin/login", () => {
   it("refuses malformed bodies with no HMAC check and no counted attempt", async () => {
     const ip = newIp();
     const before = await rows();
-    for (const password of [undefined, null, 5, "", "x".repeat(65), ["a"], {}]) {
+    for (const password of [undefined, null, 5, "", "x".repeat(257), " \u200B\t ", ["a"], {}]) {
       expect((await login(password, ip)).status, JSON.stringify(password)).toBe(400);
     }
     const send = (init: RequestInit) => app(env, "/api/admin/login", {
@@ -86,6 +86,57 @@ describe("POST /api/admin/login", () => {
     expect((await send({ headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: "x".repeat(5000) }) })).status).toBe(413);
     expect(hmacChecks()).toBe(0);
     expect(await rows()).toEqual(before);
+  });
+
+  describe("whitespace and zero-width characters around the secret", () => {
+    const PADDING = " \t\n\u00A0\u200B\uFEFF\u00AD";
+    const inner = (c: string) => `${TEST_PASSWORD.slice(0, 20)}${c}${TEST_PASSWORD.slice(20)}`;
+
+    it("are ignored: a real secret padded on both sides signs in", async () => {
+      const res = await login(`${PADDING}${TEST_PASSWORD}${PADDING}`, newIp());
+      expect(res.status).toBe(200);
+      expect(res.headers.get("set-cookie")).toMatch(new RegExp(`^${SESSION_COOKIE}=v1\\.`));
+      expect((await login(`${PADDING}${TEST_PASSWORD}`, newIp())).status).toBe(200);
+      expect((await login(`${TEST_PASSWORD}${PADDING}`, newIp())).status).toBe(200);
+    });
+
+    it("do not rescue a secret with a space or zero-width character inside it", async () => {
+      for (const c of [" ", "\u200B", "\u00A0", "\u00AD"]) {
+        const res = await login(`${PADDING}${inner(c)}${PADDING}`, newIp());
+        expect(res.status, JSON.stringify(c)).toBe(401);
+        expect(res.headers.get("set-cookie")).toBeNull();
+      }
+    });
+
+    it("do not make a wrong secret right", async () => {
+      expect((await login(`${PADDING}${wrongSecret()}${PADDING}`, newIp())).status).toBe(401);
+    });
+
+    it("on their own are treated like an empty value: 400, nothing counted or checked", async () => {
+      const ip = newIp();
+      const before = await rows();
+      expect((await login(PADDING, ip)).status).toBe(400);
+      expect((await login("", ip)).status).toBe(400);
+      expect(hmacChecks()).toBe(0);
+      expect(await rows()).toEqual(before);
+    });
+
+    it("are capped on the raw value: 256 code units are read, 257 get 400", async () => {
+      const pad = (n: number) => "\u200B".repeat(n);
+      expect((await login(`${pad(100)}${TEST_PASSWORD}${pad(113)}`, newIp())).status).toBe(200); // 256 in all
+      const ip = newIp();
+      const before = await rows();
+      expect((await login(`${pad(100)}${TEST_PASSWORD}${pad(114)}`, ip)).status).toBe(400); // 257
+      expect(await rows()).toEqual(before);
+    });
+
+    it("still count one attempt per request", async () => {
+      const ip = newIp();
+      for (let i = 0; i < 3; i++) expect((await login(` ${wrongSecret()}\u200B`, ip)).status).toBe(401);
+      const key = await clientKey(ip, SESSION_SECRET);
+      expect((await rows()).find((r) => r.key === key)?.attempts).toBe(3);
+      expect(hmacChecks()).toBe(3);
+    });
   });
 
   it("refuses a body over 1 KB with 413 even when it is streamed without a Content-Length", async () => {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   base64urlDecode, base64urlEncode, generateAdminSecret, hashAdminSecret, isCanonicalAdminSecret, parseAdminSecretHash,
-  timingSafeEqual, verifyAdminSecret,
+  timingSafeEqual, trimAdminSecret, verifyAdminSecret,
 } from "./crypto";
 
 const bytes = (...n: number[]) => new Uint8Array(n);
@@ -145,5 +145,52 @@ describe("admin secret hashes", () => {
     ];
     for (const stored of bad) expect(parseAdminSecretHash(stored), String(stored)).toBeNull();
     expect(parseAdminSecretHash(`hmac-sha256$${s}$${h}`)).not.toBeNull();
+  });
+});
+
+describe("trimAdminSecret", () => {
+  // What String.prototype.trim covers, plus the invisible characters it does not (chat apps and PDFs add them).
+  const TRIMMED = [
+    " ", "\t", "\n", "\v", "\f", "\r", "\u00A0", "\u1680", "\u2000", "\u2005", "\u200A", "\u2028", "\u2029", "\u202F",
+    "\u205F", "\u3000", "\uFEFF", "\u200B", "\u200C", "\u200D", "\u2060", "\u180E", "\u00AD",
+  ];
+  const secret = generateAdminSecret();
+
+  it("strips each listed character from both ends", () => {
+    for (const c of TRIMMED) {
+      const label = `U+${c.charCodeAt(0).toString(16).padStart(4, "0")}`;
+      expect(trimAdminSecret(`${c}${secret}`), label).toBe(secret);
+      expect(trimAdminSecret(`${secret}${c}`), label).toBe(secret);
+      expect(trimAdminSecret(`${c}${c}${secret}${c}${c}`), label).toBe(secret);
+    }
+  });
+
+  it("strips mixed runs, different on each side", () => {
+    expect(trimAdminSecret(` \u200B\u00A0\t${secret}\u00AD\uFEFF\n \u2060`)).toBe(secret);
+  });
+
+  it("leaves inner occurrences alone", () => {
+    for (const c of TRIMMED) {
+      const inner = `${secret.slice(0, 20)}${c}${secret.slice(20)}`;
+      expect(trimAdminSecret(` ${inner} `), JSON.stringify(c)).toBe(inner);
+    }
+  });
+
+  it("leaves a clean secret unchanged and returns an empty string when only invisibles are given", () => {
+    expect(trimAdminSecret(secret)).toBe(secret);
+    expect(trimAdminSecret("")).toBe("");
+    expect(trimAdminSecret(TRIMMED.join(""))).toBe("");
+  });
+
+  it("does not trim other characters, and stays linear on long padding", () => {
+    expect(trimAdminSecret("\u200Ex\u200E")).toBe("\u200Ex\u200E");
+    expect(trimAdminSecret(`${" ".repeat(100_000)}x${" ".repeat(100_000)}y`)).toBe(`x${" ".repeat(100_000)}y`);
+  });
+
+  it("is only applied at the boundary: verifyAdminSecret itself stays strict", async () => {
+    const salt = new Uint8Array(16).fill(7);
+    const parsed = parseAdminSecretHash(await hashAdminSecret(secret, salt))!;
+    expect(await verifyAdminSecret(` ${secret}\u200B`, parsed)).toBe(false);
+    expect(await verifyAdminSecret(trimAdminSecret(` ${secret}\u200B`), parsed)).toBe(true);
   });
 });
