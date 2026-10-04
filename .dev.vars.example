@@ -12,7 +12,7 @@
 # ADMIN_AUTH=password
 # Password provider. Both of these are SECRETS: real values never go in git or wrangler.jsonc.
 # Keep the single quotes: the hash contains $ characters.
-# ADMIN_PASSWORD_HASH='pbkdf2-sha256$100000$<salt>$<hash>'   # printed by: npm run hash-password
+# ADMIN_PASSWORD_HASH='hmac-sha256$<salt>$<mac>'   # the stdout of: npm run --silent generate-admin-secret (the secret itself is on stderr)
 # ADMIN_SESSION_SECRET='<at least 32 random characters>'     # e.g. from: openssl rand -base64 48
 # Access provider (needs a real Cloudflare Access login in front, so it cannot be tried locally).
 # ADMIN_AUTH=access

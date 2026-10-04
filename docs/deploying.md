@@ -106,10 +106,10 @@ It prints the event details and a path such as `/e/<slug>`. Open that path on yo
 
 The admin pages (`/admin/`) and the admin API (`/api/admin/*`) answer 503 until `ADMIN_AUTH` is set to `password` or `access`. `docs/admin-auth.md` explains both options, how the Access one is set up in Zero Trust, and the limits of each. For the password option on the preview:
 
-1. Make the hash. It prompts for the password without echoing it and needs at least 14 characters:
+1. Generate the admin secret. It prints the secret on stderr, once (store it in your password manager now), and only the hash to stdout:
 
    ```sh
-   npm run hash-password
+   npm run --silent generate-admin-secret
    ```
 
 2. Add the non-secret setting to `wrangler.jsonc`, in **both** the top-level block and `env.preview` (like `d1_databases`, `vars` is not inherited by `env.preview`; the Pages docs also say that once a Wrangler config file is used, the same fields can't be edited in the dashboard):
@@ -118,7 +118,7 @@ The admin pages (`/admin/`) and the admin API (`/api/admin/*`) answer 503 until 
    "vars": { "ADMIN_AUTH": "password" }
    ```
 
-3. Set the two secrets, `ADMIN_PASSWORD_HASH` (the output of step 1) and `ADMIN_SESSION_SECRET` (at least 32 random characters, for example from `openssl rand -base64 48`). Each command prompts for the value:
+3. Set the two secrets, `ADMIN_PASSWORD_HASH` (the hash line from step 1, not the secret) and `ADMIN_SESSION_SECRET` (at least 32 random characters, for example from `openssl rand -base64 48`). Each command prompts for the value:
 
    ```sh
    npx wrangler pages secret put ADMIN_PASSWORD_HASH --project-name slot-booker
@@ -127,7 +127,7 @@ The admin pages (`/admin/`) and the admin API (`/api/admin/*`) answer 503 until 
 
    Cloudflare's [Pages bindings docs](https://developers.cloudflare.com/pages/functions/bindings/) say secrets are set per environment and must be set before the deployment that uses them. The installed `wrangler pages secret put --help` has no environment flag, so which environment these commands write to is **not verified here**: after running them, check Settings, Variables and Secrets for the project in the dashboard, and add any missing secret to the Preview environment there.
 
-If login later fails with a Cloudflare CPU-limit error, see "Known limits" in `docs/admin-auth.md`: the Access option avoids password hashing in the Worker.
+If login later fails with a Cloudflare CPU-limit error, see "Known limits" in `docs/admin-auth.md`: the Access option avoids checking a credential in the Worker.
 
 ## 7. Create the Pages project and deploy a preview
 
