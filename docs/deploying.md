@@ -161,7 +161,7 @@ The first should print `401` (it prints `503` if `ADMIN_AUTH` or its secrets are
 ## Not covered
 
 - Custom domains and production deployment are out of scope here.
-- Managing bookings, archiving and deleting events, and the lineup export are not built yet.
+- Archiving and deleting events are not built yet. (Managing bookings and the lineup export are: see "Managing bookings" in the README.)
 
 ## Before a real event
 

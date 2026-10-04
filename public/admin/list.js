@@ -68,11 +68,12 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     ];
     // Only events with a sound booking path get any links, as before.
     const edit = h("a", { class: "button", href: `/admin/edit?slug=${encodeURIComponent(ev.slug)}` }, "Edit");
-    if (isBookingPath(ev.path)) children.push(...actions(location.origin + ev.path, ev.path, edit));
+    const schedule = h("a", { class: "button", href: `/admin/schedule?slug=${encodeURIComponent(ev.slug)}` }, "Schedule");
+    if (isBookingPath(ev.path)) children.push(...actions(location.origin + ev.path, ev.path, edit, schedule));
     return h("li", { class: "event-card" }, ...children);
   }
 
-  function actions(url, path, edit) {
+  function actions(url, path, edit, schedule) {
     const copyStatus = h("p", { class: "copy-status", "aria-live": "polite" });
     const fallback = h("div", { class: "field", hidden: true });
     const copy = h("button", { type: "button", class: "button primary" }, "Copy booking link");
@@ -94,7 +95,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       copyStatus.textContent = "Couldn't copy automatically. Copy the link below manually.";
     });
     return [
-      h("div", { class: "actions" }, copy, h("a", { class: "button", href: path }, "Open"), edit),
+      h("div", { class: "actions" }, copy, h("a", { class: "button", href: path }, "Open"), edit, schedule),
       copyStatus,
       fallback,
     ];

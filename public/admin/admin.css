@@ -32,7 +32,6 @@ main.admin { max-width: 40rem; }
 .event-card .booked { color: var(--muted); }
 .event-card .actions { margin-top: 0.75rem; }
 .event-card .button { min-height: 48px; }
-.event-card .actions > :nth-child(3) { grid-column: 1 / -1; }
 
 .badge {
   display: inline-block;

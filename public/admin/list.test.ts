@@ -60,11 +60,18 @@ describe("list page", () => {
     expect(open.getAttribute("href")).toBe("/e/abc123");
   });
 
+  it("gives each card a Schedule link to the schedule page, right after Edit, with the slug escaped", async () => {
+    await start([EVENT, { ...EVENT, slug: "a b&c", path: "/e/abc" }]);
+    const links = [...document.querySelectorAll<HTMLAnchorElement>(".event-card a")].filter((a) => a.textContent === "Schedule");
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/admin/schedule?slug=abc123", "/admin/schedule?slug=a%20b%26c"]);
+    expect([...document.querySelectorAll(".event-card")[0].querySelectorAll(".actions > *")].map((n) => n.textContent)).toEqual(["Copy booking link", "Open", "Edit", "Schedule"]);
+  });
+
   it("gives each card an Edit link to the edit page, after Copy and Open", async () => {
     await start([EVENT, { ...EVENT, slug: "def456", path: "/e/def456", name: "Second" }]);
     const edits = [...document.querySelectorAll<HTMLAnchorElement>(".event-card a")].filter((a) => a.textContent === "Edit");
     expect(edits.map((a) => a.getAttribute("href"))).toEqual(["/admin/edit?slug=abc123", "/admin/edit?slug=def456"]);
-    expect([...document.querySelectorAll(".event-card")[0].querySelectorAll(".actions > *")].map((n) => n.textContent)).toEqual(["Copy booking link", "Open", "Edit"]);
+    expect([...document.querySelectorAll(".event-card")[0].querySelectorAll(".actions > *")].slice(0, 3).map((n) => n.textContent)).toEqual(["Copy booking link", "Open", "Edit"]);
   });
 
   it("escapes the slug in the Edit link", async () => {
