@@ -8,7 +8,7 @@ const EVENT = {
   slug: SLUG, name: "Trial Day", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T15:00:00Z",
   costPence: 1500, venuePostcode: "SW1A 1AA", details: "Bring water.\nBe kind.", archived: false,
 };
-const slot = (start: string, end: string, status: "free" | "taken" = "free") => ({ start, end, status });
+const slot = (start: string, end: string, status: "free" | "taken" | "past" = "free") => ({ start, end, status });
 const SLOTS = [
   slot("2026-06-13T08:00:00Z", "2026-06-13T08:15:00Z", "taken"),
   slot("2026-06-13T08:20:00Z", "2026-06-13T08:35:00Z"),
@@ -98,6 +98,40 @@ describe("loading and slots", () => {
     await start(routes(() => created(), () => getOk(EVENT, [SLOTS[0]])));
     expect(slotButtons()).toHaveLength(0);
     expect(text()).toContain("Fully booked");
+  });
+
+  describe("slots that have already started", () => {
+    const WITH_PAST = [
+      slot("2026-06-13T08:00:00Z", "2026-06-13T08:15:00Z", "past"),
+      slot("2026-06-13T08:20:00Z", "2026-06-13T08:35:00Z", "taken"),
+      slot("2026-06-13T08:40:00Z", "2026-06-13T08:55:00Z"),
+      slot("2026-06-13T09:00:00Z", "2026-06-13T09:15:00Z"),
+    ];
+
+    it("renders them disabled, labelled Started, and not selectable", async () => {
+      await start(routes(() => created(), () => getOk(EVENT, WITH_PAST)));
+      expect(slotButtons().map((b) => b.textContent)).toEqual(["09:00", "09:40", "10:00"]);
+      const past = slotButton("09:00");
+      expect(past.disabled).toBe(true);
+      expect(past.classList.contains("past")).toBe(true);
+      expect(past.getAttribute("aria-label")).toBe("09:00 slot, started");
+      expect(past.hasAttribute("aria-pressed")).toBe(false);
+      past.click();
+      expect(form().hidden).toBe(true);
+      expect(slotButton("09:40").disabled).toBe(false);
+      expect(slotButton("09:40").classList.contains("past")).toBe(false);
+    });
+
+    it("counts only bookable slots in the slots-left text", async () => {
+      await start(routes(() => created(), () => getOk(EVENT, WITH_PAST)));
+      expect(text()).toContain("2 slots left");
+    });
+
+    it("says fully booked when only started and taken slots remain", async () => {
+      await start(routes(() => created(), () => getOk(EVENT, WITH_PAST.slice(0, 2))));
+      expect(text()).toContain("Fully booked");
+      expect(slotButtons().every((b) => b.disabled)).toBe(true);
+    });
   });
 
   it("shows the form only after a slot is picked", async () => {
@@ -237,6 +271,26 @@ describe("booking", () => {
     slotButton("10:00").click();
     expect(form().hidden).toBe(false);
     expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
+  });
+
+  it("handles slot_started like slot_taken: new list, its own message, typed names kept", async () => {
+    const freeSlots = [{ start: SLOTS[3].start, end: SLOTS[3].end }];
+    const { calls } = await start(routes(() => reply(409, {
+      error: { code: "slot_started", message: "That session has already started." }, freeSlots,
+    })));
+    slotButton("09:20").click();
+    fill("Biscuit", "Ann Lee");
+    submit();
+    await vi.waitFor(() => expect($("#notice").textContent).toContain("That session has already started."));
+
+    expect($("#notice").getAttribute("role")).toBe("alert");
+    expect(document.activeElement).toBe($("#notice"));
+    expect(slotButtons().map((b) => b.textContent)).toEqual(["10:00"]);
+    expect(text()).toContain("1 slot left");
+    expect(form().hidden).toBe(true);
+    expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
+    expect(($("#handler-name") as HTMLInputElement).value).toBe("Ann Lee");
+    expect(calls.filter((c) => c.init?.method !== "POST")).toHaveLength(1); // no refetch
   });
 
   it("shows fully booked when the 409 payload has no free slots", async () => {

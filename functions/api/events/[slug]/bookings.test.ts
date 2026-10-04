@@ -841,6 +841,115 @@ describe("POST /api/events/:slug/bookings", () => {
     });
   });
 
+  describe("slots that have already started (positive offset)", () => {
+    const at = (iso: string) => vi.setSystemTime(new Date(iso));
+    const plus60 = (): AppEnv => ({ DB: t.env.DB, BOOKING_CUTOFF_OFFSET_MINUTES: "60" });
+    const minus30 = (): AppEnv => ({ DB: t.env.DB, BOOKING_CUTOFF_OFFSET_MINUTES: "-30" });
+    const startsOf = (list: { start: string }[] | undefined) => (list ?? []).map((s) => s.start.slice(11, 16));
+
+    it.each([
+      ["1 s before the slot starts", "2026-06-13T08:29:59Z", 201],
+      ["exactly at the slot's start", "2026-06-13T08:30:00Z", 409],
+      ["1 s after the slot starts", "2026-06-13T08:30:01Z", 409],
+    ])("+60, 08:30 slot, %s", async (_what, now, status) => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      at(now);
+      const res = await post(slug, entry("2026-06-13T08:30:00Z", "Rex", "Sam Jones"), { env: plus60() });
+      expect(res.status).toBe(status);
+      if (status === 409) expect(((await res.json()) as ErrorBody).error.code).toBe("slot_started");
+      expect(await rows(id)).toHaveLength(status === 201 ? 1 : 0);
+    });
+
+    it("returns 409 slot_started for a started slot, with only bookable freeSlots and no-store", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      await post(slug, entry("2026-06-13T09:00:00Z", "Fido", "Ann Lee"));
+      at("2026-06-13T08:40:00Z");
+      const res = await post(slug, entry("2026-06-13T08:15:00Z", "Rex", "Sam Jones"), { env: plus60() });
+      expect(res.status).toBe(409);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      const parsed = (await res.json()) as ErrorBody;
+      expect(parsed.error).toEqual({ code: "slot_started", message: "That session has already started." });
+      expect(startsOf(parsed.freeSlots)).toEqual(
+        ["08:45", "09:15", "09:30", "09:45", "10:00", "10:15", "10:30", "10:45"],
+      );
+      expect(Object.keys(parsed.freeSlots![0]).sort()).toEqual(["end", "start"]);
+      expect(await rows(id)).toHaveLength(1); // only Fido's earlier booking
+    });
+
+    it("books a later slot in the same event while the earlier ones are refused", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      at("2026-06-13T08:40:00Z");
+      expect((await post(slug, entry("2026-06-13T08:30:00Z", "Rex", "Sam Jones"), { env: plus60() })).status).toBe(409);
+      expect((await post(slug, entry("2026-06-13T08:45:00Z", "Rex", "Sam Jones"), { env: plus60() })).status).toBe(201);
+      expect((await rows(id)).map((r) => r.slot_start_utc)).toEqual(["2026-06-13T08:45:00Z"]);
+    });
+
+    it("keeps invalid_slot for a time that is not a slot, even mid-event", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      at("2026-06-13T08:40:00Z");
+      const res = await post(slug, entry("2026-06-13T08:07:00Z", "Rex", "Sam Jones"), { env: plus60() });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("invalid_slot");
+    });
+
+    it("checks the window first: after the cut-off a started slot is bookings_closed", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      at("2026-06-13T09:00:00Z");
+      const res = await post(slug, entry("2026-06-13T08:15:00Z", "Rex", "Sam Jones"), { env: plus60() });
+      expect(res.status).toBe(410);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("bookings_closed");
+    });
+
+    it("refuses a started slot that is already booked as slot_started, not slot_taken", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      await post(slug, entry("2026-06-13T08:15:00Z", "Fido", "Ann Lee"));
+      at("2026-06-13T08:40:00Z");
+      const res = await post(slug, entry("2026-06-13T08:15:00Z", "Rex", "Sam Jones"), { env: plus60() });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("slot_started");
+    });
+
+    it("still replays an idempotent retry of a booking whose slot has since started", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const body = entry("2026-06-13T08:15:00Z", "Rex", "Sam Jones");
+      const first = await post(slug, body, { env: plus60() });
+      expect(first.status).toBe(201);
+      at("2026-06-13T08:40:00Z"); // slot started, window still open
+      const retry = await post(slug, body, { env: plus60() });
+      expect(retry.status).toBe(201);
+      expect(retry.headers.get("idempotent-replayed")).toBe("true");
+      expect(((await retry.json()) as { icsUrl: string }).icsUrl).toBe(((await first.json()) as { icsUrl: string }).icsUrl);
+      expect(await rows(id)).toHaveLength(1);
+    });
+
+    it("slot_taken freeSlots leaves out started slots", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      await post(slug, entry("2026-06-13T09:00:00Z", "Fido", "Ann Lee"));
+      at("2026-06-13T08:40:00Z");
+      const res = await post(slug, entry("2026-06-13T09:00:00Z", "Rex", "Sam Jones"), { env: plus60() });
+      expect(res.status).toBe(409);
+      const parsed = (await res.json()) as ErrorBody;
+      expect(parsed.error.code).toBe("slot_taken");
+      expect(startsOf(parsed.freeSlots)).toEqual(["08:45", "09:15", "09:30", "09:45", "10:00", "10:15", "10:30", "10:45"]);
+    });
+
+    it("leaves offsets of -30 and 0 as before: free slots listed in full, closed means 410", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      await post(slug, entry("2026-06-13T10:00:00Z", "Fido", "Ann Lee"));
+      at("2026-06-13T07:00:00Z");
+      for (const env of [minus30(), t.env]) {
+        const res = await post(slug, entry("2026-06-13T10:00:00Z", "Rex", "Sam Jones"), { env });
+        expect(((await res.json()) as ErrorBody).error.code).toBe("slot_taken");
+      }
+      const res = await post(slug, entry("2026-06-13T10:00:00Z", "Rex", "Sam Jones"), { env: minus30() });
+      expect(startsOf(((await res.json()) as ErrorBody).freeSlots)).toHaveLength(11);
+      at("2026-06-13T07:30:00Z");
+      expect((await post(slug, entry("2026-06-13T10:15:00Z", "Rex", "Sam Jones"), { env: minus30() })).status).toBe(410);
+      at("2026-06-13T08:00:00Z");
+      expect((await post(slug, entry("2026-06-13T10:15:00Z", "Rex", "Sam Jones"))).status).toBe(410);
+    });
+  });
+
   describe("unexpected failures", () => {
     it("returns a generic 500 and logs, without leaking SQL, when the insert fails for another reason", async () => {
       const { slug } = await insertEvent(t.env.DB);

@@ -102,6 +102,12 @@ export function validateBookingInput(raw: Record<string, unknown>): BookingInput
   };
 }
 
+/** The slots a public booker could take right now: not booked and not yet started. */
+export async function bookableSlots(db: D1Database, event: EventRow, now: Date): Promise<TimeRange[]> {
+  const views = await computeSlotViews(db, event, now);
+  return views.filter((s) => s.status === "free").map(({ start, end }) => ({ start, end }));
+}
+
 function scheduleOf(event: EventRow): TimeRange[] {
   return generateSchedule({
     start: event.startUtc, end: event.endUtc,
@@ -149,7 +155,7 @@ export async function findByIdempotencyKey(
  * failure is the idempotency key, because a simultaneous request with the same key may have won.
  */
 export async function createBooking(
-  db: D1Database, event: EventRow, slot: TimeRange, input: BookingInput,
+  db: D1Database, event: EventRow, slot: TimeRange, input: BookingInput, now: Date,
 ): Promise<BookingResult> {
   const dogKey = identityKey(input.dogName);
   const handlerKey = identityKey(input.handlerName);
@@ -179,11 +185,7 @@ export async function createBooking(
         .first();
       if (same) return { kind: "duplicate_booking" };
     }
-    const views = await computeSlotViews(db, event);
-    return {
-      kind: "slot_taken",
-      freeSlots: views.filter((s) => s.status === "free").map(({ start, end }) => ({ start, end })),
-    };
+    return { kind: "slot_taken", freeSlots: await bookableSlots(db, event, now) };
   }
   return { kind: "created", booking: { slot, dogName: input.dogName, handlerName: input.handlerName }, token };
 }

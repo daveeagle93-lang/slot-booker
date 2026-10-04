@@ -1,10 +1,10 @@
 import {
-  createBooking, declaresOversizeBody, findByIdempotencyKey, findSlot, noStore, payloadTooLarge, readJsonObject,
+  bookableSlots, createBooking, declaresOversizeBody, findByIdempotencyKey, findSlot, noStore, payloadTooLarge, readJsonObject,
   validateBookingInput, type BookingResult,
 } from "../../../../src/server/bookings";
 import { bookingCutoffOffsetMinutes } from "../../../../src/server/config";
 import type { AppEnv } from "../../../../src/server/env";
-import { bookingWindow, eventSummary, loadEventBySlug } from "../../../../src/server/events";
+import { bookingWindow, eventSummary, isSlotBookable, loadEventBySlug } from "../../../../src/server/events";
 import { errorResponse, json } from "../../../../src/server/http";
 import { bookingIcsUrl } from "../../../../src/server/ics";
 
@@ -34,13 +34,21 @@ export const onRequestPost: PagesFunction<AppEnv, "slug"> = async ({ request, en
   }
   if (!result) {
     if (event.archived) return errorResponse(410, "event_archived", "This event is closed to bookings.", {}, noStore);
-    if (!bookingWindow(event, bookingCutoffOffsetMinutes(env.BOOKING_CUTOFF_OFFSET_MINUTES), new Date()).open) {
+    const now = new Date();
+    const window = bookingWindow(event, bookingCutoffOffsetMinutes(env.BOOKING_CUTOFF_OFFSET_MINUTES), now);
+    if (!window.open) {
       return errorResponse(410, "bookings_closed", "Bookings for this event are now closed.", {}, noStore);
     }
     const slot = findSlot(event, input.slot);
     if (!slot) return errorResponse(400, "invalid_slot", "That time isn't one of this event's slots.", {}, noStore);
     try {
-      result = await createBooking(env.DB, event, slot, input);
+      if (!isSlotBookable(slot.start, window, now)) {
+        return errorResponse(
+          409, "slot_started", "That session has already started.",
+          { freeSlots: await bookableSlots(env.DB, event, now) }, noStore,
+        );
+      }
+      result = await createBooking(env.DB, event, slot, input, now);
     } catch (e) {
       return failed(e);
     }

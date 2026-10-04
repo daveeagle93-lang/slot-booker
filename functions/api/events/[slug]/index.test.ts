@@ -135,6 +135,55 @@ describe("GET /api/events/:slug", () => {
     });
   });
 
+  describe("slots whose start has passed", () => {
+    const PLUS_60 = { BOOKING_CUTOFF_OFFSET_MINUTES: "60" };
+    const statuses = async (slug: string, vars?: Partial<AppEnv>) =>
+      Object.fromEntries(
+        ((await (await get(slug, vars)).json()) as { slots: { start: string; status: string }[] }).slots
+          .map((s) => [s.start.slice(11, 16), s.status]),
+      );
+
+    it("with +60 mid-event reports started slots past and later ones free", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      vi.setSystemTime(new Date("2026-06-13T08:40:00Z"));
+      const got = await statuses(slug, PLUS_60);
+      expect(got["08:00"]).toBe("past");
+      expect(got["08:15"]).toBe("past");
+      expect(got["08:30"]).toBe("past");
+      expect(got["08:45"]).toBe("free");
+      expect(got["10:45"]).toBe("free");
+      const body = (await (await get(slug, PLUS_60)).json()) as { bookings: unknown };
+      expect(body.bookings).toEqual({ open: true, closesAt: "2026-06-13T09:00:00Z" });
+    });
+
+    it("treats a slot as past from exactly its start instant", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      vi.setSystemTime(new Date("2026-06-13T08:14:59Z"));
+      expect((await statuses(slug, PLUS_60))["08:15"]).toBe("free");
+      vi.setSystemTime(new Date("2026-06-13T08:15:00Z"));
+      expect((await statuses(slug, PLUS_60))["08:15"]).toBe("past");
+      vi.setSystemTime(new Date("2026-06-13T08:15:01Z"));
+      expect((await statuses(slug, PLUS_60))["08:15"]).toBe("past");
+    });
+
+    it("reports a slot that is both taken and past as taken", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      await book(id, "2026-06-13T08:15:00Z", "Rex", "Sam Jones");
+      vi.setSystemTime(new Date("2026-06-13T08:40:00Z"));
+      const got = await statuses(slug, PLUS_60);
+      expect(got["08:15"]).toBe("taken");
+      expect(got["08:00"]).toBe("past");
+    });
+
+    it("leaves offsets of 0 and -30 free before the start", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      vi.setSystemTime(new Date("2026-06-13T07:00:00Z"));
+      for (const vars of [{}, { BOOKING_CUTOFF_OFFSET_MINUTES: "-30" }]) {
+        expect(Object.values(await statuses(slug, vars)).every((s) => s === "free")).toBe(true);
+      }
+    });
+  });
+
   describe("privacy notice", () => {
     const notice = async (vars?: Partial<AppEnv>) => {
       const { slug } = await insertEvent(t.env.DB);

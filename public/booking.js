@@ -67,7 +67,8 @@ export function init({ document, fetch, location, clipboard }) {
     }
   }
 
-  const freeOnly = (list) => list.filter((s) => s.status === "free");
+  // Taken slots are hidden; slots that have already started stay visible but disabled.
+  const shown = (list) => list.filter((s) => s.status === "free" || s.status === "past");
   const isClosed = (data) => data.event.archived || data.bookings?.open === false;
 
   async function load() {
@@ -77,7 +78,7 @@ export function init({ document, fetch, location, clipboard }) {
     if (r?.status === 404) return showMessage("We couldn't find that event. Check the link you were sent.");
     if (!r?.data) return showMessage("We couldn't load this event. Check your connection and try again.", true);
     event = r.data.event;
-    slots = freeOnly(r.data.slots);
+    slots = shown(r.data.slots);
     privacyText = r.data.privacyNotice ?? "";
     selected = null;
     document.title = event.name;
@@ -138,9 +139,12 @@ export function init({ document, fetch, location, clipboard }) {
   }
 
   function renderSlots() {
-    view.slotsLeft.textContent = slotsLeftText(slots.length);
+    view.slotsLeft.textContent = slotsLeftText(slots.filter((s) => s.status === "free").length);
     view.grid.replaceChildren(...slots.map((s) => {
       const time = formatTime(s.start);
+      if (s.status === "past") {
+        return h("li", {}, h("button", { type: "button", class: "slot past", disabled: true, "aria-label": `${time} slot, started` }, time));
+      }
       const button = h("button", {
         type: "button", class: "slot", "aria-pressed": String(s.start === selected), "aria-label": `Book ${time} slot`,
       }, time);
@@ -209,11 +213,11 @@ export function init({ document, fetch, location, clipboard }) {
     setBusy(false);
     const code = data?.error?.code;
     if (res.status === 201 && data?.booking) return showConfirmation(data);
-    if (res.status === 409 && code === "slot_taken") {
-      slots = freeOnly((data.freeSlots ?? []).map((s) => ({ ...s, status: "free" })));
+    if (res.status === 409 && (code === "slot_taken" || code === "slot_started")) {
+      slots = shown((data.freeSlots ?? []).map((s) => ({ ...s, status: "free" })));
       deselect();
       renderSlots();
-      setNotice("That slot's just gone.");
+      setNotice(code === "slot_started" ? "That session has already started." : "That slot's just gone.");
       view.notice.focus();
     } else if (res.status === 409 && code === "duplicate_booking") {
       view.formError.textContent = data.error.message;
@@ -243,7 +247,7 @@ export function init({ document, fetch, location, clipboard }) {
     if (!r?.data) return;
     event = r.data.event;
     if (isClosed(r.data)) return showClosed();
-    slots = freeOnly(r.data.slots);
+    slots = shown(r.data.slots);
     if (view) renderSlots();
   }
 

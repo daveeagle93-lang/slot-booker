@@ -125,6 +125,14 @@ a { color: var(--accent); }
   background: var(--accent);
   color: var(--accent-text);
 }
+.slot.past {
+  color: var(--muted);
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--border);
+  text-decoration: line-through;
+  cursor: not-allowed;
+}
 
 .button {
   display: inline-flex;
