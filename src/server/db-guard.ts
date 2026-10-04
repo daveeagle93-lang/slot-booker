@@ -22,3 +22,30 @@ export function guard(db: D1Database, conditionSql: string, ...binds: unknown[])
 
 /** True if the error is a failed `guard` (so the batch wrote nothing), not some other database error. */
 export const isGuardFailure = (e: unknown): boolean => e instanceof Error && e.message.includes("integer overflow");
+
+/** Breaks as the guard compares them: start|end, ordered, joined. Labels don't change the schedule, so aren't part of it. */
+export const breaksSignature = (breaks: { start: string; end: string }[]): string =>
+  breaks.map((b) => `${b.start}|${b.end}`).sort().join(";");
+
+/**
+ * A guard that aborts the batch if the event's schedule definition is no longer what the handler read:
+ * start, end, session length, gap or the set of breaks (name, price and the rest don't matter). It closes the
+ * race where another admin edits the event between a handler's read and its batch, which could otherwise put a
+ * booking on a slot the edit removed. The handler answers `event_changed` when the batch fails on it.
+ *
+ * The breaks are compared as one ordered string. `ORDER BY` in a subquery feeding `group_concat` is not
+ * guaranteed by SQLite's documentation but is what its query planner does in practice (checked on local D1
+ * by the guard's tests, which include breaks added in reverse order); the order is identical on both sides
+ * for ASCII timestamps (binary collation, as the JS sort).
+ */
+export function scheduleUnchanged(
+  db: D1Database,
+  event: { id: number; startUtc: string; endUtc: string; sessionMinutes: number; gapMinutes: number; breaks: { start: string; end: string }[] },
+): D1PreparedStatement {
+  return guard(
+    db,
+    `(SELECT COUNT(*) FROM events WHERE id = ? AND start_utc = ? AND end_utc = ? AND session_minutes = ? AND gap_minutes = ?) = 1
+     AND COALESCE((SELECT group_concat(k, ';') FROM (SELECT start_utc || '|' || end_utc AS k FROM breaks WHERE event_id = ? ORDER BY start_utc || '|' || end_utc)), '') = ?`,
+    event.id, event.startUtc, event.endUtc, event.sessionMinutes, event.gapMinutes, event.id, breaksSignature(event.breaks),
+  );
+}

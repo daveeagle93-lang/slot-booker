@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { countRows, createTestEnv, insertEvent, type TestEnv } from "../test/db";
-import { guard, isGuardFailure } from "./db-guard";
+import { countRows, createTestEnv, insertBreak, insertEvent, type TestEnv } from "../test/db";
+import { loadEventBySlug } from "./events";
+import { guard, isGuardFailure, scheduleUnchanged } from "./db-guard";
 
 let t: TestEnv;
 beforeAll(async () => { t = await createTestEnv(); });
@@ -67,5 +68,58 @@ describe("isGuardFailure", () => {
     expect(isGuardFailure(new Error("malformed JSON"))).toBe(false);
     expect(isGuardFailure("integer overflow")).toBe(false);
     expect(isGuardFailure(null)).toBe(false);
+  });
+});
+
+describe("scheduleUnchanged", () => {
+  const seed = async () => {
+    const e = await insertEvent(t.env.DB, { startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T12:00:00Z", sessionMinutes: 15, gapMinutes: 5 });
+    await insertBreak(t.env.DB, e.id, "2026-06-13T10:00:00Z", "2026-06-13T10:30:00Z", "Lunch");
+    await insertBreak(t.env.DB, e.id, "2026-06-13T09:00:00Z", "2026-06-13T09:10:00Z");
+    return { ...e, event: (await loadEventBySlug(t.env.DB, e.slug))! };
+  };
+  const run = (e: Awaited<ReturnType<typeof seed>>) => t.env.DB.batch([scheduleUnchanged(t.env.DB, e.event)]);
+  const refused = async (e: Awaited<ReturnType<typeof seed>>) => isGuardFailure(await caught(run(e)));
+
+  it("lets the batch through while the schedule is as read, however the breaks were inserted", async () => {
+    await run(await seed());
+  });
+
+  it("lets it through when only fields that are not the schedule change (name, cost, a break's label)", async () => {
+    const e = await seed();
+    await t.env.DB.prepare("UPDATE events SET name = 'Renamed', cost_pence = 5, venue_postcode = 'ZZ9' WHERE id = ?").bind(e.id).run();
+    await t.env.DB.prepare("UPDATE breaks SET label = 'Different' WHERE event_id = ?").bind(e.id).run();
+    await run(e);
+  });
+
+  it("aborts when the start, end, session length or gap changed", async () => {
+    for (const set of ["start_utc = '2026-06-13T07:45:00Z'", "end_utc = '2026-06-13T12:15:00Z'", "session_minutes = 10", "gap_minutes = 0"]) {
+      const e = await seed();
+      await t.env.DB.prepare(`UPDATE events SET ${set} WHERE id = ?`).bind(e.id).run();
+      expect(await refused(e), set).toBe(true);
+    }
+  });
+
+  it("aborts when a break was added, removed, moved or resized", async () => {
+    const changes = [
+      "INSERT INTO breaks (event_id, start_utc, end_utc) VALUES (?, '2026-06-13T11:00:00Z', '2026-06-13T11:05:00Z')",
+      "DELETE FROM breaks WHERE event_id = ? AND start_utc = '2026-06-13T09:00:00Z'",
+      "UPDATE breaks SET start_utc = '2026-06-13T10:05:00Z' WHERE event_id = ? AND start_utc = '2026-06-13T10:00:00Z'",
+      "UPDATE breaks SET end_utc = '2026-06-13T10:35:00Z' WHERE event_id = ? AND start_utc = '2026-06-13T10:00:00Z'",
+      "DELETE FROM breaks WHERE event_id = ?",
+    ];
+    for (const sql of changes) {
+      const e = await seed();
+      await t.env.DB.prepare(sql).bind(e.id).run();
+      expect(await refused(e), sql).toBe(true);
+    }
+  });
+
+  it("aborts when the event has gone, and compares an event that never had breaks against none", async () => {
+    const e = await seed();
+    await t.env.DB.prepare("DELETE FROM events WHERE id = ?").bind(e.id).run();
+    expect(await refused(e)).toBe(true);
+    const bare = await insertEvent(t.env.DB);
+    await t.env.DB.batch([scheduleUnchanged(t.env.DB, (await loadEventBySlug(t.env.DB, bare.slug))!)]);
   });
 });
