@@ -100,9 +100,36 @@ This inserts the same sample event and bookings as `npm run seed:local` into the
 
 The script does not apply migrations. If you run it first, Wrangler fails with `no such table: events`; apply the migrations (step 4) and run it again. Each run adds another event.
 
-It prints the event details and a path such as `/e/<slug>`. Open that path on your preview URL (step 6 gives the URL). For a local database use `npm run seed:local` as before.
+It prints the event details and a path such as `/e/<slug>`. Open that path on your preview URL (step 7 gives the URL). For a local database use `npm run seed:local` as before.
 
-## 6. Create the Pages project and deploy a preview
+## 6. Set up admin sign-in
+
+The admin pages (`/admin/`) and the admin API (`/api/admin/*`) answer 503 until `ADMIN_AUTH` is set to `password` or `access`. `docs/admin-auth.md` explains both options, how the Access one is set up in Zero Trust, and the limits of each. For the password option on the preview:
+
+1. Make the hash. It prompts for the password without echoing it and needs at least 14 characters:
+
+   ```sh
+   npm run hash-password
+   ```
+
+2. Add the non-secret setting to `wrangler.jsonc`, in **both** the top-level block and `env.preview` (like `d1_databases`, `vars` is not inherited by `env.preview`; the Pages docs also say that once a Wrangler config file is used, the same fields can't be edited in the dashboard):
+
+   ```jsonc
+   "vars": { "ADMIN_AUTH": "password" }
+   ```
+
+3. Set the two secrets, `ADMIN_PASSWORD_HASH` (the output of step 1) and `ADMIN_SESSION_SECRET` (at least 32 random characters, for example from `openssl rand -base64 48`). Each command prompts for the value:
+
+   ```sh
+   npx wrangler pages secret put ADMIN_PASSWORD_HASH --project-name slot-booker
+   npx wrangler pages secret put ADMIN_SESSION_SECRET --project-name slot-booker
+   ```
+
+   Cloudflare's [Pages bindings docs](https://developers.cloudflare.com/pages/functions/bindings/) say secrets are set per environment and must be set before the deployment that uses them. The installed `wrangler pages secret put --help` has no environment flag, so which environment these commands write to is **not verified here**: after running them, check Settings, Variables and Secrets for the project in the dashboard, and add any missing secret to the Preview environment there.
+
+If login later fails with a Cloudflare CPU-limit error, see "Known limits" in `docs/admin-auth.md`: the Access option avoids password hashing in the Worker.
+
+## 7. Create the Pages project and deploy a preview
 
 ```sh
 npx wrangler pages project create slot-booker --production-branch main
@@ -113,7 +140,7 @@ Any branch other than the production branch (`main`) produces a **preview** depl
 
 If the project name `slot-booker` is taken in Cloudflare's global `pages.dev` namespace, choose another name and use it in both commands (and as `name` in `wrangler.jsonc`).
 
-## 7. Check the binding works
+## 8. Check the binding and the admin gate
 
 ```sh
 curl -s https://preview.slot-booker.pages.dev/api/health
@@ -122,10 +149,19 @@ curl -s https://preview.slot-booker.pages.dev/api/events/not-a-real-slug
 
 The first should return `{"ok":true}`. The second should return a JSON 404 (`not_found`). A 500 there means the `DB` binding is missing from the preview deployment: check Pages project, Settings, Bindings (Preview) in the dashboard, and the `env.preview` block in step 3.
 
+Then check the admin gate:
+
+```sh
+curl -s -o /dev/null -w "%{http_code}\n" https://preview.slot-booker.pages.dev/api/admin/events
+curl -sI https://preview.slot-booker.pages.dev/admin/login
+```
+
+The first should print `401` (it prints `503` if `ADMIN_AUTH` or its secrets are missing or malformed: the Pages logs say which). The second should be `200` and show a `Content-Security-Policy` header containing `frame-ancestors 'none'`; if that header is missing in production, the login page could be framed, so tell the maintainers. Then open `/admin/login` in a browser, sign in, and create an event.
+
 ## Not covered
 
-- Creating real events on a deployed site: for now the only way in is the seed script (step 5); an admin UI is being added.
-- Custom domains, production deployment and secrets are out of scope here.
+- Custom domains and production deployment are out of scope here.
+- Editing events, managing bookings, archiving and deleting events, and the lineup export are not built yet. Events created in the admin pages can't be changed afterwards.
 
 ## Before a real event
 

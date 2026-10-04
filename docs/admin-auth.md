@@ -15,7 +15,7 @@ It fails closed. If `ADMIN_AUTH` is unset, misspelt (`Password`, `none`, ` acces
 | `ACCESS_TEAM_DOMAIN` | no | access | Your team's host, such as `your-team.cloudflareaccess.com`. Must match `<name>.cloudflareaccess.com`, because it decides where the signing keys are fetched from. |
 | `ACCESS_AUD` | no | access | The Access application's AUD (audience) tag. |
 | `ADMIN_PASSWORD_HASH` | **yes** | password | `pbkdf2-sha256$<iterations>$<salt>$<hash>` from `npm run hash-password`. |
-| `ADMIN_SESSION_SECRET` | **yes** | password | At least 32 random characters. Signs the session cookie. Shorter counts as not configured. |
+| `ADMIN_SESSION_SECRET` | **yes** | password | At least 32 random characters. Signs the session cookie and keys the login rate-limit hashes. Shorter counts as not configured. |
 
 The two secrets must never be committed or put in `wrangler.jsonc`. `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are not secrets but are club details, so keep them out of the committed `wrangler.jsonc` as well (`docs/deploying.md` suggests `git update-index --skip-worktree wrangler.jsonc` for local edits). Locally, put all of them in `.dev.vars` (see `.dev.vars.example`) and restart `npm run dev`.
 
@@ -23,7 +23,7 @@ The two secrets must never be committed or put in `wrangler.jsonc`. `ACCESS_TEAM
 
 ### Setting it up
 
-1. Choose a long random password, at least 14 characters (the hash script refuses less). A password manager's generated one is ideal; see "Limits" for why length matters here.
+1. Choose a long random password, at least 14 and at most 256 characters (the hash script refuses anything else; the login page and API accept no more than 256 UTF-16 code units, so an emoji counts as 2). A password manager's generated one is ideal; see "Limits" for why length matters here.
 2. Hash it. The script reads the password from the terminal without echo (asking twice), or from stdin when piped, and never from the command line:
 
    ```sh
@@ -40,7 +40,7 @@ The two secrets must never be committed or put in `wrangler.jsonc`. `ACCESS_TEAM
    ```
 
    `npx wrangler pages secret bulk <file>` also exists, taking a JSON or `.dev.vars` file. The help shows no flag for choosing the production or preview environment, and I haven't verified which one `put` targets, so check in the dashboard after setting them.
-5. Set `ADMIN_AUTH=password` (a plain variable; see `docs/configuration.md` for where those go).
+5. Set `ADMIN_AUTH=password` (a plain variable; see `docs/configuration.md` for where those go). `vars` (`ADMIN_AUTH`, and for Access `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`) are not inherited by `env.preview` in `wrangler.jsonc`, so give them in **both** the top-level `vars` block and the `env.preview` one if preview deployments should have admin. Secrets set with `wrangler pages secret` are separate from `vars`. The help for `put` lists only `--project-name`, with no option for production versus preview, so I can't say from it which environment a secret lands in; check in the dashboard.
 
 ### Why PBKDF2 with 100,000 iterations (and why that's weak)
 
@@ -65,21 +65,27 @@ Sessions are **stateless**. Logout clears the cookie in the browser but cannot r
 
 ### Rate limiting
 
-`POST /api/admin/login` allows 5 attempts per client per 15 minutes. The client key is the SHA-256 of the `CF-Connecting-IP` header (set by Cloudflare; the raw address is never stored), kept in the `login_attempts` table (migration `0006`). Each attempt is counted atomically **before** the password is checked, so parallel guesses can't exceed the limit, and a client over the limit gets 429 with `Retry-After` without any PBKDF2 work. A correct password clears the client's count. Rows whose window ended more than a day ago are deleted as a side effect of later attempts. Without that header (local development) all requests share one key.
+`POST /api/admin/login` allows 5 attempts per client per 15 minutes. Each attempt is counted atomically **before** the password is checked, so parallel guesses can't exceed the limit, and a client over the limit gets 429 with `Retry-After` without any PBKDF2 work. A correct password clears the client's count. The counts are in the `login_attempts` table (migrations `0006` and `0007`).
 
-This limits one address, so it does **not** stop a distributed attack that spreads guesses across many addresses; that is why a long random password matters. There is deliberately no global lockout: it would let anyone lock the real admin out.
+- **Who a client is.** The `CF-Connecting-IP` header (set by Cloudflare). An IPv4 address counts as itself. An IPv6 address counts as its **/64 prefix**, because one subscriber normally owns a whole /64 (2^64 addresses) and a per-address limit could be sidestepped by rotating through them. An IPv4-mapped IPv6 address (`::ffff:203.0.113.9`) counts as that IPv4 address, a zone id (`%eth0`) is ignored, and a value that can't be parsed counts as itself. Without the header (local development) all requests share one client.
+- **What is stored.** The key is the hex HMAC-SHA-256, keyed with `ADMIN_SESSION_SECRET`, of that client bucket (the message is domain-separated from the session signatures). It is keyed because an unkeyed hash of an IPv4 address can be reversed in minutes by hashing every address. The rows are therefore pseudonymous but **still personal data**: whoever holds the secret and the table can test a guess at an address. Rotating the secret makes old rows match nobody. Rows whose window ended more than a day ago are deleted as a side effect of later login attempts, at most 100 per attempt, so they stay until someone attempts a login. Rows written before migration `0007` were plain SHA-256 hashes; they match no client now and go the same way. With the Access provider the table is never touched.
+- **Shared addresses.** Anyone sharing the admin's address (carrier-grade NAT, venue wifi, the same /64) shares the count: they can use up the five attempts and lock the admin's address out for up to 15 minutes. That is a known property of limiting by address.
+- **No global lockout.** A limit across all clients would let anyone lock the real admin out from anywhere. So this limits one client, and does **not** stop a distributed attack that spreads guesses across many addresses; that is why a long random password matters.
+- **Cost of the purge.** `0007` indexes `window_start`. Without it the purge scanned the whole table on every attempt, so attempts from many addresses could read enough rows to use up D1's free daily read allowance and break the public booking page too.
 
 ## Access provider
 
 ### Setting it up
 
-In the Cloudflare Zero Trust dashboard, create a self-hosted Access application for the site's hostname that covers both the paths `/admin` and `/api/admin`, with a policy allowing the organisers' email addresses. Note its **Application Audience (AUD) tag** and your team domain. Then set `ADMIN_AUTH=access`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`. I haven't configured an Access application, so check the current dashboard wording against [Cloudflare's docs](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/).
+In the Cloudflare Zero Trust dashboard, create a self-hosted Access application for the site's hostname that covers both the paths `/admin` and `/api/admin`, with a policy allowing the organisers' email addresses. Put the Access application on **every hostname that serves the site**, including `<project>.pages.dev` and the preview aliases (`<branch>.<project>.pages.dev`), not just the custom domain. The Worker accepts any validly signed, unexpired token for its AUD, whichever hostname the request arrives on, and the signing keys are per team, not per hostname. A token captured on one hostname therefore keeps working on a hostname where Access is not enforcing session revocation. Set a short Access session duration so a captured token expires soon. Note its **Application Audience (AUD) tag** and your team domain. Then set `ADMIN_AUTH=access`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`. I haven't configured an Access application, so check the current dashboard wording against [Cloudflare's docs](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/).
 
 The Worker doesn't trust that Access is in front: it verifies the token itself, following [Validate JWTs](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/):
 
 - The token is read only from the `Cf-Access-Jwt-Assertion` header (the docs recommend that over the `CF_Authorization` cookie). `Cf-Access-Authenticated-User-Email` is never read, because it is not signed. A request with only that header, or only the cookie, is unauthenticated.
 - Checks, in order: three base64url segments (at most 8 KB); header `alg` exactly `RS256` and a string `kid` (so `none`, HS256 and every other algorithm are refused); the RSASSA-PKCS1-v1_5 SHA-256 signature, against the key in Access's key set with that `kid`. Only then is the payload read: `iss` equals `https://<team domain>`, `aud` (a string or a list) contains `ACCESS_AUD`, `exp` is a number and in the future (no leeway), `nbf` if present is not more than 30 seconds ahead, and `email` is a non-empty string containing `@`. Service tokens carry no email and are refused.
 - Keys come from `https://<team domain>/cdn-cgi/access/certs` (the `keys` list; `public_cert` is not used). Access rotates them about every 6 weeks with a 7-day overlap, so the key is chosen by `kid`. The set is cached for an hour; an unknown `kid` forces one refetch, at most once a minute, so junk tokens can't hammer the endpoint. A failed or malformed fetch denies the request, waits a minute before trying again, and logs the reason (never token contents).
+
+The settings are `vars`, which `wrangler.jsonc` does not inherit into `env.preview`: give `ADMIN_AUTH`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` in both the top-level and the `env.preview` blocks (see `docs/configuration.md`).
 
 Access can't be tried locally: the token only exists behind Cloudflare. Use the password provider for local development.
 
@@ -109,10 +115,21 @@ The one exemption is `POST /api/admin/login` with the password provider: it gets
 
 The pages (`functions/admin/_middleware.ts`) are guarded too: signed out, the password provider redirects to `/admin/login` (only `/admin/login`, `/admin/login.html` and `/admin/login.js` are served without signing in), the access provider answers 401 text, and an unconfigured site answers 503. The pages hold no data and the API is protected on its own, so this is defence in depth.
 
+## Checking the security headers after deployment
+
+`public/_headers` gives every static file a `Content-Security-Policy` (including `frame-ancestors 'none'`), `Referrer-Policy`, `X-Content-Type-Options` and `X-Robots-Tag`. After deploying, check that they reach the admin pages:
+
+```sh
+curl -sI https://<your-preview-url>/admin/login
+```
+
+The output should include a `Content-Security-Policy` with `frame-ancestors 'none'`. Locally (`wrangler pages dev` with the password provider configured) `HEAD /admin/login` returned those headers, but the 302 redirect from `/admin/` and the 503 answered when admin is not configured came from the Functions middleware and carried none of them. I have not checked how production applies `_headers` to responses that pass through the Functions middleware, so check it there rather than assume.
+
 ## Known limits
+
 
 - **Static admin files can be reached by unusual paths in local dev.** Under `wrangler pages dev` (4.147.0), with signed-out requests, `/admin`, `/admin/`, `/admin/index.html`, `/admin/x.js`, `/admin/../admin/`, `/ADMIN/` and `/admin/%2e%2e/admin/` were all redirected to `/admin/login`, but a path that the Functions router doesn't match while the static file server still normalises it was served without signing in: `//admin/x.js`, `///admin/x.js`, `/%2fadmin/x.js`, `/admin%2fx.js` and `/%61dmin/x.js` (an encoded letter) returned the file (200). Only static files are affected. I could not see a way to make the API or any Function skip its middleware: every variant either matched the router (and got 401) or fell through to the static site's HTML. I haven't checked whether Cloudflare's edge normalises these paths before they reach Pages in production. Since the admin HTML and JavaScript contain no data and every API call is checked, the exposure is the admin UI's code and layout. A fix would be a root `functions/_middleware.ts`, but that would turn every static request into a Function invocation, so it was not done.
 - Whether a login fits in the free plan's 10 ms of CPU is unverified on real Workers (see above).
-- Per-IP login limiting doesn't stop a distributed attack (see above).
+- Per-client login limiting doesn't stop a distributed attack, and clients sharing an address share the lockout (see "Rate limiting").
 - Logout can't revoke a password session before it expires (see above).
 - No second factor with the password provider. Access can provide one.

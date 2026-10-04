@@ -1,11 +1,13 @@
 # Configuration
 
-The API reads two optional settings from Pages environment variables. They are plain text, not secrets, and both have defaults, so a deployment works without setting either.
+The booking API reads two optional settings from Pages environment variables. (The admin sign-in settings, `ADMIN_AUTH` and the rest, are separate: see `docs/admin-auth.md`.) They are plain text, not secrets, and both have defaults, so a deployment works without setting either.
 
 | Name | Meaning | Default | Example |
 | --- | --- | --- | --- |
 | `BOOKING_CUTOFF_OFFSET_MINUTES` | When bookings close, in whole minutes from the event's start time. Positive keeps bookings open that many minutes after the start; negative closes them earlier. A request at exactly the closing time is refused. Whole numbers from -10080 to 10080 (one week) are accepted; anything else is ignored with a warning in the logs. | `0` (closes at the start) | `-30` closes half an hour before the start |
 | `PRIVACY_NOTICE` | The text shown under "Privacy" on the booking form. Plain text only (no HTML). A blank line starts a new paragraph. Leading and trailing whitespace is removed, and anything over 1000 characters is cut off with a warning in the logs. Blank means the default. | See below | `We use your details to run the event.\n\nEmail us to have them deleted.` |
+
+The cut-off is measured against the event's start time only. With a positive offset, bookings stay open after the event has begun, and the page still offers (and the API still accepts) slots that have already started or finished. Only use a positive offset if that suits you.
 
 The default privacy notice is:
 
