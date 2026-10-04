@@ -366,7 +366,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     const copyStatus = h("p", { class: "copy-status", "aria-live": "polite" });
     const link = h("input", { id: "booking-link", type: "text", readonly: true });
     link.value = url;
-    const text = h("textarea", { id: "whatsapp-text", readonly: true, rows: "7" });
+    const text = h("textarea", { id: "whatsapp-text", readonly: true, rows: "10" });
     text.value = message;
     let statusTimer;
     const copyButton = (label, source) => {
