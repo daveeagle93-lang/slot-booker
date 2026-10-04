@@ -11,11 +11,17 @@ A slot can be booked only while the booking window is open and the slot's own st
 
 The default privacy notice is:
 
-> We store your name, your dog's name and the slot you choose so the club can run the event. The club's organisers can see these details; other people using this page only see which slots are taken. The details are kept until an organiser deletes the event; nothing is deleted automatically.
+> We store your name, your dog's name and the slot you choose so the club can run the event. The club's organisers can see these details; other people using this page only see which slots are taken. The organisers may share the running order, with names, with other participants (for example in a group chat). The details are kept until an organiser deletes the event; nothing is deleted automatically.
 
-The last sentence describes what the app really does. Organisers can delete one event, or clear out several past events at once, from the admin list (see "Archiving and deleting" in the README), which removes its bookings too; nothing is ever deleted automatically. If your club promises something different, such as deleting everything within a set time, change the text and make sure the club keeps that promise by hand.
+The third sentence covers **Copy lineup**, which puts the bookers' names into text that organisers paste into group chats. The last sentence describes what the app really does. Organisers can delete one event, or clear out several past events at once, from the admin list (see "Archiving and deleting" in the README), which removes its bookings too; nothing is ever deleted automatically. If your club promises something different, such as deleting everything within a set time, change the text and make sure the club keeps that promise by hand.
 
 The default names no data controller and gives no contact. Clubs should add their own (UK GDPR transparency: who is responsible for the data and how to reach them) by setting `PRIVACY_NOTICE`.
+
+A club that sets its own `PRIVACY_NOTICE` is unaffected by the default, but should add a sentence saying the running order may be shared with names if its organisers use Copy lineup.
+
+### Upgrading
+
+Earlier builds' default notice said the club deletes booking details after the event. This build never deletes anything automatically, and the default now says so. If you relied on the default, the wording your bookers see has changed. Bookings made under the old wording still need deleting by hand (from the admin list) if you want to keep that promise.
 
 ## Setting them
 
