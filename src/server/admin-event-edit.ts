@@ -1,3 +1,4 @@
+import { buildLineup } from "../core/lineup";
 import { utcToLondon } from "../core/london";
 import { generateSchedule, type TimeRange } from "../core/schedule";
 import { previewSchedule, type EventDraft } from "./admin-events";
@@ -46,20 +47,26 @@ export const bookingsOutside = (bookings: BookingRef[], slots: TimeRange[]): Boo
   return bookings.filter((b) => !starts.has(b.slotStart));
 };
 
-/** The saved schedule with each slot's booking, and any booking whose slot is not in it (there should be none). */
+/**
+ * The saved schedule with each slot's booking, and any booking whose slot is not in it (there should be none).
+ * `lineup` is the WhatsApp text for the schedule page's Copy button, built here so the page can copy it
+ * synchronously from what it already loaded (a clipboard write has to happen inside the click).
+ */
 export async function eventDetail(db: D1Database, event: EventRow) {
   const { slots } = generateSchedule({
     start: event.startUtc, end: event.endUtc, sessionMinutes: event.sessionMinutes, gapMinutes: event.gapMinutes, breaks: event.breaks,
   });
   const bookings = await loadBookings(db, event.id);
   const bySlot = new Map(bookings.map((b) => [b.slotStart, b]));
+  const withBookings = slots.map((s) => {
+    const b = bySlot.get(s.start);
+    return { ...s, booking: b ? { id: b.id, dogName: b.dogName, handlerName: b.handlerName } : null };
+  });
   return {
     event: eventView(event),
-    slots: slots.map((s) => {
-      const b = bySlot.get(s.start);
-      return { ...s, booking: b ? { id: b.id, dogName: b.dogName, handlerName: b.handlerName } : null };
-    }),
+    slots: withBookings,
     orphans: bookingsOutside(bookings, slots),
+    lineup: buildLineup({ name: event.name, venuePostcode: event.venuePostcode, startUtc: event.startUtc, slots: withBookings, breaks: event.breaks }),
   };
 }
 

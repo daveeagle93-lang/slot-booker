@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildLineup } from "../../../../../src/core/lineup";
 import { generateSlug } from "../../../../../src/core/slug";
 import type { AppEnv } from "../../../../../src/server/env";
 import { countRows, createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../../../../../src/test/db";
@@ -32,6 +33,7 @@ interface Detail {
   event: Record<string, unknown>;
   slots: { start: string; end: string; booking: { id: number; dogName: string; handlerName: string } | null }[];
   orphans: { id: number; slotStart: string; dogName: string; handlerName: string }[];
+  lineup: string;
 }
 const detail = async (slug: string): Promise<Detail> => {
   const res = await get(slug);
@@ -109,6 +111,22 @@ describe("GET /api/admin/events/[slug]", () => {
     expect(slots.every((s) => s.booking === null)).toBe(true);
     expect(orphans.map((o) => o.dogName)).toEqual(["Early", "Zed"]);
     expect(orphans[0]).toEqual({ id: orphanId, slotStart: "2026-10-24T07:00:00Z", dogName: "Early", handlerName: "Eve" });
+  });
+
+  it("includes the lineup text, equal to buildLineup on the same data, without orphans", async () => {
+    const { id, slug } = await insertEvent(t.env.DB, {
+      name: "Spring Trial", startUtc: "2026-03-14T09:00:00Z", endUtc: "2026-03-14T10:00:00Z", sessionMinutes: 20, venuePostcode: "AB1 2CD",
+    });
+    await insertBreak(t.env.DB, id, "2026-03-14T09:20:00Z", "2026-03-14T09:40:00Z", "Lunch");
+    await insertBooking(t.env.DB, id, "2026-03-14T09:00:00Z", "Rex", "Sam Smith");
+    await insertBooking(t.env.DB, id, "2026-03-14T09:05:00Z", "Orphan", "Olly");
+    const body = await detail(slug);
+    expect(body.lineup).toBe("Spring Trial\nSaturday 14 March 2026 · AB1 2CD\n\n09:00 — Rex — Sam Smith\n09:20–09:40 — Lunch\n09:40 — free");
+    expect(body.lineup).toBe(buildLineup({
+      name: "Spring Trial", venuePostcode: "AB1 2CD", startUtc: "2026-03-14T09:00:00Z", slots: body.slots,
+      breaks: [{ start: "2026-03-14T09:20:00Z", end: "2026-03-14T09:40:00Z", label: "Lunch" }],
+    }));
+    expect(body.lineup).not.toContain("Orphan");
   });
 
   it("shows an archived event, flagged", async () => {
