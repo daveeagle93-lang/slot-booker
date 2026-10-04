@@ -11,6 +11,7 @@
     "db:migrate:local": "wrangler d1 migrations apply slot-booker-db --local",
     "seed": "node scripts/seed.ts",
     "seed:local": "node scripts/seed.ts --local",
+    "configure": "node scripts/configure.ts",
     "generate-admin-secret": "node scripts/generate-admin-secret.ts",
     "types": "wrangler types"
   },

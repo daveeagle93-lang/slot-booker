@@ -1,0 +1,181 @@
+/// <reference types="node" />
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { experimental_readRawConfig, unstable_readConfig } from "wrangler";
+import { GENERATED_MARKER, buildConfig, isGenerated, parseAccount, renderConfig } from "../../scripts/configure-core";
+
+const PROD = "3f2b8c1e-5a4d-4e6f-9b7a-1c2d3e4f5a6b";
+const PREVIEW = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+const good = { productionDatabaseId: PROD, previewDatabaseId: PREVIEW };
+
+const ok = (raw: unknown) => {
+  const r = parseAccount(raw);
+  if ("errors" in r) throw new Error(r.errors.join("; "));
+  return r.account;
+};
+const errorsOf = (raw: unknown) => {
+  const r = parseAccount(raw);
+  return "errors" in r ? r.errors.join("\n") : "";
+};
+
+describe("parseAccount", () => {
+  it("accepts two distinct UUIDs and lower-cases them", () => {
+    expect(ok({ productionDatabaseId: PROD.toUpperCase(), previewDatabaseId: PREVIEW })).toEqual({
+      productionDatabaseId: PROD, previewDatabaseId: PREVIEW, vars: {},
+    });
+  });
+
+  it("accepts a name and string vars", () => {
+    const a = ok({ ...good, name: "my-club-bookings", vars: { ADMIN_AUTH: "password", BOOKING_CUTOFF_OFFSET_MINUTES: "-30" } });
+    expect(a.name).toBe("my-club-bookings");
+    expect(a.vars).toEqual({ ADMIN_AUTH: "password", BOOKING_CUTOFF_OFFSET_MINUTES: "-30" });
+  });
+
+  it("refuses anything that is not a UUID", () => {
+    expect(errorsOf({ ...good, productionDatabaseId: "not-a-uuid" })).toContain("productionDatabaseId");
+    expect(errorsOf({ ...good, previewDatabaseId: "" })).toContain("previewDatabaseId");
+    expect(errorsOf({ ...good, previewDatabaseId: 7 })).toContain("previewDatabaseId");
+    expect(errorsOf({ previewDatabaseId: PREVIEW })).toContain("productionDatabaseId");
+  });
+
+  it("refuses the all-zero placeholders, including the committed preview one", () => {
+    expect(errorsOf({ ...good, productionDatabaseId: "00000000-0000-0000-0000-000000000000" })).toContain("placeholder");
+    expect(errorsOf({ ...good, previewDatabaseId: "00000000-0000-0000-0000-000000000001" })).toContain("placeholder");
+  });
+
+  it("refuses production and preview being the same database, whatever the case", () => {
+    expect(errorsOf({ productionDatabaseId: PROD, previewDatabaseId: PROD.toUpperCase() })).toContain("different");
+  });
+
+  it("refuses unknown keys, so a typo is not silently ignored", () => {
+    expect(errorsOf({ ...good, previewDatabaseID: PREVIEW })).toContain("previewDatabaseID");
+  });
+
+  it("refuses a file that is not a JSON object", () => {
+    expect(errorsOf(null)).toContain("object");
+    expect(errorsOf([good])).toContain("object");
+    expect(errorsOf("x")).toContain("object");
+  });
+
+  it("refuses vars that are not strings, have odd names, or are secrets", () => {
+    expect(errorsOf({ ...good, vars: { A: 1 } })).toContain("string");
+    expect(errorsOf({ ...good, vars: { "bad name": "x" } })).toContain("bad name");
+    expect(errorsOf({ ...good, vars: ["x"] })).toContain("vars");
+    expect(errorsOf({ ...good, vars: { ADMIN_PASSWORD_HASH: "x" } })).toContain("secret");
+    expect(errorsOf({ ...good, vars: { ADMIN_SESSION_SECRET: "x" } })).toContain("secret");
+  });
+
+  it("refuses a bad project name", () => {
+    expect(errorsOf({ ...good, name: "Has Spaces" })).toContain("name");
+    expect(errorsOf({ ...good, name: "" })).toContain("name");
+    expect(errorsOf({ ...good, name: "-lead" })).toContain("name");
+  });
+
+  it("reports every problem at once", () => {
+    const e = errorsOf({ productionDatabaseId: "x", previewDatabaseId: "y", vars: { A: 1 } });
+    expect(e).toContain("productionDatabaseId");
+    expect(e).toContain("previewDatabaseId");
+    expect(e).toContain("vars");
+  });
+
+  it("rejects the committed example file as it stands, and it holds no real-looking id", () => {
+    const text = readFileSync("account.local.example.json", "utf8");
+    expect(errorsOf(JSON.parse(text))).not.toBe("");
+    expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/i);
+  });
+});
+
+const template = () => ({
+  $schema: "./node_modules/wrangler/config-schema.json",
+  name: "slot-booker",
+  compatibility_date: "2026-09-28",
+  pages_build_output_dir: "./public",
+  d1_databases: [{ binding: "DB", database_name: "slot-booker-db", database_id: "00000000-0000-0000-0000-000000000000", migrations_dir: "migrations" }],
+  env: {
+    preview: {
+      d1_databases: [{ binding: "DB", database_name: "slot-booker-db-preview", database_id: "00000000-0000-0000-0000-000000000001", migrations_dir: "migrations" }],
+    },
+  },
+});
+
+describe("buildConfig", () => {
+  it("puts each id in its own block and keeps everything else", () => {
+    const out = buildConfig(template(), ok(good));
+    expect(out.d1_databases).toEqual([{ binding: "DB", database_name: "slot-booker-db", database_id: PROD, migrations_dir: "migrations" }]);
+    expect(out.env.preview.d1_databases).toEqual([{ binding: "DB", database_name: "slot-booker-db-preview", database_id: PREVIEW, migrations_dir: "migrations" }]);
+    expect(out.name).toBe("slot-booker");
+    expect(out.compatibility_date).toBe("2026-09-28");
+    expect(out.pages_build_output_dir).toBe("./public");
+    expect(out.vars).toBeUndefined();
+    expect(out.env.preview.vars).toBeUndefined();
+  });
+
+  it("does not change the template it was given", () => {
+    const t = template();
+    buildConfig(t, ok({ ...good, vars: { ADMIN_AUTH: "password" } }));
+    expect(t).toEqual(template());
+  });
+
+  it("applies vars to both the top level and env.preview, because vars are not inherited", () => {
+    const out = buildConfig(template(), ok({ ...good, vars: { ADMIN_AUTH: "password" } }));
+    expect(out.vars).toEqual({ ADMIN_AUTH: "password" });
+    expect(out.env.preview.vars).toEqual({ ADMIN_AUTH: "password" });
+  });
+
+  it("lets account vars win over template vars and keeps the rest", () => {
+    const t: any = template();
+    t.vars = { A: "template", B: "template" };
+    t.env.preview.vars = { A: "template-preview", C: "template-preview" };
+    const out = buildConfig(t, ok({ ...good, vars: { A: "mine" } }));
+    expect(out.vars).toEqual({ A: "mine", B: "template" });
+    expect(out.env.preview.vars).toEqual({ A: "mine", C: "template-preview" });
+  });
+
+  it("overrides the project name only when given", () => {
+    expect(buildConfig(template(), ok({ ...good, name: "my-club" })).name).toBe("my-club");
+  });
+
+  it("refuses a template without the DB binding in both blocks", () => {
+    const noPreview: any = template();
+    delete noPreview.env;
+    expect(() => buildConfig(noPreview, ok(good))).toThrow(/env\.preview/);
+    const noTop: any = template();
+    noTop.d1_databases = [];
+    expect(() => buildConfig(noTop, ok(good))).toThrow(/top-level/);
+  });
+});
+
+describe("renderConfig / isGenerated", () => {
+  it("starts with the marker and is still parseable by Wrangler, ids resolved per environment", () => {
+    const text = renderConfig(buildConfig(template(), ok({ ...good, vars: { ADMIN_AUTH: "password" } })));
+    expect(text.startsWith("// " + GENERATED_MARKER)).toBe(true);
+    expect(isGenerated(text)).toBe(true);
+    const dir = mkdtempSync(join(tmpdir(), "slot-booker-configure-"));
+    try {
+      const file = join(dir, "wrangler.json");
+      writeFileSync(file, text);
+      const dbOf = (env?: string) => unstable_readConfig({ config: file, env }, {}).d1_databases.find((d: { binding: string }) => d.binding === "DB");
+      expect(dbOf()?.database_id).toBe(PROD);
+      expect(dbOf("preview")?.database_id).toBe(PREVIEW);
+      expect(unstable_readConfig({ config: file }, {}).vars).toMatchObject({ ADMIN_AUTH: "password" });
+      expect(unstable_readConfig({ config: file, env: "preview" }, {}).vars).toMatchObject({ ADMIN_AUTH: "password" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not claim a hand-written wrangler.json as its own", () => {
+    expect(isGenerated('{ "name": "x" }')).toBe(false);
+    expect(isGenerated("")).toBe(false);
+  });
+
+  it("builds from the real committed wrangler.jsonc template", () => {
+    const { rawConfig } = experimental_readRawConfig({ config: "wrangler.jsonc" });
+    const out = buildConfig(rawConfig as Record<string, any>, ok(good));
+    expect(out.d1_databases[0].database_id).toBe(PROD);
+    expect(out.env.preview.d1_databases[0].database_id).toBe(PREVIEW);
+    expect(out.d1_databases[0].database_name).toBe("slot-booker-db");
+  });
+});

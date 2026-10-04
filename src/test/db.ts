@@ -17,7 +17,8 @@ export async function createTestEnv(): Promise<TestEnv> {
   cpSync(inject("templateDir"), dir, { recursive: true });
   const proxy = await getPlatformProxy<{ DB: D1Database }>({ persist: { path: join(dir, "v3") } });
   return {
-    env: proxy.env,
+    // Only the binding: vars from a developer's generated wrangler.json (npm run configure) must not leak into tests.
+    env: { DB: proxy.env.DB },
     async dispose() {
       await proxy.dispose();
       rmSync(dir, { recursive: true, force: true });

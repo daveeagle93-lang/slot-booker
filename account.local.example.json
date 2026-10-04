@@ -1,0 +1,8 @@
+{
+  "productionDatabaseId": "<database_id printed by: npx wrangler d1 create slot-booker-db>",
+  "previewDatabaseId": "<database_id printed by: npx wrangler d1 create slot-booker-db-preview>",
+  "vars": {
+    "ADMIN_AUTH": "password",
+    "BOOKING_CUTOFF_OFFSET_MINUTES": "-30"
+  }
+}
