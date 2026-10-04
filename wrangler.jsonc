@@ -1,0 +1,19 @@
+// Pages project config. No club details or secrets live here: the setup
+// wizard / provisioning step overwrites the project name and database_id for
+// each club's own Cloudflare account. Secrets go in .dev.vars (local) or
+// Pages secrets (deployed), never in this file.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "slot-booker",
+  "compatibility_date": "2026-09-28",
+  "pages_build_output_dir": "./public",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "slot-booker-db",
+      // Placeholder: replaced by provisioning.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
