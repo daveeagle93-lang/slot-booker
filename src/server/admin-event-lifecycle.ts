@@ -47,3 +47,49 @@ export async function deleteEvent(db: D1Database, slug: string, confirmName: unk
     return now ? { kind: "confirmation_mismatch" } : { kind: "not_found" };
   }
 }
+
+export const MAX_CLEAR_SLUGS = 100;
+
+export interface ClearPastResult {
+  deletedEvents: number;
+  deletedBookings: number;
+  skipped: { slug: string; reason: "not_past" | "not_found" }[];
+}
+
+/** Test seam: runs just before the batch, where another request could change an event. */
+export interface ClearHooks { beforeBatch?: () => Promise<void> }
+
+/**
+ * Permanently deletes the listed events that are past (`end_utc <= now`, archived or not), with their breaks
+ * and bookings, in one atomic batch. The slugs travel as ONE JSON parameter (D1 allows 100 bound parameters,
+ * and the list may be that long). The "only past" rule is a condition of each DELETE inside the batch, so an
+ * event edited into the future after the admin chose it is not deleted. Every other slug is left alone and
+ * reported: still existing after the batch means not_past, gone means not_found. The caller has validated
+ * the slugs (1 to 100, distinct, well formed).
+ */
+export async function clearPastEvents(db: D1Database, now: Date, slugs: string[], hooks: ClearHooks = {}): Promise<ClearPastResult> {
+  const nowIso = `${now.toISOString().slice(0, 19)}Z`;
+  const list = JSON.stringify(slugs);
+  const chosen = `slug IN (SELECT value FROM json_each(?)) AND end_utc <= ?`;
+  await hooks.beforeBatch?.();
+  const [bookings, , events, remaining] = await db.batch([
+    db.prepare(`DELETE FROM bookings WHERE event_id IN (SELECT id FROM events WHERE ${chosen}) RETURNING id`).bind(list, nowIso),
+    db.prepare(`DELETE FROM breaks WHERE event_id IN (SELECT id FROM events WHERE ${chosen})`).bind(list, nowIso),
+    db.prepare(`DELETE FROM events WHERE ${chosen} RETURNING slug`).bind(list, nowIso),
+    db.prepare("SELECT slug FROM events WHERE slug IN (SELECT value FROM json_each(?))").bind(list),
+  ]);
+  const deleted = new Set((events.results as { slug: string }[]).map((r) => r.slug));
+  const kept = new Set((remaining.results as { slug: string }[]).map((r) => r.slug));
+  return {
+    deletedEvents: deleted.size,
+    deletedBookings: bookings.results.length,
+    skipped: slugs.filter((s) => !deleted.has(s)).map((slug) => ({ slug, reason: kept.has(slug) ? "not_past" : "not_found" })),
+  };
+}
+
+/** The request's slugs: 1 to 100 distinct well-formed ones, or the field error to report. */
+export function checkClearSlugs(value: unknown): { slugs: string[] } | { message: string } {
+  const ok = Array.isArray(value) && value.length >= 1 && value.length <= MAX_CLEAR_SLUGS
+    && value.every((v) => typeof v === "string" && isValidSlug(v)) && new Set(value).size === value.length;
+  return ok ? { slugs: value as string[] } : { message: `Send 1 to ${MAX_CLEAR_SLUGS} different event links (slugs).` };
+}

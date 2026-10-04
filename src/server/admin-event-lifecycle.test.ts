@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../test/db";
-import { deleteEvent } from "./admin-event-lifecycle";
+import { clearPastEvents, deleteEvent } from "./admin-event-lifecycle";
 
 let t: TestEnv;
 beforeAll(async () => { t = await createTestEnv(); });
@@ -53,5 +53,44 @@ describe("deleteEvent: a request lands between the read and the batch", () => {
     const results = await Promise.all([deleteEvent(t.env.DB, e.slug, "Show"), deleteEvent(t.env.DB, e.slug, "Show")]);
     expect(results.map((r) => r.kind).sort()).toEqual(["deleted", "not_found"]);
     expect(await rows()).toEqual([0, 0, 0]);
+  });
+});
+
+describe("clearPastEvents", () => {
+  const NOW = new Date("2026-10-01T12:00:00Z");
+  const PAST = { startUtc: "2026-09-01T08:00:00Z", endUtc: "2026-09-01T11:00:00Z" };
+
+  async function seedPast(name = "Old") {
+    const e = await insertEvent(t.env.DB, { name, ...PAST });
+    await insertBreak(t.env.DB, e.id, "2026-09-01T08:30:00Z", "2026-09-01T08:40:00Z");
+    await insertBooking(t.env.DB, e.id, "2026-09-01T08:00:00Z", "Alpha", "Ann");
+    await insertBooking(t.env.DB, e.id, "2026-09-01T08:15:00Z", "Bravo", "Bob");
+    return e;
+  }
+
+  it("does not delete an event that was edited to end in the future after the request was checked: the condition runs inside the batch", async () => {
+    const e = await seedPast();
+    const other = await seedPast("Other");
+    const result = await clearPastEvents(t.env.DB, NOW, [e.slug, other.slug], {
+      beforeBatch: async () => {
+        await t.env.DB.prepare("UPDATE events SET start_utc = '2026-10-24T08:00:00Z', end_utc = '2026-10-24T11:00:00Z' WHERE id = ?").bind(e.id).run();
+      },
+    });
+    expect(result).toEqual({ deletedEvents: 1, deletedBookings: 2, skipped: [{ slug: e.slug, reason: "not_past" }] });
+    expect(await rows()).toEqual([1, 1, 2]); // the edited event keeps its break and bookings
+  });
+
+  it("rolls everything back when one statement of the batch fails", async () => {
+    const e = await seedPast();
+    const other = await seedPast("Other");
+    // Bookings and breaks are deleted first; the failing event delete must undo them.
+    await t.env.DB.prepare("CREATE TRIGGER force_clear_failure BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT, 'forced failure'); END").run();
+    try {
+      await expect(clearPastEvents(t.env.DB, NOW, [e.slug, other.slug])).rejects.toThrow(/forced failure/);
+      expect(await rows()).toEqual([2, 2, 4]);
+    } finally {
+      await t.env.DB.prepare("DROP TRIGGER force_clear_failure").run();
+    }
+    expect(await clearPastEvents(t.env.DB, NOW, [e.slug, other.slug])).toEqual({ deletedEvents: 2, deletedBookings: 4, skipped: [] });
   });
 });
