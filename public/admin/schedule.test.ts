@@ -421,6 +421,26 @@ describe("changes made while working, and requests in flight", () => {
     }
   });
 
+  it("refreshes with the plain message on 400 invalid_slot from add, move and swap (an edit removed the slot)", async () => {
+    const open: Record<string, () => void> = {
+      add: () => { button(row("09:00"), "Add booking").click(); },
+      move: () => { button(row("09:15"), "Move").click(); ($("select") as HTMLSelectElement).value = S[0]; },
+      swap: () => { button(row("09:15"), "Swap").click(); ($("select") as HTMLSelectElement).value = S[3]; },
+    };
+    for (const kind of Object.keys(open)) {
+      const { calls } = await start({
+        respond: (c) => (c.method === "POST" ? reply(400, { error: { code: "invalid_slot", message: "That time isn't one of this event's slots." } }) : undefined),
+      });
+      open[kind]();
+      submit($(".sched-panel"));
+      await settle();
+      expect(statusText(), kind).toBe("That changed while you were working. The schedule has been refreshed.");
+      expect(calls.at(-1)!.method, kind).toBe("GET");
+      expect($(".sched-panel"), kind).toBeNull();
+      expect(document.activeElement, kind).toBe($(".sched-status"));
+    }
+  });
+
   it("disables every button while a request is in flight and ignores a second submit", async () => {
     let release!: (r: Response) => void;
     const pending = new Promise<Response>((r) => { release = r; });

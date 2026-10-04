@@ -56,8 +56,9 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
 
   /**
    * One request at a time. `done(data)` says what to announce and where focus goes on success; `rejected(res)`
-   * may handle a refusal inline (and return true). A change made by someone else, or a slot that has just
-   * been taken, refreshes the page instead, so what is shown is what the server has.
+   * may handle a refusal inline (and return true). A change made by someone else (including an edit that
+   * removed the slot: `invalid_slot`), or a slot that has just been taken, refreshes the page instead, so
+   * what is shown is what the server has.
    */
   async function perform(method, url, body, { done, rejected }) {
     if (busy) return;
@@ -75,7 +76,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     if (res.status >= 200 && res.status < 300) return refresh(done(res.data));
     setBusy(false); // before an inline refusal can move focus: a disabled control can't take it
     if (rejected?.(res, code)) return;
-    if (res.status === 404 || (res.status === 409 && (code === "changed" || code === "event_changed"))) {
+    if (res.status === 404 || (res.status === 400 && code === "invalid_slot") || (res.status === 409 && (code === "changed" || code === "event_changed"))) {
       return refresh({ message: CHANGED, focus: "status" });
     }
     if (res.status === 409 && code === "slot_taken" && res.data?.booking) {
