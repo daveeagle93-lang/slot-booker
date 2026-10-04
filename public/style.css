@@ -126,13 +126,19 @@ a { color: var(--accent); }
   color: var(--accent-text);
 }
 .slot.past {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem;
   color: var(--muted);
   background: transparent;
   border-style: dashed;
   border-color: var(--border);
-  text-decoration: line-through;
   cursor: not-allowed;
 }
+.slot.past .slot-time { text-decoration: line-through; }
+.slot.past .slot-note { font-size: 0.8125rem; font-weight: 600; overflow-wrap: anywhere; }
 
 .button {
   display: inline-flex;

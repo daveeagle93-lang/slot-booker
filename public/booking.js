@@ -143,7 +143,8 @@ export function init({ document, fetch, location, clipboard }) {
     view.grid.replaceChildren(...slots.map((s) => {
       const time = formatTime(s.start);
       if (s.status === "past") {
-        return h("li", {}, h("button", { type: "button", class: "slot past", disabled: true, "aria-label": `${time} slot, started` }, time));
+        return h("li", {}, h("button", { type: "button", class: "slot past", disabled: true, "aria-label": `${time} slot, started` },
+          h("span", { class: "slot-time" }, time), h("span", { class: "slot-note" }, "Started")));
       }
       const button = h("button", {
         type: "button", class: "slot", "aria-pressed": String(s.start === selected), "aria-label": `Book ${time} slot`,
@@ -214,11 +215,14 @@ export function init({ document, fetch, location, clipboard }) {
     const code = data?.error?.code;
     if (res.status === 201 && data?.booking) return showConfirmation(data);
     if (res.status === 409 && (code === "slot_taken" || code === "slot_started")) {
+      // The payload only lists free slots, so show it at once (in case the refetch fails), then refetch for the
+      // full current view, which also keeps the slots that have started.
       slots = shown((data.freeSlots ?? []).map((s) => ({ ...s, status: "free" })));
       deselect();
       renderSlots();
       setNotice(code === "slot_started" ? "That session has already started." : "That slot's just gone.");
-      view.notice.focus();
+      await refresh();
+      view?.notice.focus();
     } else if (res.status === 409 && code === "duplicate_booking") {
       view.formError.textContent = data.error.message;
     } else if (res.status === 400 && code === "invalid_input") {

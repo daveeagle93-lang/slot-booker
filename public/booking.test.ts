@@ -48,7 +48,7 @@ const routes = (post: Handler, get: Handler = () => getOk()): Handler => (call) 
 
 const $ = (sel: string) => document.querySelector(sel) as HTMLElement;
 const slotButtons = () => [...document.querySelectorAll<HTMLButtonElement>(".slot-grid button")];
-const slotButton = (time: string) => slotButtons().find((b) => b.textContent === time)!;
+const slotButton = (time: string) => slotButtons().find((b) => b.textContent!.startsWith(time))!;
 const form = () => $("#booking-form") as HTMLFormElement;
 const type = (sel: string, value: string) => {
   const input = $(sel) as HTMLInputElement;
@@ -110,8 +110,10 @@ describe("loading and slots", () => {
 
     it("renders them disabled, labelled Started, and not selectable", async () => {
       await start(routes(() => created(), () => getOk(EVENT, WITH_PAST)));
-      expect(slotButtons().map((b) => b.textContent)).toEqual(["09:00", "09:40", "10:00"]);
+      expect(slotButtons().map((b) => b.textContent)).toEqual(["09:00Started", "09:40", "10:00"]);
       const past = slotButton("09:00");
+      expect(past.querySelector(".slot-time")!.textContent).toBe("09:00");
+      expect(past.querySelector(".slot-note")!.textContent).toBe("Started");
       expect(past.disabled).toBe(true);
       expect(past.classList.contains("past")).toBe(true);
       expect(past.getAttribute("aria-label")).toBe("09:00 slot, started");
@@ -248,53 +250,94 @@ describe("booking", () => {
     expect(calls.filter((c) => c.init?.method === "POST")).toHaveLength(1);
   });
 
-  it("replaces the slot list from the 409 payload and keeps the typed names", async () => {
+  // The page after another booker took 09:20 and 09:40: only 10:00 is left, and 09:00 London (started) is still listed.
+  const AFTER = [
+    slot("2026-06-13T08:00:00Z", "2026-06-13T08:15:00Z", "past"),
+    slot(SLOTS[1].start, SLOTS[1].end, "taken"),
+    slot(SLOTS[2].start, SLOTS[2].end, "taken"),
+    SLOTS[3],
+  ];
+  const BEFORE = [AFTER[0], SLOTS[1], SLOTS[2], SLOTS[3]];
+  const afterGet = () => { let gets = 0; return () => (gets++ === 0 ? getOk(EVENT, BEFORE) : getOk(EVENT, AFTER)); };
+
+  it("refetches the event after a slot_taken 409, notices, and keeps the typed names", async () => {
     const freeSlots = [{ start: SLOTS[3].start, end: SLOTS[3].end }];
     const { calls } = await start(routes(() => reply(409, {
       error: { code: "slot_taken", message: "That slot's just gone." }, freeSlots,
-    })));
+    }), afterGet()));
     slotButton("09:20").click();
     fill("Biscuit", "Ann Lee");
     submit();
     await vi.waitFor(() => expect($("#notice").textContent).toContain("That slot's just gone."));
+    await vi.waitFor(() => expect(slotButtons().map((b) => b.textContent)).toEqual(["09:00Started", "10:00"]));
 
     expect($("#notice").getAttribute("role")).toBe("alert");
     expect(document.activeElement).toBe($("#notice"));
-    expect(slotButtons().map((b) => b.textContent)).toEqual(["10:00"]);
-    expect(slotButtons()[0].getAttribute("aria-pressed")).toBe("false");
+    expect(slotButton("09:00").disabled).toBe(true);
+    expect(slotButtons()[1].getAttribute("aria-pressed")).toBe("false");
     expect(text()).toContain("1 slot left");
     expect(form().hidden).toBe(true);
     expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
     expect(($("#handler-name") as HTMLInputElement).value).toBe("Ann Lee");
-    expect(calls.filter((c) => c.init?.method !== "POST")).toHaveLength(1); // no refetch
+    expect(calls.filter((c) => c.init?.method !== "POST")).toHaveLength(2); // the load, then the refetch
 
     slotButton("10:00").click();
     expect(form().hidden).toBe(false);
     expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
   });
 
-  it("handles slot_started like slot_taken: new list, its own message, typed names kept", async () => {
+  it("handles slot_started like slot_taken: refetches, keeps the started slots, its own message, typed names kept", async () => {
     const freeSlots = [{ start: SLOTS[3].start, end: SLOTS[3].end }];
     const { calls } = await start(routes(() => reply(409, {
       error: { code: "slot_started", message: "That session has already started." }, freeSlots,
-    })));
+    }), afterGet()));
     slotButton("09:20").click();
     fill("Biscuit", "Ann Lee");
     submit();
     await vi.waitFor(() => expect($("#notice").textContent).toContain("That session has already started."));
+    await vi.waitFor(() => expect(slotButtons().map((b) => b.textContent)).toEqual(["09:00Started", "10:00"]));
 
     expect($("#notice").getAttribute("role")).toBe("alert");
     expect(document.activeElement).toBe($("#notice"));
-    expect(slotButtons().map((b) => b.textContent)).toEqual(["10:00"]);
     expect(text()).toContain("1 slot left");
     expect(form().hidden).toBe(true);
     expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
     expect(($("#handler-name") as HTMLInputElement).value).toBe("Ann Lee");
-    expect(calls.filter((c) => c.init?.method !== "POST")).toHaveLength(1); // no refetch
+    expect(calls.filter((c) => c.init?.method !== "POST")).toHaveLength(2);
   });
 
-  it("shows fully booked when the 409 payload has no free slots", async () => {
-    await start(routes(() => reply(409, { error: { code: "slot_taken", message: "x" }, freeSlots: [] })));
+  it("falls back to the 409 payload's free slots when the refetch fails", async () => {
+    let gets = 0;
+    await start(routes(
+      () => reply(409, { error: { code: "slot_taken", message: "x" }, freeSlots: [{ start: SLOTS[3].start, end: SLOTS[3].end }] }),
+      () => (gets++ === 0 ? getOk() : reply(500, { error: { code: "internal_error" } })),
+    ));
+    slotButton("09:20").click();
+    fill();
+    submit();
+    await vi.waitFor(() => expect(slotButtons().map((b) => b.textContent)).toEqual(["10:00"]));
+    expect($("#notice").textContent).toContain("That slot's just gone.");
+    expect(document.activeElement).toBe($("#notice"));
+  });
+
+  it("shows the closed message when the refetch after a 409 finds the event closed", async () => {
+    let gets = 0;
+    await start(routes(
+      () => reply(409, { error: { code: "slot_taken", message: "x" }, freeSlots: [] }),
+      () => (gets++ === 0 ? getOk() : reply(200, { event: EVENT, slots: [], bookings: { open: false } })),
+    ));
+    slotButton("09:20").click();
+    fill();
+    submit();
+    await vi.waitFor(() => expect(text()).toContain("Bookings for this event are closed."));
+  });
+
+  it("shows fully booked when the refetched event has no free slots", async () => {
+    let gets = 0;
+    await start(routes(
+      () => reply(409, { error: { code: "slot_taken", message: "x" }, freeSlots: [] }),
+      () => (gets++ === 0 ? getOk() : getOk(EVENT, [SLOTS[0]])),
+    ));
     slotButton("09:20").click();
     fill();
     submit();
@@ -496,13 +539,15 @@ describe("idempotency key", () => {
 
   it("reuses it for another slot after a slot_taken 409", async () => {
     let taken = true;
+    let gets = 0;
     const { calls } = await start(routes(() => (taken
       ? reply(409, { error: { code: "slot_taken", message: "x" }, freeSlots: [{ start: SLOTS[3].start, end: SLOTS[3].end }] })
-      : created())));
+      : created()), () => (gets++ === 0 ? getOk() : getOk(EVENT, [SLOTS[0], SLOTS[3]]))));
     slotButton("09:20").click();
     fill();
     submit();
     await vi.waitFor(() => expect($("#notice").textContent).toContain("That slot's just gone."));
+    await vi.waitFor(() => expect(slotButtons().map((b) => b.textContent)).toEqual(["10:00"]));
     taken = false;
     slotButton("10:00").click();
     submit();
