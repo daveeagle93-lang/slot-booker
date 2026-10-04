@@ -39,6 +39,12 @@ export async function loadEventBySlug(db: D1Database, slug: string): Promise<Eve
   };
 }
 
+/** The public face of an event: no ids, no breaks. */
+export const eventSummary = (e: EventRow) => ({
+  slug: e.slug, name: e.name, startUtc: e.startUtc, endUtc: e.endUtc,
+  costPence: e.costPence, venuePostcode: e.venuePostcode, details: e.details, archived: e.archived,
+});
+
 /** Bookings whose slot is not in the current schedule are ignored. */
 export async function computeSlotViews(db: D1Database, event: EventRow): Promise<SlotView[]> {
   const { slots } = generateSchedule({
