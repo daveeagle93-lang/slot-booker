@@ -1,8 +1,14 @@
 import { utcToLondon } from "../core/london";
 import { generateSchedule, type TimeRange } from "../core/schedule";
+import { previewSchedule, type EventDraft } from "./admin-events";
 import { noStore } from "./bookings";
+import { guard, isGuardFailure } from "./db-guard";
 import type { EventRow } from "./events";
 import { errorResponse } from "./http";
+
+export type EditResult =
+  | { kind: "saved"; event: EventRow; slotCount: number; removed: BookingRef[] }
+  | { kind: "bookings_affected"; affected: BookingRef[] };
 
 export const eventNotFound = (): Response => errorResponse(404, "not_found", "Event not found", {}, noStore);
 
@@ -55,4 +61,75 @@ export async function eventDetail(db: D1Database, event: EventRow) {
     }),
     orphans: bookingsOutside(bookings, slots),
   };
+}
+
+const MAX_REMOVE_IDS = 500;
+
+/** The save request's optional `removeBookingIds` (missing means none), or the field error to report. */
+export function checkRemoveIds(value: unknown): { ids: number[] } | { message: string } {
+  if (value === undefined) return { ids: [] };
+  const ok = Array.isArray(value) && value.length <= MAX_REMOVE_IDS
+    && value.every((v) => typeof v === "number" && Number.isSafeInteger(v) && v > 0);
+  return ok ? { ids: value as number[] } : { message: `Send at most ${MAX_REMOVE_IDS} booking ids, each a positive whole number.` };
+}
+
+/** Test seam: runs after the bookings were read and before the batch, where a real booking could land. */
+export interface SaveHooks { afterRead?: () => Promise<void> }
+
+/**
+ * Saves the draft over the event, removing the bookings the admin confirmed.
+ *
+ * The bookings that would lose their slot are worked out from a read; if any of them was not confirmed,
+ * nothing is changed and they are returned. Otherwise one batch updates the event, replaces its breaks and
+ * deletes exactly those bookings. Its first statement is a guard that fails the whole batch if any booking
+ * now sits on a slot the new schedule lacks without being one of those: a booking made after the read
+ * (the batch writes nothing then, and the fresh list is returned). Event fields are last write wins.
+ */
+export async function saveEventEdit(
+  db: D1Database, event: EventRow, draft: EventDraft, confirmedIds: number[], hooks: SaveHooks = {},
+): Promise<EditResult> {
+  const { slots } = previewSchedule(draft);
+  const affected = bookingsOutside(await loadBookings(db, event.id), slots);
+  const confirmed = new Set(confirmedIds);
+  if (affected.some((b) => !confirmed.has(b.id))) return { kind: "bookings_affected", affected };
+  await hooks.afterRead?.();
+
+  const starts = JSON.stringify(slots.map((s) => s.start));
+  const ids = JSON.stringify(affected.map((b) => b.id));
+  const outside = "slot_start_utc NOT IN (SELECT value FROM json_each(?))";
+  try {
+    const results = await db.batch([
+      guard(
+        db,
+        `NOT EXISTS (SELECT 1 FROM bookings WHERE event_id = ? AND ${outside} AND id NOT IN (SELECT value FROM json_each(?)))`,
+        event.id, starts, ids,
+      ),
+      db.prepare(
+        `UPDATE events SET name = ?, start_utc = ?, end_utc = ?, session_minutes = ?, gap_minutes = ?, cost_pence = ?,
+           venue_postcode = ?, details = ? WHERE id = ?`,
+      ).bind(draft.name, draft.startUtc, draft.endUtc, draft.sessionMinutes, draft.gapMinutes, draft.costPence,
+        draft.venuePostcode, draft.details, event.id),
+      db.prepare("DELETE FROM breaks WHERE event_id = ?").bind(event.id),
+      ...draft.breaks.map((b) =>
+        db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (?, ?, ?, ?)").bind(event.id, b.startUtc, b.endUtc, b.label)),
+      db.prepare(
+        `DELETE FROM bookings WHERE event_id = ? AND ${outside} AND id IN (SELECT value FROM json_each(?))
+         RETURNING id, slot_start_utc, dog_name, handler_name`,
+      ).bind(event.id, starts, ids),
+    ]);
+    const deleted = results[results.length - 1].results as { id: number; slot_start_utc: string; dog_name: string; handler_name: string }[];
+    return {
+      kind: "saved", slotCount: slots.length,
+      event: {
+        ...event, name: draft.name, startUtc: draft.startUtc, endUtc: draft.endUtc, sessionMinutes: draft.sessionMinutes,
+        gapMinutes: draft.gapMinutes, costPence: draft.costPence, venuePostcode: draft.venuePostcode, details: draft.details,
+        breaks: draft.breaks.map((b) => ({ start: b.startUtc, end: b.endUtc, label: b.label })),
+      },
+      removed: deleted.map((r) => ({ id: r.id, slotStart: r.slot_start_utc, dogName: r.dog_name, handlerName: r.handler_name }))
+        .sort((a, b) => (a.slotStart < b.slotStart ? -1 : a.slotStart > b.slotStart ? 1 : a.id - b.id)),
+    };
+  } catch (e) {
+    if (!isGuardFailure(e)) throw e;
+    return { kind: "bookings_affected", affected: bookingsOutside(await loadBookings(db, event.id), slots) };
+  }
 }

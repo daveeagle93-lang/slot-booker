@@ -1,9 +1,10 @@
 import { refuseUnlessAdmin } from "../../../../../src/server/admin-context";
-import { editFailed, eventDetail, eventNotFound } from "../../../../../src/server/admin-event-edit";
+import { checkRemoveIds, editFailed, eventDetail, eventNotFound, eventView, saveEventEdit } from "../../../../../src/server/admin-event-edit";
+import { invalidInput, parseEventDraft, readEventBody } from "../../../../../src/server/admin-events";
 import { noStore } from "../../../../../src/server/bookings";
 import type { AppEnv } from "../../../../../src/server/env";
 import { loadEventBySlug } from "../../../../../src/server/events";
-import { json } from "../../../../../src/server/http";
+import { errorResponse, json } from "../../../../../src/server/http";
 
 export const onRequestGet: PagesFunction<AppEnv, "slug"> = async ({ env, data, params }) => {
   const refused = refuseUnlessAdmin(data);
@@ -14,5 +15,42 @@ export const onRequestGet: PagesFunction<AppEnv, "slug"> = async ({ env, data, p
     return json(await eventDetail(env.DB, event), 200, noStore);
   } catch (e) {
     return editFailed("eventDetail", e);
+  }
+};
+
+/**
+ * Saves the event as the form describes it. Removing bookings needs their ids in `removeBookingIds`: the
+ * server works out which bookings the new schedule would orphan itself and refuses (409) unless every one
+ * is listed, so the confirmation is enforced here, not only in the page. A retry of a save that already
+ * went through finds nothing left to remove and answers 200 with `removed: []`.
+ * Two admins saving at once: the last write wins on the event's fields (there is no version column); the
+ * bookings are still protected, by the guard inside the save's batch.
+ */
+export const onRequestPut: PagesFunction<AppEnv, "slug"> = async ({ request, env, data, params }) => {
+  const refused = refuseUnlessAdmin(data);
+  if (refused) return refused;
+  try {
+    const event = await loadEventBySlug(env.DB, String(params.slug));
+    if (!event) return eventNotFound();
+    const body = await readEventBody(request);
+    if (body instanceof Response) return body;
+    const remove = checkRemoveIds(body.removeBookingIds);
+    const now = new Date();
+    const parsed = parseEventDraft(body, { now, requireFuture: false });
+    if ("fields" in parsed) return invalidInput({ ...parsed.fields, ...("message" in remove ? { removeBookingIds: remove.message } : {}) });
+    if ("message" in remove) return invalidInput({ removeBookingIds: remove.message });
+    // Only a start that changes has to be in the future: a running or finished event can still be corrected.
+    if (parsed.draft.startUtc !== event.startUtc) {
+      const strict = parseEventDraft(body, { now, requireFuture: true });
+      if ("fields" in strict) return invalidInput(strict.fields);
+    }
+    const result = await saveEventEdit(env.DB, event, parsed.draft, remove.ids);
+    if (result.kind === "bookings_affected") {
+      const message = "Some bookings are on slots this change would remove. Check the list and confirm to remove them.";
+      return errorResponse(409, "bookings_affected", message, { affected: result.affected }, noStore);
+    }
+    return json({ event: eventView(result.event), slotCount: result.slotCount, removed: result.removed }, 200, noStore);
+  } catch (e) {
+    return editFailed("saveEventEdit", e);
   }
 };
