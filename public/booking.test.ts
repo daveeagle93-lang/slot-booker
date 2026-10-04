@@ -390,6 +390,25 @@ describe("booking", () => {
     expect(form().hidden).toBe(true);
   });
 
+  it("refetches on event_changed, notices, keeps the typed names and focuses the notice", async () => {
+    let gets = 0;
+    const { calls } = await start(routes(
+      () => reply(409, { error: { code: "event_changed", message: "x" } }),
+      () => (gets++ === 0 ? getOk() : getOk(EVENT, [SLOTS[0], SLOTS[1], SLOTS[2]])),
+    ));
+    slotButton("10:00").click();
+    fill("Biscuit", "Ann Lee");
+    submit();
+    await vi.waitFor(() => expect(slotButtons().map((b) => b.textContent)).toEqual(["09:20", "09:40"]));
+    expect($("#notice").textContent).toContain("The event was just changed. The times below are up to date; choose again.");
+    expect(text()).not.toContain("Something went wrong");
+    expect(document.activeElement).toBe($("#notice"));
+    expect(calls.filter((c) => c.init?.method !== "POST")).toHaveLength(2);
+    expect(form().hidden).toBe(true);
+    expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
+    expect(($("#handler-name") as HTMLInputElement).value).toBe("Ann Lee");
+  });
+
   it.each(["event_archived", "bookings_closed"])("switches to the closed state on 410 %s", async (code) => {
     await start(routes(() => reply(410, { error: { code, message: "closed" } })));
     slotButton("09:20").click();

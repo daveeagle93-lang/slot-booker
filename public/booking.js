@@ -234,6 +234,11 @@ export function init({ document, fetch, location, clipboard }) {
       deselect();
       setNotice("That slot isn't available any more.");
       await refresh();
+    } else if (res.status === 409 && code === "event_changed") {
+      deselect();
+      setNotice("The event was just changed. The times below are up to date; choose again.");
+      await refresh();
+      view?.notice.focus();
     } else if (res.status === 422 && code === "idempotency_key_reuse") {
       // With a booking: the page's own earlier attempt was saved, so show that rather than the edit.
       if (data.booking) showConfirmation(data, SAVED_EARLIER);
