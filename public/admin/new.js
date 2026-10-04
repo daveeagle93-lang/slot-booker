@@ -240,7 +240,11 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     try {
       res = await api.request("POST", "/api/admin/events/preview", draft.payload, controller.signal);
     } catch {
-      if (mine === seq) showNoSchedule(PREVIEW_FAILED);
+      if (mine === seq) {
+        controller = null;
+        preview.removeAttribute("aria-busy");
+        showNoSchedule(PREVIEW_FAILED);
+      }
       return;
     }
     if (mine !== seq) return; // a newer edit has superseded this response
@@ -267,8 +271,9 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
   function renderSuggestions(list, rowIds) {
     const cards = [];
     for (const s of list) {
-      const row = rows.find((r) => r.id === rowIds[s.breakIndex]);
-      const key = `${s.breakIndex}|${s.droppedSlot.start}|${s.suggestedLocal.start}`;
+      const id = rowIds[s.breakIndex];
+      const row = rows.find((r) => r.id === id);
+      const key = `${id}|${s.droppedSlot.start}|${s.suggestedLocal.start}`;
       if (!row || dismissed.has(key)) continue;
       const move = h("button", { type: "button", class: "button primary" }, "Move break");
       const keep = h("button", { type: "button", class: "button" }, "Keep as it is");
@@ -318,6 +323,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       costPence: cost.pence, venuePostcode: value("venuePostcode"), details: value("details"),
       breaks: used.map((r) => ({ start: r.startInput.value, end: r.endInput.value })),
     };
+    cancelPreview(); // a late preview response would wipe the errors Save is about to show
     setSaving(true);
     let res;
     try {

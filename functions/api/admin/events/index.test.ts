@@ -150,6 +150,16 @@ describe("POST /api/admin/events", () => {
     expect(await countRows(t.env.DB, "breaks")).toBe(breaks);
   });
 
+  it("rejects direction-changing characters in the details, writing nothing", async () => {
+    const events = await countRows(t.env.DB, "events");
+    const res = await post(draft({ details: "Pay now\u202E" }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: unknown }).fields).toEqual({
+      details: "The details can't contain invisible or direction-changing characters.",
+    });
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+  });
+
   it("requires the event to be in the future (the preview does not), writing nothing", async () => {
     const events = await countRows(t.env.DB, "events");
     const res = await post(draft({ date: "2026-09-30" }));

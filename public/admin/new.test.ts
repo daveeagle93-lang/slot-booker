@@ -258,6 +258,39 @@ describe("live preview", () => {
     expect(chips()).toEqual([]);
     expect($(".preview-summary").textContent).toContain("couldn't update the preview");
   });
+
+  it("clears the busy state when the preview request fails to connect", async () => {
+    let fail = false;
+    await start({ preview: () => (fail ? Promise.reject(new TypeError("offline")) : preview()) });
+    fillSchedule();
+    await settle();
+    fail = true;
+    set("gap", "10");
+    expect($(".preview").getAttribute("aria-busy")).toBe("true");
+    await settle();
+    expect($(".preview-summary").textContent).toContain("couldn't update the preview");
+    expect($(".preview").hasAttribute("aria-busy")).toBe(false);
+  });
+
+  it("does not report our own abort as a failure", async () => {
+    const pending: ((r: Response) => void)[] = [];
+    await start({
+      preview: (c) => new Promise<Response>((resolve, reject) => {
+        pending.push(resolve);
+        c.init!.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      }),
+    });
+    fillSchedule();
+    await settle();
+    set("gap", "10"); // aborts the request in flight
+    await tick();
+    expect($(".preview-summary").textContent).not.toContain("couldn't update the preview");
+    await settle();
+    pending[1](preview());
+    await tick();
+    expect(chips()).toHaveLength(3);
+    expect($(".preview").hasAttribute("aria-busy")).toBe(false);
+  });
 });
 
 describe("breaks", () => {
@@ -355,6 +388,39 @@ describe("breaks", () => {
     await settle();
     expect($$(".suggestion")).toHaveLength(1);
     expect($(".suggestion").textContent).toContain("to 11:45–12:10");
+  });
+
+  it("keeps a declined suggestion hidden when an earlier row is removed and its payload index shifts", async () => {
+    await start({
+      preview: (c) => preview({ suggestions: [suggestion(c.body.breaks.length - 1)] }),
+    });
+    fillSchedule();
+    for (let i = 0; i < 2; i++) buttonNamed("Add break").click();
+    setRow(1, "10:00", "10:20");
+    setRow(2, "12:00", "12:20");
+    await settle();
+    expect($$(".suggestion")).toHaveLength(1); // for row 2, payload index 1
+    buttonNamed("Keep as it is").click();
+    $$(".break-row button")[0].click(); // remove row 1: row 2 is now payload index 0
+    await settle();
+    expect($$(".suggestion")).toHaveLength(0);
+  });
+
+  it("does not hide another row's suggestion that has the same times and payload index", async () => {
+    await start({
+      preview: (c) => preview({ suggestions: [suggestion(0)].slice(0, c.body.breaks.length) }),
+    });
+    fillSchedule();
+    for (let i = 0; i < 2; i++) buttonNamed("Add break").click();
+    setRow(1, "10:00", "10:20");
+    setRow(2, "12:00", "12:20");
+    await settle();
+    expect($(".suggestion").textContent).toContain("Move the 10:00–10:20 break"); // row 1, payload index 0
+    buttonNamed("Keep as it is").click();
+    $$(".break-row button")[0].click(); // remove row 1: row 2 is now payload index 0
+    await settle();
+    expect($$(".suggestion")).toHaveLength(1);
+    expect($(".suggestion").textContent).toContain("Move the 12:00–12:20 break");
   });
 
   it("shows break errors on the right inputs, mapping payload indexes to rows", async () => {
@@ -509,6 +575,67 @@ describe("saving", () => {
     await tick();
     expect($(".form-error").textContent).toContain("couldn't save the event");
     expect(document.querySelector("form")).not.toBeNull();
+  });
+});
+
+describe("save and preview together", () => {
+  const FUTURE = "The event must start in the future.";
+  const rejected = () => reply(400, { error: { code: "invalid_input", message: "x" }, fields: { date: FUTURE } });
+  const deferredPreviews = () => {
+    const pending: ((r: Response) => void)[] = [];
+    return { pending, handler: () => new Promise<Response>((resolve) => { pending.push(resolve); }) };
+  };
+
+  it("keeps a Save error when Save is pressed before the debounce fires and a preview then returns", async () => {
+    const { pending, handler } = deferredPreviews();
+    await start({ preview: handler, create: rejected });
+    fillAll();
+    submit();
+    await tick();
+    expect(errorOf("date")).toBe(FUTURE);
+    await settle();
+    for (const resolve of pending) resolve(preview());
+    await tick();
+    expect(errorOf("date")).toBe(FUTURE);
+    expect(input("date").getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("keeps a Save error when a preview already in flight returns after Save", async () => {
+    const { pending, handler } = deferredPreviews();
+    const { calls } = await start({ preview: handler, create: rejected });
+    fillAll();
+    await settle();
+    expect(pending).toHaveLength(1);
+    submit();
+    await tick();
+    expect(previewCalls(calls)[0].init!.signal!.aborted).toBe(true);
+    pending[0](preview());
+    await tick();
+    expect(errorOf("date")).toBe(FUTURE);
+  });
+
+  it("does not repaint the success view when a preview returns after Save succeeds", async () => {
+    const { pending, handler } = deferredPreviews();
+    await start({ preview: handler });
+    fillAll();
+    await settle();
+    submit();
+    await tick();
+    expect($("h1").textContent).toBe("Event created");
+    pending[0](preview());
+    await tick();
+    expect(document.querySelector(".preview")).toBeNull();
+    expect(chips()).toEqual([]);
+    expect($("h1").textContent).toBe("Event created");
+  });
+
+  it("still previews after a Save blocked locally by the cost", async () => {
+    const { calls } = await start();
+    fillAll();
+    set("cost", "12.505");
+    submit();
+    await settle();
+    expect(previewCalls(calls)).toHaveLength(1);
   });
 });
 

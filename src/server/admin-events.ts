@@ -67,6 +67,7 @@ function checkPostcode(value: unknown): { postcode: string } | { message: string
 function checkDetails(value: unknown): { details: string } | { message: string } {
   if (typeof value !== "string") return { message: "Details must be text (they can be empty)." };
   if (!value.isWellFormed()) return { message: "The details can't contain unpaired surrogate characters." };
+  if (INVISIBLE.test(value)) return { message: "The details can't contain invisible or direction-changing characters." };
   const details = value.replaceAll("\r\n", "\n");
   if (/(?!\n)\p{Cc}/u.test(details)) return { message: "The details can't contain control characters." };
   if ([...details].length > MAX_DETAILS_CODE_POINTS) return { message: `The details must be at most ${MAX_DETAILS_CODE_POINTS} characters.` };

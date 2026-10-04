@@ -198,6 +198,12 @@ describe("parseEventDraft: details", () => {
   it.each([["tab", "a\tb"], ["lone CR", "a\rb"], ["NUL", "a\u0000b"], ["escape", "a\u001Bb"]])("rejects %s", (_n, details) => {
     expect(fieldsOf({ details }).details).toMatch(/control/);
   });
+  it.each([["right-to-left override", "a\u202Eb"], ["zero-width space", "a\u200Bb"], ["byte order mark", "a\uFEFFb"], ["soft hyphen", "a\u00ADb"]])("rejects a %s", (_n, details) => {
+    expect(fieldsOf({ details }).details).toBe("The details can't contain invisible or direction-changing characters.");
+  });
+  it("allows emoji joiners and newlines", () => {
+    expect(draftOf({ details: "👩\u200D🐕 a\u200Cb\nc" }).details).toBe("👩\u200D🐕 a\u200Cb\nc");
+  });
   it("rejects a lone surrogate and non-strings", () => {
     expect(fieldsOf({ details: "a\uD800" }).details).toMatch(/unpaired/);
     expect(fieldsOf({ details: undefined }).details).toBeDefined();
