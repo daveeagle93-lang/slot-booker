@@ -69,7 +69,7 @@ export async function readJsonObject(request: Request, maxBytes = MAX_BODY_BYTES
   return value as Record<string, unknown>;
 }
 
-function checkName(value: unknown, label: string): { name: string } | { message: string } {
+export function checkName(value: unknown, label: string): { name: string } | { message: string } {
   if (typeof value !== "string") return { message: `Enter the ${label}.` };
   if (!value.isWellFormed()) return { message: `The ${label} can't contain unpaired surrogate characters.` };
   if (INVISIBLE.test(value)) {
