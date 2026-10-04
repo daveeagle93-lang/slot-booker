@@ -397,9 +397,10 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     } catch {
       res = null;
     }
-    setSaving(false);
+    // On success the form stays busy: the caller replaces it, and it may take a round trip to do so.
     if (!editing && res?.status === 201 && res.data?.event) return finish({ data: res.data });
     if (editing && res?.status === 200 && res.data?.event) return finish({ data: res.data, confirmed });
+    setSaving(false);
     // The page's own earlier attempt was saved: show that event rather than the edited form.
     if (!editing && res?.status === 422 && res.data?.error?.code === "idempotency_key_reuse") {
       if (res.data.event) return finish({ data: res.data, notice: SAVED_EARLIER });

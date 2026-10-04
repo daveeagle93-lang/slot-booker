@@ -555,6 +555,32 @@ describe("the result view", () => {
     expect($("h1").textContent).toBe("Saved.");
   });
 
+  it("ignores a second press of the confirm button while the re-fetch is pending: one PUT, one result view", async () => {
+    let release!: (r: Response) => void;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    let gets = 0;
+    const { calls } = await start({
+      preview: () => preview([REX]), put: () => reply(200, { ...SAVED, removed: [] }),
+      get: () => (++gets === 1 ? reply(200, DETAIL) : pending),
+    });
+    await tick();
+    submit();
+    await tick();
+    const confirm = buttonNamed("Remove 1 booking and save");
+    confirm.click();
+    await tick();
+    expect(gets).toBe(2); // the re-fetch is now in flight
+    confirm.click();
+    await tick();
+    expect(puts(calls)).toHaveLength(1);
+    release(reply(200, DETAIL));
+    await tick();
+    expect($$("h1")).toHaveLength(1);
+    expect($("h1").textContent).toBe("Saved.");
+    expect($$(".removed")).toHaveLength(1);
+    expect(puts(calls)).toHaveLength(1);
+  });
+
   it("shows only what the server removed, and says the check failed, when the event can't be fetched again", async () => {
     for (const failing of [() => reply(500, { error: { code: "internal_error" } }), () => { throw new TypeError("offline"); }]) {
       let gets = 0;
