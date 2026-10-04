@@ -314,6 +314,77 @@ describe("booking", () => {
     expect(form().hidden).toBe(false);
   });
 
+  describe("a key reused with a different payload", () => {
+    const original = {
+      booking: { slot: { start: SLOTS[1].start, end: SLOTS[1].end }, dogName: "Biscuit", handlerName: "Ann Leee" },
+      event: EVENT, icsUrl: ICS_URL,
+    };
+    const reuse = { error: { code: "idempotency_key_reuse", message: "An earlier attempt was saved." } };
+
+    it("after a lost response and a corrected name, shows the confirmation of the ORIGINAL booking with a notice", async () => {
+      let attempts = 0;
+      const { calls } = await start(routes(() => {
+        if (attempts++ === 0) throw new TypeError("offline"); // the booking was saved, but the response was lost
+        return reply(422, { ...reuse, ...original });
+      }));
+      slotButton("09:20").click();
+      fill("Biscuit", "Ann Leee");
+      submit();
+      await vi.waitFor(() => expect(form().textContent).toContain("Something went wrong. Please try again."));
+      fill("Biscuit", "Ann Lee"); // the corrected name
+      submit();
+      await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+
+      expect(calls.filter((c) => c.init?.method === "POST")).toHaveLength(2);
+      expect(JSON.parse(calls.filter((c) => c.init?.method === "POST")[1].init!.body as string).handlerName).toBe("Ann Lee");
+      const handlerRow = [...document.querySelectorAll("dt")].find((dt) => dt.textContent === "Handler")!;
+      expect(handlerRow.nextElementSibling!.textContent).toBe("Ann Leee"); // as stored, not as retyped
+      expect(text()).toContain("09:20");
+      const cal = [...document.querySelectorAll("a")].find((a) => a.textContent === "Add to calendar")!;
+      expect(cal.getAttribute("href")).toBe(ICS_URL);
+      expect([...document.querySelectorAll("button")].some((b) => b.textContent === "Copy booking")).toBe(true);
+      const notice = $("[role=status]");
+      expect(notice.textContent).toBe(
+        "We'd already saved a booking from this page, so we haven't changed it. Here it is. To change it, contact the organiser.",
+      );
+      expect(notice.compareDocumentPosition($("h1")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(document.activeElement).toBe($("h1"));
+      expect(document.querySelector("form")).toBeNull();
+    });
+
+    it("shows no notice on an ordinary confirmation", async () => {
+      await start(routes(() => created()));
+      slotButton("09:20").click();
+      fill();
+      submit();
+      await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+      expect(document.querySelector("[role=status]")).toBeNull();
+    });
+
+    it("renders the notice and the original booking as text", async () => {
+      const evil = "<img src=x onerror=alert(1)>";
+      await start(routes(() => reply(422, { ...reuse, ...original, booking: { ...original.booking, dogName: evil } })));
+      slotButton("09:20").click();
+      fill();
+      submit();
+      await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+      expect(document.querySelector("img")).toBeNull();
+      expect(text()).toContain(evil);
+    });
+  });
+
+  it("shows the server's text as the form error when the only field error is the idempotency key", async () => {
+    await start(routes(() => reply(400, {
+      error: { code: "invalid_input", message: "Check the highlighted fields." },
+      fields: { idempotencyKey: "Reload the page and try again." },
+    })));
+    slotButton("09:20").click();
+    fill();
+    submit();
+    await vi.waitFor(() => expect(form().textContent).toContain("Reload the page and try again."));
+    expect(form().textContent).not.toContain("Check the highlighted fields.");
+  });
+
   it.each([
     ["a server error", () => reply(500, { error: { code: "internal_error", message: "boom" } })],
     ["a network error", () => { throw new TypeError("offline"); }],

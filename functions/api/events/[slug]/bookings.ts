@@ -53,8 +53,15 @@ export const onRequestPost: PagesFunction<AppEnv, "slug"> = async ({ request, en
         event: eventSummary(event),
         icsUrl: bookingIcsUrl(event.slug, result.token),
       }, 201, result.kind === "replayed" ? { ...noStore, "Idempotent-Replayed": "true" } : noStore);
-    case "idempotency_key_reuse":
-      return errorResponse(422, "idempotency_key_reuse", "That request doesn't match the earlier one. Reload the page and try again.", {}, noStore);
+    case "idempotency_key_reuse": {
+      const message = "An earlier attempt from this page was already saved, so this change wasn't applied. To change a booking, contact the organiser.";
+      const { original } = result;
+      return errorResponse(422, "idempotency_key_reuse", message, original ? {
+        booking: original.booking,
+        event: eventSummary(event),
+        icsUrl: bookingIcsUrl(event.slug, original.token),
+      } : {}, noStore);
+    }
     case "duplicate_booking":
       return errorResponse(409, "duplicate_booking", "That dog and handler already have a booking for this event.", {}, noStore);
     case "slot_taken":

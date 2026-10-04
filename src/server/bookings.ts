@@ -19,7 +19,7 @@ type BookedResult = { booking: { slot: TimeRange; dogName: string; handlerName: 
 export type BookingResult =
   | ({ kind: "created" } & BookedResult)
   | ({ kind: "replayed" } & BookedResult)
-  | { kind: "idempotency_key_reuse" }
+  | { kind: "idempotency_key_reuse"; original: BookedResult | null }
   | { kind: "duplicate_booking" }
   | { kind: "slot_taken"; freeSlots: TimeRange[] };
 
@@ -113,10 +113,13 @@ export const findSlot = (event: EventRow, start: string): TimeRange | undefined 
   scheduleOf(event).find((s) => s.start === start);
 
 /**
- * What the request's idempotency key says: the original booking if the key was used by the same
- * slot, dog and handler (a retry), idempotency_key_reuse if it was used by anything else, or null
- * if no booking holds it. Never returns another request's booking unless the whole payload matches.
- * A retry whose slot has since left the schedule gets null too, and so the usual invalid_slot.
+ * What the request's idempotency key says: a replay of the key holder's booking if the key was used by
+ * the same slot, dog and handler (a retry), idempotency_key_reuse if it was used by anything else, or
+ * null if no booking holds it. The lookup is by event and key alone, and the key is a 128-bit secret
+ * held only by the booker's browser, so presenting it proves ownership: a reuse carries the key
+ * holder's own booking as stored (never the requested values) so a booker who edited the form after a
+ * lost response can still find it. If that booking's slot has since left the schedule, a retry gets
+ * null (and so the usual invalid_slot) and a reuse carries no booking.
  */
 export async function findByIdempotencyKey(
   db: D1Database, event: EventRow, input: BookingInput,
@@ -130,17 +133,19 @@ export async function findByIdempotencyKey(
   if (!row) return null;
   const same = row.slot_start_utc === input.slot
     && row.dog_key === identityKey(input.dogName) && row.handler_key === identityKey(input.handlerName);
-  if (!same) return { kind: "idempotency_key_reuse" };
   const slot = findSlot(event, row.slot_start_utc);
-  if (!slot) return null;
-  return { kind: "replayed", booking: { slot, dogName: row.dog_name, handlerName: row.handler_name }, token: row.token };
+  const stored = slot && { booking: { slot, dogName: row.dog_name, handlerName: row.handler_name }, token: row.token };
+  if (!same) return { kind: "idempotency_key_reuse", original: stored ?? null };
+  return stored ? { kind: "replayed", ...stored } : null;
 }
 
 /**
  * Inserts without checking availability or identity first: the UNIQUE constraints decide, and a
  * failure is classified afterwards. Whoever holds the requested slot decides the answer: a
- * different pair means slot_taken even if the requester's own pair has booked elsewhere, so a
- * guessed dog and handler cannot be confirmed as having booked. The first thing checked after a
+ * different pair means slot_taken even if the requester's own pair has booked elsewhere, so
+ * guessing a taken slot cannot confirm that a dog and handler have booked. If the guessed slot is
+ * free, a request with the guessed pair gets duplicate_booking when that pair has booked; that is a
+ * known limitation (a wrong guess also creates a real booking). The first thing checked after a
  * failure is the idempotency key, because a simultaneous request with the same key may have won.
  */
 export async function createBooking(

@@ -565,44 +565,117 @@ describe("POST /api/events/:slug/bookings", () => {
       expect(urls[0]).toBe(`/api/events/${slug}/bookings/${stored[0].token}/ics`);
     });
 
-    it("tells a simultaneous request with the same key but a different payload apart: 201 for one, 422 for the rest", async () => {
+    it("tells simultaneous requests with one key but different payloads apart: the winner's payload replays as 201, the rest are 422", async () => {
       const { id, slug } = await insertEvent(t.env.DB);
       const key = newKey();
-      const responses = await Promise.all([
-        post(slug, entry(S1, "Rex", "Sam Jones", key)),
-        post(slug, entry(S2, "Fido", "Ann Lee", key)),
-        post(slug, entry(S2, "Fido", "Ann Lee", key)),
-      ]);
-      const statuses = responses.map((r) => r.status).sort();
-      expect(statuses.filter((s) => s === 201).length).toBeGreaterThanOrEqual(1);
-      expect(statuses.filter((s) => s === 422).length).toBeGreaterThanOrEqual(1);
-      expect(statuses.every((s) => s === 201 || s === 422)).toBe(true);
-      expect(await rows(id)).toHaveLength(1);
+      // Three of each: whichever payload wins, its two duplicates must come back through the replay branch.
+      const payloads = [
+        ...Array.from({ length: 3 }, () => entry(S1, "Rex", "Sam Jones", key)),
+        ...Array.from({ length: 3 }, () => entry(S2, "Fido", "Ann Lee", key)),
+      ];
+      const responses = await Promise.all(payloads.map((p) => post(slug, p)));
+      const stored = await rows(id);
+      expect(stored).toHaveLength(1);
+      const winner = stored[0].slot_start_utc;
+      const ics = `/api/events/${slug}/bookings/${stored[0].token}/ics`;
+      for (const [i, res] of responses.entries()) {
+        const body = (await res.json()) as { icsUrl?: string; error?: { code: string } };
+        if (payloads[i].slot === winner) {
+          expect(res.status).toBe(201);
+          expect(body.icsUrl).toBe(ics);
+        } else {
+          expect(res.status).toBe(422);
+          expect(body.error?.code).toBe("idempotency_key_reuse");
+        }
+      }
+      // Exactly one request created the row; the other two with its payload replayed it.
+      expect(responses.filter((r) => r.status === 201 && r.headers.get("idempotent-replayed") === null)).toHaveLength(1);
+      expect(responses.filter((r) => r.headers.get("idempotent-replayed") === "true")).toHaveLength(2);
+      expect(responses.filter((r) => r.status === 422)).toHaveLength(3);
     });
 
-    it.each([
-      ["slot", entry(S2, "Rex", "Sam Jones")],
-      ["dog", entry(S1, "Fido", "Sam Jones")],
-      ["handler", entry(S1, "Rex", "Ann Lee")],
-    ])("refuses the same key with a different %s: 422, nothing written, nothing of the first booking revealed", async (_what, other) => {
-      const { id, slug } = await insertEvent(t.env.DB);
-      const key = newKey();
-      const first = await post(slug, entry(S1, "Rex", "Sam Jones", key));
-      const { icsUrl } = (await first.json()) as { icsUrl: string };
-      const before = await rows(id);
+    describe("a key reused with a different payload", () => {
+      // The key is a 128-bit secret held only by the browser that made the booking, so presenting it
+      // proves ownership. That makes it safe to hand that booking back (as stored, never as requested)
+      // so someone whose first response was lost, then edited the form, can still find their slot and
+      // the calendar link. Nothing is ever returned for a key that no booking holds.
+      const message = "An earlier attempt from this page was already saved, so this change wasn't applied. To change a booking, contact the organiser.";
 
-      const res = await post(slug, { ...other, idempotencyKey: key });
-      expect(res.status).toBe(422);
-      expect(res.headers.get("idempotent-replayed")).toBeNull();
-      const text = await res.text();
-      expect((JSON.parse(text) as ErrorBody).error).toEqual({
-        code: "idempotency_key_reuse",
-        message: "That request doesn't match the earlier one. Reload the page and try again.",
+      it.each([
+        ["handler name", entry(S1, "Rex", "Sam Jones")],
+        ["slot", entry(S2, "Rex", "Sam Jnes")],
+        ["dog", entry(S1, "Fido", "Sam Jnes")],
+      ])("answers a changed %s with 422 and the ORIGINAL booking, and writes nothing", async (_what, edited) => {
+        const { id, slug } = await insertEvent(t.env.DB, { name: "Summer show" });
+        const key = newKey();
+        const first = await post(slug, entry(S1, "Rex", "Sam Jnes", key));
+        const original = (await first.json()) as { icsUrl: string };
+        const before = await rows(id);
+
+        const res = await post(slug, { ...edited, idempotencyKey: key });
+        expect(res.status).toBe(422);
+        expect(res.headers.get("idempotent-replayed")).toBeNull();
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        expect(await res.json()).toEqual({
+          error: { code: "idempotency_key_reuse", message },
+          booking: { slot: { start: S1, end: "2026-06-13T08:15:00Z" }, dogName: "Rex", handlerName: "Sam Jnes" },
+          event: expect.objectContaining({ slug, name: "Summer show" }),
+          icsUrl: original.icsUrl,
+        });
+        expect(await rows(id)).toEqual(before);
       });
-      expect(Object.keys(JSON.parse(text) as object)).toEqual(["error"]);
-      expect(text).not.toContain(icsUrl.split("/")[5]); // the token
-      expect(text).not.toMatch(/Rex|Sam|2026-06-13T08:00/);
-      expect(await rows(id)).toEqual(before);
+
+      it("returns the stored spelling, not the requested one, even when the request differs in case and spelling", async () => {
+        const { slug } = await insertEvent(t.env.DB);
+        const key = newKey();
+        await post(slug, entry(S1, "Rex", "Sam Jnes", key));
+        const res = await post(slug, entry(S1, "REX", "SAM JONES", key));
+        const body = (await res.json()) as { booking: { dogName: string; handlerName: string } };
+        expect(res.status).toBe(422);
+        expect(body.booking).toMatchObject({ dogName: "Rex", handlerName: "Sam Jnes" });
+      });
+
+      it("reveals nothing for a key that no booking holds", async () => {
+        const { id, slug } = await insertEvent(t.env.DB);
+        await post(slug, entry(S1, "Rex", "Sam Jones")); // someone else's booking, under another key
+        const res = await post(slug, entry(S1, "Rex", "Sam Jones"));
+        expect(res.status).toBe(409);
+        const text = await res.text();
+        expect(Object.keys(JSON.parse(text) as object)).toEqual(["error"]);
+        expect(text).not.toMatch(/icsUrl|"booking"|\/ics|Sam/);
+        expect(await rows(id)).toHaveLength(1);
+      });
+
+      it("finds a booking by event and key only: the same key in another event reveals nothing and is independent", async () => {
+        const a = await insertEvent(t.env.DB);
+        const b = await insertEvent(t.env.DB);
+        const key = newKey();
+        await post(a.slug, entry(S1, "Rex", "Sam Jones", key));
+        const other = await post(b.slug, entry(S2, "Fido", "Ann Lee", key));
+        expect(other.status).toBe(201);
+        expect(other.headers.get("idempotent-replayed")).toBeNull();
+        expect(((await other.json()) as { booking: { dogName: string } }).booking.dogName).toBe("Fido");
+        // Event b's own key holder can see only event b's booking.
+        const edited = await post(b.slug, entry(S2, "Fido", "Ann Leigh", key));
+        expect(edited.status).toBe(422);
+        const body = (await edited.json()) as { booking: { dogName: string }; icsUrl: string };
+        expect(body.booking.dogName).toBe("Fido");
+        expect(body.icsUrl).toContain(`/api/events/${b.slug}/`);
+        expect(await rows(a.id)).toHaveLength(1);
+        expect(await rows(b.id)).toHaveLength(1);
+      });
+
+      it("keeps a plain 422, with no booking, when the original slot has since left the schedule", async () => {
+        const { id, slug } = await insertEvent(t.env.DB);
+        const key = newKey();
+        await post(slug, entry(S1, "Rex", "Sam Jnes", key));
+        await t.env.DB.prepare("UPDATE bookings SET slot_start_utc = '2026-06-13T08:07:00Z' WHERE event_id = ?").bind(id).run();
+        const res = await post(slug, entry(S2, "Rex", "Sam Jones", key));
+        expect(res.status).toBe(422);
+        const parsed = (await res.json()) as ErrorBody;
+        expect(Object.keys(parsed)).toEqual(["error"]);
+        expect(parsed.error.code).toBe("idempotency_key_reuse");
+      });
     });
 
     it("keeps keys apart per event", async () => {

@@ -5,6 +5,7 @@ import {
 
 const GENERIC_ERROR = "Something went wrong. Please try again.";
 const CLOSED = "Bookings for this event are closed.";
+const SAVED_EARLIER = "We'd already saved a booking from this page, so we haven't changed it. Here it is. To change it, contact the organiser.";
 
 /** Wires the booking page into `#app`. Resolves once the first load has settled. */
 export function init({ document, fetch, location, clipboard }) {
@@ -220,13 +221,15 @@ export function init({ document, fetch, location, clipboard }) {
       const f = data.fields ?? {};
       if (f.dogName) fieldError(view.dog, view.dogError, f.dogName);
       if (f.handlerName) fieldError(view.handler, view.handlerError, f.handlerName);
-      if (f.slot || !(f.dogName || f.handlerName)) view.formError.textContent = f.slot ?? data.error.message;
+      if (f.slot || !(f.dogName || f.handlerName)) view.formError.textContent = f.slot ?? f.idempotencyKey ?? data.error.message;
     } else if (res.status === 400 && code === "invalid_slot") {
       deselect();
       setNotice("That slot isn't available any more.");
       await refresh();
     } else if (res.status === 422 && code === "idempotency_key_reuse") {
-      view.formError.textContent = data.error.message;
+      // With a booking: the page's own earlier attempt was saved, so show that rather than the edit.
+      if (data.booking) showConfirmation(data, SAVED_EARLIER);
+      else view.formError.textContent = data.error.message;
     } else if (res.status === 410) {
       showClosed();
     } else {
@@ -244,7 +247,7 @@ export function init({ document, fetch, location, clipboard }) {
     if (view) renderSlots();
   }
 
-  function showConfirmation({ booking, event: ev = event, icsUrl }) {
+  function showConfirmation({ booking, event: ev = event, icsUrl }, noticeText) {
     view = null;
     const when = `${formatDate(booking.slot.start)}, ${formatTimeRange(booking.slot.start, booking.slot.end)}`;
     const row = (label, ...value) => [h("dt", {}, label), h("dd", {}, ...value)];
@@ -258,7 +261,7 @@ export function init({ document, fetch, location, clipboard }) {
       clearTimeout(timer);
       timer = setTimeout(() => { copyStatus.textContent = ""; }, 2000);
     });
-    show(h("section", { class: "confirmation" },
+    show(...(noticeText ? [h("p", { class: "notice", role: "status" }, noticeText)] : []), h("section", { class: "confirmation" },
       heading,
       h("p", { class: "event-name" }, ev.name),
       h("dl", { class: "facts" },
