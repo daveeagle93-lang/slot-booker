@@ -2,10 +2,18 @@
 
 Everything under `/admin/*` (the pages) and `/api/admin/*` (the API) is for the club's organisers. Handlers can't move or cancel bookings; only an admin can. Sign-in is pluggable: one `AdminAuth` interface (`src/server/auth/types.ts`) with two providers, chosen by configuration:
 
-- **`access`**: Cloudflare Access sits in front of the site and the Worker verifies the signed token Access adds. The admin's identity is the verified email address.
-- **`password`**: one shared, generated admin secret, checked by the Worker, which then issues a signed session cookie. The identity is the fixed string `admin`.
+- **`access`**: Cloudflare Access sits in front of the site and the Worker verifies the signed token Access adds. The admin's identity is the verified email address. It needs a custom domain (see the hard rule below).
+- **`password`**: one shared, generated admin secret, checked by the Worker, which then issues a signed session cookie. The identity is the fixed string `admin`. It is the option for local development, for previews and for deployments reachable only on `*.pages.dev`.
 
 It fails closed. If `ADMIN_AUTH` is unset, misspelt (`Password`, `none`, ` access`) or the chosen provider's settings are missing or malformed, **every** admin page and `/api/admin/*` request, including paths that don't exist, gets a 503 and a line in the logs saying which setting is wrong. The other provider's settings are never used as a fallback.
+
+## Hard rule: Access needs a custom domain; `*.pages.dev` uses the password
+
+**`ADMIN_AUTH=access` is only for a deployment served on a custom domain, on a Cloudflare zone you control. A deployment reachable only on `*.pages.dev`, and every preview deployment, uses `ADMIN_AUTH=password`.**
+
+Why: Cloudflare documents no way to put a hand-made self-hosted Access application, scoped to `/admin/*` and `/api/admin/*`, on a `pages.dev` hostname. The self-hosted application guide lists "An active domain on Cloudflare" as a prerequisite and says "Domains must belong to an active zone in your Cloudflare account", and neither it nor the application-paths page mentions `pages.dev`. Pages' own "Enable access policy" is not a substitute: the Pages docs describe it per hostname with no path option, so it would put the public booking pages behind a login too, and by itself it covers previews only. (Sources and what was checked: "Cloudflare claims" at the end.)
+
+This is a project rule, not something the Worker checks: with `ADMIN_AUTH=access` on a `pages.dev`-only deployment the Worker starts normally and then answers 401 to every admin request, because no token ever arrives (see "What `pages.dev` does under Access"). The planned setup wizard will enforce the rule. Until then, follow it by hand.
 
 ## Settings
 
@@ -17,7 +25,7 @@ It fails closed. If `ADMIN_AUTH` is unset, misspelt (`Password`, `none`, ` acces
 | `ADMIN_PASSWORD_HASH` | **yes** | password | `hmac-sha256$<salt>$<mac>`, the hash line from `npm run --silent generate-admin-secret`. Anything else, including the earlier `pbkdf2-sha256$...` format, locks admin out. |
 | `ADMIN_SESSION_SECRET` | **yes** | password | At least 32 random characters. Signs the session cookie and keys the login rate-limit hashes. Shorter counts as not configured. |
 
-The two secrets must never be committed or put in `wrangler.jsonc`. `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are not secrets but are club details, so keep them out of the committed `wrangler.jsonc` as well: put them under `vars` in the git-ignored `account.local.json` and run `npm run configure` (`docs/deploying.md`, step 3). Locally, put all of them in `.dev.vars` (see `.dev.vars.example`) and restart `npm run dev`.
+The two secrets must never be committed or put in `wrangler.jsonc`. `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are not secrets but are club details, so keep them out of the committed `wrangler.jsonc` as well: put them under `vars` in the git-ignored `account.local.json` and run `npm run configure` (`docs/deploying.md`, step 3). Locally, put them in `.dev.vars` (see `.dev.vars.example`) and restart `npm run dev`; only the password provider can be tried locally.
 
 ## Password provider
 
@@ -47,7 +55,7 @@ Only a value in exactly the generated form is accepted: 43 characters from that 
    ```
 
    `npx wrangler pages secret bulk <file>` also exists, taking a JSON or `.dev.vars` file. The help shows no flag for choosing the production or preview environment, and I haven't verified which one `put` targets, so check in the dashboard after setting them.
-4. Set `ADMIN_AUTH=password` (a plain variable; see `docs/configuration.md` for where those go). `vars` (`ADMIN_AUTH`, and for Access `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`) are not inherited by `env.preview` in `wrangler.jsonc`, so give them in **both** the top-level `vars` block and the `env.preview` one if preview deployments should have admin. Secrets set with `wrangler pages secret` are separate from `vars`. The help for `put` lists only `--project-name`, with no option for production versus preview, so I can't say from it which environment a secret lands in; check in the dashboard.
+4. Set `ADMIN_AUTH=password` (a plain variable) under `vars` in `account.local.json` and run `npm run configure` (`docs/deploying.md`, step 3; see `docs/configuration.md`). `vars` are not inherited by `env.preview`, so the script writes them into **both** the top-level block and `env.preview` of the generated `wrangler.json`. Secrets set with `wrangler pages secret` are separate from `vars`. The help for `put` lists only `--project-name`, with no option for production versus preview, so I can't say from it which environment a secret lands in; check in the dashboard.
 
 To replace the secret, run the script again and set the new `ADMIN_PASSWORD_HASH`. Existing sessions stay valid until they expire or `ADMIN_SESSION_SECRET` is rotated. A stored value in the earlier `pbkdf2-sha256$...` format is refused as malformed: admin answers 503 and the log line says to run `npm run generate-admin-secret`.
 
@@ -80,9 +88,72 @@ Sessions are **stateless**. Logout clears the cookie in the browser but cannot r
 
 ## Access provider
 
-### Setting it up
+### Setting it up (custom domain)
 
-In the Cloudflare Zero Trust dashboard, create a self-hosted Access application for the site's hostname that covers both the paths `/admin` and `/api/admin`, with a policy allowing the organisers' email addresses. Put the Access application on **every hostname that serves the site**, including `<project>.pages.dev` and the preview aliases (`<branch>.<project>.pages.dev`), not just the custom domain. The Worker accepts any validly signed, unexpired token for its AUD, whichever hostname the request arrives on, and the signing keys are per team, not per hostname. A token captured on one hostname therefore keeps working on a hostname where Access is not enforcing session revocation. Set a short Access session duration so a captured token expires soon. Note its **Application Audience (AUD) tag** and your team domain. Then set `ADMIN_AUTH=access`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`. I haven't configured an Access application, so check the current dashboard wording against [Cloudflare's docs](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/).
+Prerequisite: the hard rule above. You need a domain whose zone is active in your Cloudflare account, and the Pages project to serve the site on a hostname of that domain, such as `book.example.com`. The Access application is scoped to the paths `/admin/*` and `/api/admin/*` on that hostname, so the public booking pages stay public.
+
+The labels below are the ones on Cloudflare's pages when this was written (sources under "Cloudflare claims"). Nobody has run this against a real account here, so the dashboard itself may word things differently.
+
+1. **Attach the custom domain to the Pages project first.** In the Cloudflare dashboard go to "Workers & Pages", select your Pages project, then "Custom domains" and "Set up a domain". Enter the hostname and select "Continue". For an apex domain (`example.com`) Cloudflare's docs say the domain must be a zone in the same account with Cloudflare's nameservers. Do not add the CNAME record by hand instead: Cloudflare says that adding one without first associating the domain in the Pages dashboard "will result in your domain failing to resolve at the CNAME record address, and display a 522 error". Do this before step 2: Cloudflare lists as a known issue that "It is currently not possible to add a custom domain with a Cloudflare Access policy already enabled on that domain".
+2. **Create the Access application.** In the Cloudflare dashboard go to "Zero Trust" > "Access controls" > "Applications", select "Create new application", then "Self-hosted and private". Select "Add public hostname". In the "Domain" dropdown choose your domain (it must belong to an active zone), set the subdomain if you use one, and set the **Path** as below. Never leave the path empty: that protects the whole site, including the booking pages.
+
+   Cloudflare's application-paths page says a wildcard in the Path field "does not cover the parent path": its example is that `example.com/alpha/*` covers `example.com/alpha/one` but not `example.com/alpha`. So `/admin/*` does **not** cover `/admin` itself, and you need an entry for each of these four paths on your hostname:
+
+   | Path | Covers |
+   | --- | --- |
+   | `/admin` | the bare `/admin` (no trailing slash) |
+   | `/admin/*` | `/admin/` and everything below it: the admin pages |
+   | `/api/admin` | the bare `/api/admin` |
+   | `/api/admin/*` | everything below `/api/admin/`: the admin API |
+
+   Select "Add public hostname" again for each further entry. The Cloudflare page documents the single-entry flow; adding several by repeating it is my assumption, so check it in the dashboard. A second application per path would work too but would give a second AUD tag, and the Worker accepts only one.
+   The Worker guards bare `/admin` and `/api/admin` itself (checked locally, see "What `pages.dev` does under Access"), so the two bare entries are belt and braces, not the only protection. Entries with a `?` query string, a port or a `#` are not supported by Access application paths, so don't add any.
+3. **Add an Allow policy.** Under "Access policies" add an existing policy or create a new one that allows the organisers' email addresses. Cloudflare: "All Access applications are deny by default -- a user must match an Allow policy before they are granted access." (How to pick emails, such as an "Emails" selector, is not on the page fetched; check the dashboard.) Choose the identity providers you accept, and set "Session Duration" short (say 8 hours or less), so a token that leaks expires soon. Cloudflare: "Cloudflare checks every HTTP request to your application for a valid application token." Select "Create".
+4. **Copy the AUD tag and team domain.** Go to "Zero Trust" > "Access controls" > "Applications", select "Configure" for your application and, from "Additional settings", copy the "Application Audience (AUD) Tag" (Cloudflare: it "will never change unless you delete or recreate the Access application"). Your team domain is `<your-team-name>.cloudflareaccess.com`; Cloudflare says the team name is shown in Cloudflare One under "Settings".
+5. **Give the Worker the settings and redeploy.** In `account.local.json` (`docs/deploying.md`, step 3) add to `vars`, as strings and with the host only, no `https://`:
+
+   ```jsonc
+   "vars": {
+     "ADMIN_AUTH": "access",
+     "ACCESS_TEAM_DOMAIN": "<your-team-name>.cloudflareaccess.com",
+     "ACCESS_AUD": "<the AUD tag from step 4>"
+   }
+   ```
+
+   Run `npm run configure`. It refuses an `account.local.json` that has a database ID that is not a UUID or is a placeholder, the two IDs equal, an unknown key, a variable name that isn't a plain identifier, a value that isn't a string, or a secret (`ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET`: the Access provider uses neither). It does not check `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD`; the Worker does at run time and answers 503 on every admin request, logging which setting is wrong, if the team domain isn't a `<name>.cloudflareaccess.com` host or the AUD is empty. Then redeploy production (`docs/deploying.md`, step 7; use the production branch, `--branch main` if you made the project as in that doc). The script writes the same `vars` into `env.preview` too, so preview deployments also expect Access and admin does not work on them (401). The script cannot give previews different `vars`, so test a preview with the password provider (`docs/deploying.md`, "Runbook: deploy a preview") before you switch `ADMIN_AUTH` to `access`; I haven't worked out a supported way to run both at once.
+6. **Verify.** Replace the hostnames with yours.
+
+   ```sh
+   curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" https://<custom-domain>/api/admin/events
+   curl -s -i https://<project>.pages.dev/api/admin/events
+   curl -s -i https://<project>.pages.dev/admin
+   ```
+
+   - The first request has no Access session, so Access should turn it away before the Worker sees it. The Worker's own answer is the JSON `unauthenticated` body shown below, so if you see that body here, Access isn't in front of this path. The status Access itself returns (I'd expect a redirect to your team's login page) is not stated on the pages fetched and is **not verified**.
+   - The second and third go to `pages.dev`, where no Access token is attached, so they reach the Worker and are refused by it: 401 with `{"error":{"code":"unauthenticated","message":"Sign in to continue."},"provider":"access"}`, and 401 with the text "Sign in with Cloudflare Access to use the admin pages." (checked against the local dev server with a made-up Access configuration, not on Cloudflare). A 503 instead means a setting is missing or malformed (the Pages logs say which).
+   - In a browser, open `https://<custom-domain>/admin` (no trailing slash) in a private window: you should reach Access's sign-in. Sign in with an allowed email and the admin list should load. A non-allowed email should be refused by Access. Also open `https://<custom-domain>/` and a booking link `/e/<slug>`: they must load without any sign-in. "Sign out" in the admin list sends the browser to `/cdn-cgi/access/logout`.
+
+### What `pages.dev` does under Access
+
+Access is only in front of the custom domain. The Worker verifies the Access token itself and reads it only from the `Cf-Access-Jwt-Assertion` header, so a request to `<project>.pages.dev` has no token unless the caller adds one by hand. With `ADMIN_AUTH=access` and a valid configuration, checked locally:
+
+- `/admin`, `/admin/`, `/admin/login` and every other path under `/admin/` (the middleware in `functions/admin/_middleware.ts`) answer 401, `text/plain`, "Sign in with Cloudflare Access to use the admin pages." (the login pages are served unauthenticated only with the password provider).
+- `/api/admin` and everything under it (`functions/api/admin/_middleware.ts`) answer 401 JSON `unauthenticated` with `"provider":"access"`. `POST /api/admin/login` answers 404 `not_found`, because that route doesn't exist with Access.
+
+So the `pages.dev` hostname is not an authentication bypass, but:
+
+- It still serves the public booking pages and API, and the static admin HTML and JavaScript at unusual paths (the known limit below).
+- Admin cannot be **used** on `pages.dev`, previews included, while `ADMIN_AUTH=access`.
+- The Worker accepts any validly signed, unexpired token for its AUD, whichever hostname the request arrives on, and the signing keys are per team, not per hostname. Someone who holds a token stolen from a signed-in organiser could add the header by hand on `pages.dev`, where Access is not there to enforce session revocation. A short session duration limits that, and the first optional step below removes the production `pages.dev` route.
+
+#### Optional: closing the `pages.dev` hostnames
+
+Neither step is needed for the admin to work or be secure, and both are optional.
+
+- **Redirect the production `*.pages.dev` URL to the custom domain.** Cloudflare's custom-domains page lists, under "Disable access to *.pages.dev subdomain": "Redirect the `*.pages.dev` URL associated with your production Pages project to a custom domain. You can use the account-level Bulk Redirect feature to redirect your `*.pages.dev` URL to a custom domain." I haven't set this up, and that page gives no steps, only the pointer to Bulk Redirects.
+- **Pages' "Enable access policy" for previews.** In the Pages project go to "Settings" > "General" and select "Enable access policy". Cloudflare: "Note that this will only protect your preview deployments ... and not your `*.pages.dev` domain or custom domain." It is whole-hostname, so it protects previews only. It would also put your preview admin sign-in behind a Cloudflare login first, which suits a preview used by the organisers alone. The same page also describes extending it to the production `pages.dev` hostname by deleting the wildcard from the Access application's subdomain; that locks the public booking pages on `pages.dev` as well and is not recommended here.
+
+### How the Worker checks the token
 
 The Worker doesn't trust that Access is in front: it verifies the token itself, following [Validate JWTs](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/):
 
@@ -90,9 +161,7 @@ The Worker doesn't trust that Access is in front: it verifies the token itself, 
 - Checks, in order: three base64url segments (at most 8 KB); header `alg` exactly `RS256` and a string `kid` (so `none`, HS256 and every other algorithm are refused); the RSASSA-PKCS1-v1_5 SHA-256 signature, against the key in Access's key set with that `kid`. Only then is the payload read: `iss` equals `https://<team domain>`, `aud` (a string or a list) contains `ACCESS_AUD`, `exp` is a number and in the future (no leeway), `nbf` if present is not more than 30 seconds ahead, and `email` is a non-empty string containing `@`. Service tokens carry no email and are refused.
 - Keys come from `https://<team domain>/cdn-cgi/access/certs` (the `keys` list; `public_cert` is not used). Access rotates them about every 6 weeks with a 7-day overlap, so the key is chosen by `kid`. The set is cached for an hour; an unknown `kid` forces one refetch, at most once a minute, so junk tokens can't hammer the endpoint. A failed or malformed fetch denies the request, waits a minute before trying again, and logs the reason (never token contents).
 
-The settings are `vars`, which `wrangler.jsonc` does not inherit into `env.preview`: give `ADMIN_AUTH`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` in both the top-level and the `env.preview` blocks (see `docs/configuration.md`).
-
-Access can't be tried locally: the token only exists behind Cloudflare. Use the password provider for local development.
+Access can't be tried locally: the token only exists behind Cloudflare. Use the password provider for local development, for previews and for `*.pages.dev`-only deployments.
 
 ### Logout
 
@@ -134,7 +203,20 @@ The output should include a `Content-Security-Policy` with `frame-ancestors 'non
 
 
 - **Static admin files can be reached by unusual paths in local dev.** Under `wrangler pages dev` (4.147.0), with signed-out requests, `/admin`, `/admin/`, `/admin/index.html`, `/admin/x.js`, `/admin/../admin/`, `/ADMIN/` and `/admin/%2e%2e/admin/` were all redirected to `/admin/login`, but a path that the Functions router doesn't match while the static file server still normalises it was served without signing in: `//admin/x.js`, `///admin/x.js`, `/%2fadmin/x.js`, `/admin%2fx.js` and `/%61dmin/x.js` (an encoded letter) returned the file (200). Only static files are affected. I could not see a way to make the API or any Function skip its middleware: every variant either matched the router (and got 401) or fell through to the static site's HTML. I haven't checked whether Cloudflare's edge normalises these paths before they reach Pages in production. Since the admin HTML and JavaScript contain no data and every API call is checked, the exposure is the admin UI's code and layout. A fix would be a root `functions/_middleware.ts`, but that would turn every static request into a Function invocation, so it was not done.
+- **The `pages.dev` hostname keeps serving the public site.** Under Access, admin cannot be used there and gets 401, but the booking pages and the static admin files are still reachable (see "What `pages.dev` does under Access" for the optional ways to close it).
 - Whether a login fits in the free plan's 10 ms of CPU is unverified on real Workers; only local numbers exist (see "What a login costs").
 - Per-client login limiting doesn't stop a distributed attack, and clients sharing an address share the lockout (see "Rate limiting").
 - Logout can't revoke a password session before it expires (see above).
 - No second factor with the password provider. Access can provide one.
+
+## Cloudflare claims
+
+Each was read from the live page on 4 October 2026 (the pages' own "Last updated" dates are in brackets). The dashboard itself was not checked: nobody has a Cloudflare account configured here.
+
+- Access needs an active zone, and the path rules: [Self-hosted public application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) (17 April 2026): prerequisite "An active domain on Cloudflare"; "Domains must belong to an active zone in your Cloudflare account"; the steps "Create new application", "Self-hosted and private", "Add public hostname", "Session Duration". The page does not mention `pages.dev`.
+- Paths: [Application paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/) (17 April 2026): for `example.com/alpha/*`, "Does not cover" `example.com/alpha`; "At most one wildcard in between each slash in the Path"; query strings, port numbers and `#` are not supported. The page does not mention `pages.dev`.
+- Custom domain on Pages, the 522 on a hand-made CNAME, and the `*.pages.dev` redirect: [Custom domains](https://developers.cloudflare.com/pages/configuration/custom-domains/) (21 April 2026).
+- No custom domain while Access is enabled on it: [Known issues](https://developers.cloudflare.com/pages/platform/known-issues/) (6 May 2026), under "Custom Domains". The same page describes extending the preview policy to `*.pages.dev`.
+- "Enable access policy" covers previews only: [Preview deployments](https://developers.cloudflare.com/pages/configuration/preview-deployments/) (3 June 2026).
+- Header, keys and AUD tag: [Validate JWTs](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/) (6 May 2026).
+- **Not on any of those pages:** the `Emails` selector for an Allow policy, the status code Access returns to an unauthenticated `curl`, whether several public hostnames can be added by repeating "Add public hostname", and the Bulk Redirect steps. None of these is claimed as verified above.
