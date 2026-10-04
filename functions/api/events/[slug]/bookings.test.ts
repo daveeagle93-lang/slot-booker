@@ -137,7 +137,7 @@ describe("POST /api/events/:slug/bookings", () => {
       expect(await rows(b.id)).toHaveLength(1);
     });
 
-    it("gives duplicate_booking priority when the slot is also taken, without naming anyone or any slot", async () => {
+    it("gives duplicate_booking for a double submit (same pair, same slot), without naming anyone or any slot", async () => {
       const { slug } = await insertEvent(t.env.DB);
       await post(slug, entry(SLOT, "Rex", "Sam Jones"));
       const res = await post(slug, entry(SLOT, "rex", "sam jones"));
@@ -149,6 +149,62 @@ describe("POST /api/events/:slug/bookings", () => {
       });
       expect(body.freeSlots).toBeUndefined();
       expect(text).not.toMatch(/Rex|Sam|2026-06-13T08/i);
+    });
+  });
+
+  describe("no oracle for who has booked", () => {
+    const S1 = "2026-06-13T08:00:00Z";
+    const S2 = "2026-06-13T08:15:00Z";
+    const S3 = "2026-06-13T08:30:00Z";
+
+    it("says slot_taken, not duplicate_booking, when a known pair asks for a slot someone else holds", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      expect((await post(slug, entry(S1, "Rex", "Sam Jones"))).status).toBe(201); // pair A
+      expect((await post(slug, entry(S2, "Fido", "Ann Lee"))).status).toBe(201); // pair B
+      const res = await post(slug, entry(S2, "rex", "SAM JONES")); // pair A again, at B's slot
+      expect(res.status).toBe(409);
+      const text = await res.text();
+      const body = JSON.parse(text) as ErrorBody;
+      expect(body.error).toEqual({ code: "slot_taken", message: "That slot's just gone." });
+      expect(body.freeSlots).toEqual(quarterSlots().filter((s) => s.start !== S1 && s.start !== S2));
+      expect(text).not.toMatch(/Rex|Sam|Fido|Ann/i);
+      expect(await rows(id)).toHaveLength(2);
+    });
+
+    it("answers a pair that has never booked the same way as one that has", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      await post(slug, entry(S1, "Rex", "Sam Jones"));
+      await post(slug, entry(S2, "Fido", "Ann Lee"));
+      const known = await post(slug, entry(S2, "Rex", "Sam Jones"));
+      const unknown = await post(slug, entry(S2, "Nobody", "Here"));
+      expect(known.status).toBe(unknown.status);
+      expect(await known.text()).toBe(await unknown.text());
+    });
+
+    it("still says duplicate_booking for the pair's own slot and for a free slot", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      await post(slug, entry(S1, "Rex", "Sam Jones"));
+      for (const slot of [S1, S3]) {
+        const res = await post(slug, entry(slot, "Rex", "Sam Jones"));
+        expect(res.status, slot).toBe(409);
+        expect(((await res.json()) as ErrorBody).error.code, slot).toBe("duplicate_booking");
+      }
+      expect(await rows(id)).toHaveLength(1);
+    });
+
+    it("falls back to slot_taken with fresh free slots if the holding row has vanished by the time it is read", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      const racing = {
+        prepare: (sql: string) =>
+          sql.startsWith("INSERT INTO bookings")
+            ? { bind: () => ({ run: () => Promise.reject(new Error("D1_ERROR: UNIQUE constraint failed: bookings.event_id, bookings.slot_start_utc")) }) }
+            : t.env.DB.prepare(sql),
+      } as unknown as D1Database;
+      const res = await post(slug, entry(S1, "Rex", "Sam Jones"), { env: { DB: racing } });
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.code).toBe("slot_taken");
+      expect(body.freeSlots).toEqual(quarterSlots());
     });
   });
 

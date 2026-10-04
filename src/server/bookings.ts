@@ -102,7 +102,9 @@ export const findSlot = (event: EventRow, start: string): TimeRange | undefined 
 
 /**
  * Inserts without checking availability or identity first: the UNIQUE constraints decide, and a
- * failure is classified afterwards. Identity wins when both constraints would be violated.
+ * failure is classified afterwards. Whoever holds the requested slot decides the answer: a
+ * different pair means slot_taken even if the requester's own pair has booked elsewhere, so a
+ * guessed dog and handler cannot be confirmed as having booked.
  */
 export async function createBooking(
   db: D1Database, event: EventRow, slot: TimeRange, input: BookingInput,
@@ -118,11 +120,20 @@ export async function createBooking(
       .run();
   } catch (e) {
     if (!(e instanceof Error) || !e.message.includes("UNIQUE constraint failed")) throw e;
-    const same = await db
-      .prepare("SELECT 1 AS n FROM bookings WHERE event_id = ? AND dog_key = ? AND handler_key = ?")
-      .bind(event.id, dogKey, handlerKey)
-      .first();
-    if (same) return { kind: "duplicate_booking" };
+    const holder = await db
+      .prepare("SELECT dog_key, handler_key FROM bookings WHERE event_id = ? AND slot_start_utc = ?")
+      .bind(event.id, slot.start)
+      .first<{ dog_key: string; handler_key: string }>();
+    if (holder) {
+      if (holder.dog_key === dogKey && holder.handler_key === handlerKey) return { kind: "duplicate_booking" };
+    } else {
+      // The slot is free, so the identity constraint fired (unless the holder has since vanished).
+      const same = await db
+        .prepare("SELECT 1 AS n FROM bookings WHERE event_id = ? AND dog_key = ? AND handler_key = ?")
+        .bind(event.id, dogKey, handlerKey)
+        .first();
+      if (same) return { kind: "duplicate_booking" };
+    }
     const views = await computeSlotViews(db, event);
     return {
       kind: "slot_taken",
