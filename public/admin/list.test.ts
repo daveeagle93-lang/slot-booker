@@ -173,3 +173,477 @@ describe("sign out", () => {
     expect((logout.init?.headers as Record<string, string>)["X-CSRF-Token"]).toBe("tok");
   });
 });
+
+// ---- Past, Archived, archive, delete and bulk clear-out ----
+
+const OLD = (over: Record<string, unknown> = {}) => ({
+  slug: "old-event-slug-0001", name: "Old Show", startUtc: "2026-05-02T08:00:00Z", endUtc: "2026-05-02T15:00:00Z",
+  venuePostcode: "SW1A 1AA", bookedCount: 4, archived: false, ...over,
+});
+const FILED = (over: Record<string, unknown> = {}) => OLD({ slug: "filed-event-slug-001", name: "Filed Show", bookedCount: 1, archived: true, ...over });
+const UP = (over: Record<string, unknown> = {}) => ({ ...EVENT, slug: "upcoming-event-slug1", path: "/e/upcoming-event-slug1", archived: false, full: false, ...over });
+
+interface Harness { calls: Call[]; setList(body: unknown): void; writes(): Call[] }
+
+/** Starts the page with `body` as the list; `route(url, init)` answers the writes. Writes are recorded in `calls`. */
+async function begin(body: Record<string, unknown>, route: (url: string, init?: RequestInit) => Response | Promise<Response> = () => reply(200, {})): Promise<Harness> {
+  document.body.innerHTML = '<main id="app"></main>';
+  const calls: Call[] = [];
+  let list = body;
+  const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    if (url === "/api/admin/session") return reply(200, SESSION);
+    if (url === "/api/admin/events" && (init?.method ?? "GET") === "GET") return reply(200, list);
+    return route(url, init);
+  });
+  await init({ document, fetch: fetch as unknown as typeof globalThis.fetch, navigate: vi.fn(), clipboard: undefined, location: { origin: ORIGIN } });
+  return { calls, setList: (b) => { list = b as Record<string, unknown>; }, writes: () => calls.filter((c) => c.init?.method && c.init.method !== "GET") };
+}
+
+const all = (sel: string, root: ParentNode = document) => [...root.querySelectorAll<HTMLElement>(sel)];
+const section = (title: string) => all("details").find((d) => d.querySelector("summary")!.textContent!.startsWith(title))! as HTMLDetailsElement;
+const rowOf = (name: string) => all(".event-card").find((li) => li.querySelector("h2, h3")!.textContent === name)!;
+const inRow = (name: string, label: string) => all("button, a", rowOf(name)).find((b) => b.textContent === label) as HTMLButtonElement;
+const live = () => $(".list-status").textContent;
+const type = (input: HTMLInputElement, value: string) => { input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); };
+const full = (over: Record<string, unknown> = {}) => ({ events: [UP()], past: [OLD()], archived: [FILED()], pastHasMore: false, archivedHasMore: false, ...over });
+
+describe("sections", () => {
+  it("shows Upcoming, then Past and Archived as collapsed details with counts", async () => {
+    await begin(full({ past: [OLD(), OLD({ slug: "old-event-slug-0002", name: "Older Show" })] }));
+    expect($("h1").textContent).toBe("Upcoming events");
+    expect(all(".event-list > .event-card")[0].querySelector("h2")!.textContent).toBe("Trial Day");
+    expect(section("Past").querySelector("summary")!.textContent).toBe("Past (2)");
+    expect(section("Archived").querySelector("summary")!.textContent).toBe("Archived (1)");
+    expect(section("Past").open).toBe(false);
+    expect(section("Archived").open).toBe(false);
+    expect(all("h3", section("Past")).map((n) => n.textContent)).toEqual(["Old Show", "Older Show"]);
+    expect(all("h3", section("Archived")).map((n) => n.textContent)).toEqual(["Filed Show"]);
+    expect(rowOf("Old Show").textContent).toContain("4 bookings");
+    expect(rowOf("Old Show").textContent).toContain("Saturday 2 May 2026, 09:00–16:00");
+    expect(rowOf("Filed Show").textContent).toContain("1 booking");
+    expect(rowOf("Filed Show").textContent).not.toContain("1 bookings");
+  });
+
+  it("has plain empty states for each section", async () => {
+    await begin({ events: [], past: [], archived: [], pastHasMore: false, archivedHasMore: false });
+    expect(text()).toContain("No upcoming events yet.");
+    expect(section("Past").textContent).toContain("No past events.");
+    expect(section("Past").querySelector("summary")!.textContent).toBe("Past (0)");
+    expect(section("Archived").textContent).toContain("No archived events.");
+    expect(section("Archived").querySelector("summary")!.textContent).toBe("Archived (0)");
+  });
+
+  it("copes with a response that has no past or archived lists", async () => {
+    await begin({ events: [UP()] });
+    expect(section("Past").textContent).toContain("No past events.");
+  });
+
+  it("notes that there are more than the 100 shown, and says so in the summary", async () => {
+    await begin(full({ pastHasMore: true, archivedHasMore: true }));
+    expect(section("Past").querySelector("summary")!.textContent).toBe("Past (1+)");
+    expect(section("Past").textContent).toContain("…and more");
+    expect(section("Archived").textContent).toContain("…and more");
+    await begin(full());
+    expect(section("Past").textContent).not.toContain("and more");
+  });
+
+  it("marks a full upcoming event with the text Full, and only that one", async () => {
+    await begin(full({ events: [UP({ full: true }), UP({ slug: "second-event-slug-02", path: "/e/second-event-slug-02", name: "Second", full: false })] }));
+    expect(all(".badge", rowOf("Trial Day")).map((b) => b.textContent)).toEqual(["Bookings open", "Full"]);
+    expect(all(".badge", rowOf("Second")).map((b) => b.textContent)).toEqual(["Bookings open"]);
+  });
+
+  it("gives an upcoming card Edit, Schedule, Archive and Delete…; a past row Schedule, Archive and Delete…; an archived row Unarchive and Delete…", async () => {
+    await begin(full());
+    expect(all(".manage > *", rowOf("Trial Day")).map((n) => n.textContent)).toEqual(["Archive", "Delete…"]);
+    expect(inRow("Trial Day", "Edit")).toBeDefined();
+    expect(inRow("Trial Day", "Schedule")).toBeDefined();
+    expect(all(".manage > *", rowOf("Old Show")).map((n) => n.textContent)).toEqual(["Schedule", "Archive", "Delete…"]);
+    expect(inRow("Old Show", "Schedule").getAttribute("href")).toBe("/admin/schedule?slug=old-event-slug-0001");
+    expect(all(".manage > *", rowOf("Filed Show")).map((n) => n.textContent)).toEqual(["Unarchive", "Delete…"]);
+  });
+
+  it("keeps hostile names inert in every section", async () => {
+    const evil = "<img src=x onerror=alert(1)>";
+    await begin(full({ events: [UP({ name: evil })], past: [OLD({ name: evil })], archived: [FILED({ name: evil })] }));
+    expect(document.querySelector("img")).toBeNull();
+    expect(all("h2, h3").filter((n) => n.textContent === evil)).toHaveLength(3);
+    for (const row of all(".event-card")) {
+      all("button", row).find((b) => b.textContent === "Delete…")!.click();
+      expect($(".confirm strong").textContent).toBe(evil);
+      expect(document.querySelector("img")).toBeNull();
+    }
+  });
+
+  it("keeps the sections open across a refresh", async () => {
+    const h = await begin(full(), (url) => reply(200, url.endsWith("/archive") ? { archived: true } : {}));
+    section("Past").open = true;
+    section("Past").dispatchEvent(new Event("toggle"));
+    inRow("Trial Day", "Archive").click();
+    await vi.waitFor(() => expect(live()).toBe("Archived Trial Day."));
+    expect(h.writes()).toHaveLength(1);
+    expect(section("Past").open).toBe(true);
+    expect(section("Archived").open).toBe(false);
+  });
+});
+
+describe("archive and unarchive", () => {
+  it("archives from an upcoming card: one POST, disabled while it runs, then refreshes and announces", async () => {
+    let release!: (r: Response) => void;
+    const h = await begin(full(), () => new Promise<Response>((r) => { release = r; }));
+    const button = inRow("Trial Day", "Archive");
+    button.click();
+    await vi.waitFor(() => expect(h.writes()).toHaveLength(1));
+    expect(h.writes()[0].url).toBe("/api/admin/events/upcoming-event-slug1/archive");
+    expect(h.writes()[0].init?.method).toBe("POST");
+    expect(JSON.parse(h.writes()[0].init!.body as string)).toEqual({ archived: true });
+    expect(button.disabled).toBe(true);
+    expect(inRow("Trial Day", "Delete…").disabled).toBe(true);
+    button.click(); // a second click while it runs does nothing
+    h.setList(full({ events: [], archived: [FILED(), FILED({ slug: "upcoming-event-slug1", name: "Trial Day" })] }));
+    release(reply(200, { archived: true }));
+    await vi.waitFor(() => expect(live()).toBe("Archived Trial Day."));
+    expect(h.writes()).toHaveLength(1);
+    expect(h.calls.filter((c) => c.url === "/api/admin/events")).toHaveLength(2);
+    expect($(".list-status").getAttribute("aria-live")).toBe("polite");
+    expect(text()).toContain("No upcoming events yet.");
+    expect(section("Archived").querySelector("summary")!.textContent).toBe("Archived (2)");
+    expect(document.querySelector("[disabled]:not([data-bulk])")).toBeNull();
+  });
+
+  it("archives a past row and unarchives an archived one", async () => {
+    const h = await begin(full(), (url) => reply(200, { archived: url.includes("filed") ? false : true }));
+    inRow("Old Show", "Archive").click();
+    await vi.waitFor(() => expect(live()).toBe("Archived Old Show."));
+    inRow("Filed Show", "Unarchive").click();
+    await vi.waitFor(() => expect(live()).toBe("Unarchived Filed Show."));
+    expect(h.writes().map((w) => [w.url, JSON.parse(w.init!.body as string)])).toEqual([
+      ["/api/admin/events/old-event-slug-0001/archive", { archived: true }],
+      ["/api/admin/events/filed-event-slug-001/archive", { archived: false }],
+    ]);
+  });
+
+  it("shows a retryable message when archiving fails, and the button works again", async () => {
+    let fail = true;
+    const h = await begin(full(), () => (fail ? reply(500, { error: { code: "internal_error", message: "Something went wrong. Please try again." } }) : reply(200, { archived: true })));
+    inRow("Trial Day", "Archive").click();
+    await vi.waitFor(() => expect(live()).toContain("We couldn't archive Trial Day."));
+    expect(live()).toContain("Something went wrong. Please try again.");
+    expect(inRow("Trial Day", "Archive").disabled).toBe(false);
+    fail = false;
+    inRow("Trial Day", "Archive").click();
+    await vi.waitFor(() => expect(live()).toBe("Archived Trial Day."));
+    expect(h.writes()).toHaveLength(2);
+  });
+
+  it("says so when the network fails", async () => {
+    await begin(full(), () => { throw new TypeError("offline"); });
+    inRow("Trial Day", "Archive").click();
+    await vi.waitFor(() => expect(live()).toContain("Check your connection"));
+    expect(inRow("Trial Day", "Archive").disabled).toBe(false);
+  });
+
+  it("refreshes and says the event is gone on a 404", async () => {
+    await begin(full(), () => reply(404, { error: { code: "not_found", message: "Event not found" } }));
+    inRow("Trial Day", "Archive").click();
+    await vi.waitFor(() => expect(live()).toContain("That event no longer exists."));
+  });
+});
+
+describe("Delete… one event", () => {
+  const open = (name = "Trial Day") => { inRow(name, "Delete…").click(); return $(".confirm"); };
+  const confirmButton = () => all(".confirm button").find((b) => b.textContent === "Delete event") as HTMLButtonElement;
+  const typed = () => $(".confirm input") as HTMLInputElement;
+
+  it("opens a panel with the name, the booking count and an input with focus, and the button disabled", async () => {
+    await begin(full());
+    const panel = open();
+    expect(panel.querySelector("p")!.textContent).toBe("This permanently deletes Trial Day and its 3 bookings. This can't be undone.");
+    expect(panel.querySelector("label")!.textContent).toBe("Type the event name to confirm");
+    expect(document.activeElement).toBe(typed());
+    expect(typed().getAttribute("id")).toBe(panel.querySelector("label")!.getAttribute("for"));
+    expect(confirmButton().disabled).toBe(true);
+    expect(confirmButton().classList.contains("danger")).toBe(true);
+    expect(panel.parentElement).toBe(rowOf("Trial Day"));
+  });
+
+  it("enables Delete event only when the trimmed text equals the name exactly, and calls the server only on click", async () => {
+    const h = await begin(full(), () => reply(200, { deleted: { slug: "upcoming-event-slug1", name: "Trial Day", bookings: 3 } }));
+    open();
+    for (const wrong of ["", "trial day", "TRIAL DAY", "Trial  Day", "Trial Day!", "Trial", "Trial Day Trial Day", "Trial Day"]) {
+      type(typed(), wrong);
+      expect(confirmButton().disabled, JSON.stringify(wrong)).toBe(true);
+    }
+    type(typed(), "  Trial Day \n");
+    expect(confirmButton().disabled).toBe(false);
+    expect(h.writes()).toHaveLength(0);
+    type(typed(), "Trial Day x");
+    expect(confirmButton().disabled).toBe(true);
+    type(typed(), "Trial Day");
+    expect(confirmButton().disabled).toBe(false);
+    expect(h.writes()).toHaveLength(0);
+    confirmButton().click();
+    await vi.waitFor(() => expect(h.writes()).toHaveLength(1));
+    expect(h.writes()[0].url).toBe("/api/admin/events/upcoming-event-slug1");
+    expect(h.writes()[0].init?.method).toBe("DELETE");
+    expect(JSON.parse(h.writes()[0].init!.body as string)).toEqual({ confirmName: "Trial Day" });
+  });
+
+  it("disables everything while the request runs, then refreshes and announces", async () => {
+    let release!: (r: Response) => void;
+    const h = await begin(full(), () => new Promise<Response>((r) => { release = r; }));
+    open();
+    type(typed(), "Trial Day");
+    confirmButton().click();
+    await vi.waitFor(() => expect(h.writes()).toHaveLength(1));
+    expect(confirmButton().disabled).toBe(true);
+    expect(typed().disabled).toBe(true);
+    expect(all("button", document).filter((b) => !b.hasAttribute("disabled")).map((b) => b.textContent)).toEqual([]);
+    h.setList(full({ events: [] }));
+    release(reply(200, { deleted: { slug: "upcoming-event-slug1", name: "Trial Day", bookings: 3 } }));
+    await vi.waitFor(() => expect(live()).toBe("Deleted Trial Day and 3 bookings."));
+    expect(document.querySelector(".confirm")).toBeNull();
+    expect(text()).toContain("No upcoming events yet.");
+    expect(h.writes()).toHaveLength(1);
+    expect(document.activeElement).toBe($(".list-status"));
+    expect(document.querySelector("[disabled]:not([data-bulk])")).toBeNull();
+  });
+
+  it("announces the server's booking count, singular for one", async () => {
+    await begin(full(), () => reply(200, { deleted: { slug: "x", name: "Old Show", bookings: 1 } }));
+    open("Old Show");
+    type(typed(), "Old Show");
+    confirmButton().click();
+    await vi.waitFor(() => expect(live()).toBe("Deleted Old Show and 1 booking."));
+  });
+
+  it("shows the server's confirmation_mismatch inline, keeping the panel and focus in the input", async () => {
+    const h = await begin(full(), () => reply(400, { error: { code: "confirmation_mismatch", message: "Type the event's name exactly to delete it." } }));
+    open();
+    type(typed(), "Trial Day");
+    confirmButton().click();
+    await vi.waitFor(() => expect($(".confirm .form-error").textContent).toBe("Type the event's name exactly to delete it."));
+    expect($(".confirm .form-error").getAttribute("role")).toBe("alert");
+    expect(document.activeElement).toBe(typed());
+    expect(confirmButton().disabled).toBe(false);
+    type(typed(), "Trial Day ");
+    expect($(".confirm .form-error").textContent).toBe("");
+    expect(h.writes()).toHaveLength(1);
+  });
+
+  it("shows other failures inline and lets the admin retry", async () => {
+    let fail = true;
+    const h = await begin(full(), () => (fail ? reply(500, { error: { code: "internal_error", message: "Something went wrong. Please try again." } })
+      : reply(200, { deleted: { slug: "x", name: "Trial Day", bookings: 3 } })));
+    open();
+    type(typed(), "Trial Day");
+    confirmButton().click();
+    await vi.waitFor(() => expect($(".confirm .form-error").textContent).toBe("Something went wrong. Please try again."));
+    expect(confirmButton().disabled).toBe(false);
+    fail = false;
+    confirmButton().click();
+    await vi.waitFor(() => expect(live()).toBe("Deleted Trial Day and 3 bookings."));
+    expect(h.writes()).toHaveLength(2);
+  });
+
+  it("Cancel closes the panel without any request and puts focus back on Delete…", async () => {
+    const h = await begin(full());
+    open();
+    all(".confirm button").find((b) => b.textContent === "Cancel")!.click();
+    expect(document.querySelector(".confirm")).toBeNull();
+    expect(document.activeElement).toBe(inRow("Trial Day", "Delete…"));
+    expect(h.writes()).toHaveLength(0);
+  });
+
+  it("has one panel at a time", async () => {
+    await begin(full());
+    open("Trial Day");
+    open("Old Show");
+    expect(all(".confirm")).toHaveLength(1);
+    expect($(".confirm").parentElement).toBe(rowOf("Old Show"));
+  });
+
+  it("works from the Past and Archived sections too", async () => {
+    const h = await begin(full(), () => reply(200, { deleted: { slug: "x", name: "Filed Show", bookings: 1 } }));
+    open("Old Show");
+    expect($(".confirm p").textContent).toBe("This permanently deletes Old Show and its 4 bookings. This can't be undone.");
+    open("Filed Show");
+    type(typed(), "Filed Show");
+    confirmButton().click();
+    await vi.waitFor(() => expect(live()).toBe("Deleted Filed Show and 1 booking."));
+    expect(h.writes()[0].url).toBe("/api/admin/events/filed-event-slug-001");
+  });
+});
+
+describe("clearing out Past", () => {
+  const PAST3 = [
+    OLD({ slug: "past-event-slug-0001", name: "Alpha Show", bookedCount: 2 }),
+    OLD({ slug: "past-event-slug-0002", name: "Bravo Show", bookedCount: 0 }),
+    OLD({ slug: "past-event-slug-0003", name: "Charlie Show", bookedCount: 5 }),
+  ];
+  const box = (name: string) => document.querySelector<HTMLInputElement>(`input[aria-label="Select ${name}"]`)!;
+  const selectAll = () => all("label", section("Past")).find((l) => l.textContent!.includes("Select all"))!.querySelector("input")!;
+  const bulk = () => document.querySelector<HTMLButtonElement>("[data-bulk]")!;
+  const tick = (name: string) => box(name).click();
+  const sure = () => all(".confirm button").find((b) => b.textContent === "Delete events") as HTMLButtonElement;
+  const word = () => $(".confirm input") as HTMLInputElement;
+
+  it("gives each past row a labelled checkbox and starts with Delete selected (0) disabled", async () => {
+    await begin(full({ past: PAST3 }));
+    expect(all("input[type=checkbox][aria-label^='Select ']", section("Past")).map((c) => c.getAttribute("aria-label"))).toEqual(["Select Alpha Show", "Select Bravo Show", "Select Charlie Show"]);
+    expect(bulk().textContent).toBe("Delete selected (0)");
+    expect(bulk().disabled).toBe(true);
+    expect(document.querySelector("input[aria-label='Select Filed Show']")).toBeNull();
+    expect(document.querySelector("input[aria-label='Select Trial Day']")).toBeNull();
+  });
+
+  it("counts the ticked rows and enables the button from one", async () => {
+    await begin(full({ past: PAST3 }));
+    tick("Alpha Show");
+    expect(bulk().textContent).toBe("Delete selected (1)");
+    expect(bulk().disabled).toBe(false);
+    tick("Charlie Show");
+    expect(bulk().textContent).toBe("Delete selected (2)");
+    expect(selectAll().checked).toBe(false);
+    tick("Alpha Show");
+    tick("Charlie Show");
+    expect(bulk().textContent).toBe("Delete selected (0)");
+    expect(bulk().disabled).toBe(true);
+  });
+
+  it("Select all ticks every past row, and ticking it again clears them", async () => {
+    await begin(full({ past: PAST3 }));
+    selectAll().click();
+    expect(all("[data-pick]").every((c) => (c as HTMLInputElement).checked)).toBe(true);
+    expect(bulk().textContent).toBe("Delete selected (3)");
+    tick("Bravo Show");
+    expect(selectAll().checked).toBe(false);
+    tick("Bravo Show");
+    expect(selectAll().checked).toBe(true);
+    selectAll().click();
+    expect(all("[data-pick]").some((c) => (c as HTMLInputElement).checked)).toBe(false);
+    expect(bulk().textContent).toBe("Delete selected (0)");
+  });
+
+  it("lists the chosen names and the total bookings, and asks for DELETE", async () => {
+    await begin(full({ past: PAST3 }));
+    tick("Alpha Show");
+    tick("Charlie Show");
+    bulk().click();
+    const panel = $(".confirm");
+    expect(panel.querySelector("p")!.textContent).toBe("This permanently deletes 2 events and 7 bookings in total. This can't be undone.");
+    expect(all("li", panel).map((n) => n.textContent)).toEqual(["Alpha Show", "Charlie Show"]);
+    expect(panel.querySelector("label")!.textContent).toBe("Type DELETE to confirm");
+    expect(document.activeElement).toBe(word());
+    expect(sure().disabled).toBe(true);
+    expect(box("Alpha Show").disabled).toBe(true); // the selection is locked while the panel is open
+    expect(bulk().disabled).toBe(true);
+  });
+
+  it("enables Delete events only for DELETE (trimmed), and sends exactly { slugs, confirm } on click", async () => {
+    const h = await begin(full({ past: PAST3 }), () => reply(200, { deletedEvents: 2, deletedBookings: 7, skipped: [] }));
+    tick("Alpha Show");
+    tick("Charlie Show");
+    bulk().click();
+    for (const wrong of ["", "delete", "Delete", "DELET", "DELETE it", "DELETE DELETE", "D E L E T E"]) {
+      type(word(), wrong);
+      expect(sure().disabled, wrong).toBe(true);
+    }
+    type(word(), " DELETE ");
+    expect(sure().disabled).toBe(false);
+    expect(h.writes()).toHaveLength(0);
+    h.setList(full({ past: [PAST3[1]] }));
+    sure().click();
+    await vi.waitFor(() => expect(live()).toBe("Deleted 2 events and 7 bookings."));
+    expect(h.writes()).toHaveLength(1);
+    expect(h.writes()[0].url).toBe("/api/admin/events/clear-past");
+    expect(h.writes()[0].init?.method).toBe("POST");
+    expect(JSON.parse(h.writes()[0].init!.body as string)).toEqual({ slugs: ["past-event-slug-0001", "past-event-slug-0003"], confirm: "DELETE" });
+    expect(section("Past").querySelector("summary")!.textContent).toBe("Past (1)");
+    expect(document.querySelector(".confirm")).toBeNull();
+    expect(bulk().textContent).toBe("Delete selected (0)");
+  });
+
+  it("disables everything while it runs", async () => {
+    let release!: (r: Response) => void;
+    const h = await begin(full({ past: PAST3 }), () => new Promise<Response>((r) => { release = r; }));
+    selectAll().click();
+    bulk().click();
+    type(word(), "DELETE");
+    sure().click();
+    await vi.waitFor(() => expect(h.writes()).toHaveLength(1));
+    expect(sure().disabled).toBe(true);
+    expect(word().disabled).toBe(true);
+    expect(bulk().disabled).toBe(true);
+    expect(selectAll().disabled).toBe(true);
+    sure().click();
+    h.setList(full({ past: [] }));
+    release(reply(200, { deletedEvents: 3, deletedBookings: 7, skipped: [] }));
+    await vi.waitFor(() => expect(live()).toBe("Deleted 3 events and 7 bookings."));
+    expect(h.writes()).toHaveLength(1);
+  });
+
+  it("reports anything the server skipped, by name", async () => {
+    await begin(full({ past: PAST3 }), () => reply(200, {
+      deletedEvents: 1, deletedBookings: 2,
+      skipped: [{ slug: "past-event-slug-0002", reason: "not_past" }, { slug: "past-event-slug-0003", reason: "not_found" }, { slug: "mystery-slug-000000001", reason: "not_found" }],
+    }));
+    selectAll().click();
+    bulk().click();
+    type(word(), "DELETE");
+    sure().click();
+    await vi.waitFor(() => expect(live()).toContain("Deleted 1 event and 2 bookings."));
+    expect(live()).toContain("Not deleted: Bravo Show (it hasn't ended), Charlie Show (it no longer exists), mystery-slug-000000001 (it no longer exists).");
+  });
+
+  it("shows a failure inline, keeps the panel and lets the admin retry", async () => {
+    let fail = true;
+    const h = await begin(full({ past: PAST3 }), () => (fail ? reply(500, { error: { code: "internal_error", message: "Something went wrong. Please try again." } })
+      : reply(200, { deletedEvents: 1, deletedBookings: 2, skipped: [] })));
+    tick("Alpha Show");
+    bulk().click();
+    type(word(), "DELETE");
+    sure().click();
+    await vi.waitFor(() => expect($(".confirm .form-error").textContent).toBe("Something went wrong. Please try again."));
+    expect(sure().disabled).toBe(false);
+    expect(bulk().disabled).toBe(true);
+    fail = false;
+    sure().click();
+    await vi.waitFor(() => expect(live()).toContain("Deleted 1 event"));
+    expect(h.writes()).toHaveLength(2);
+  });
+
+  it("Cancel closes the panel, unlocks the selection and sends nothing", async () => {
+    const h = await begin(full({ past: PAST3 }));
+    tick("Alpha Show");
+    bulk().click();
+    all(".confirm button").find((b) => b.textContent === "Cancel")!.click();
+    expect(document.querySelector(".confirm")).toBeNull();
+    expect(box("Alpha Show").disabled).toBe(false);
+    expect(box("Alpha Show").checked).toBe(true);
+    expect(bulk().disabled).toBe(false);
+    expect(document.activeElement).toBe(bulk());
+    expect(h.writes()).toHaveLength(0);
+  });
+
+  it("keeps hostile names inert in the list of chosen events", async () => {
+    const evil = "<img src=x onerror=alert(1)>";
+    await begin(full({ past: [OLD({ name: evil })] }));
+    selectAll().click();
+    bulk().click();
+    expect(document.querySelector("img")).toBeNull();
+    expect(all(".confirm li").map((n) => n.textContent)).toEqual([evil]);
+  });
+
+  it("forgets a ticked event that is no longer in Past after a refresh", async () => {
+    const h = await begin(full({ past: PAST3 }), () => reply(200, { archived: true }));
+    tick("Alpha Show");
+    tick("Bravo Show");
+    h.setList(full({ past: [PAST3[1], PAST3[2]] }));
+    inRow("Alpha Show", "Archive").click();
+    await vi.waitFor(() => expect(live()).toBe("Archived Alpha Show."));
+    expect(bulk().textContent).toBe("Delete selected (1)");
+    expect(box("Bravo Show").checked).toBe(true);
+  });
+});
