@@ -161,10 +161,10 @@ The first should print `401` (it prints `503` if `ADMIN_AUTH` or its secrets are
 ## Not covered
 
 - Custom domains and production deployment are out of scope here.
-- Archiving and deleting events are not built yet. (Managing bookings and the lineup export are: see "Managing bookings" in the README.)
+- Nothing is deleted automatically, ever: there is no retention timer. (Archiving, deleting and the lineup export are built: see "Archiving and deleting" and "Managing bookings" in the README.)
 
 ## Before a real event
 
 - Data residency: if bookings must stay in the EU, create the databases with `--jurisdiction eu` (step 2).
 - The booking API has no rate limiting or bot protection yet. Add something like Cloudflare Turnstile before posting the link publicly.
-- The booking form shows a privacy notice. The default wording says the club deletes booking details after the event, which the app does not do for you yet. Replace it with your own text, or make sure the club does that by hand (`docs/configuration.md`).
+- The booking form shows a privacy notice. The default wording says the details are kept until an organiser deletes the event, and that nothing is deleted automatically, which is what the app does: delete or clear out old events from the admin list when you no longer need them. The default names no data controller or contact, so replace it with your own text that does (`docs/configuration.md`).

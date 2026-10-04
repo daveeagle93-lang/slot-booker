@@ -3,7 +3,7 @@
 export const DEFAULT_PRIVACY_NOTICE =
   "We store your name, your dog's name and the slot you choose so the club can run the event. "
   + "The club's organisers can see these details; other people using this page only see which slots are taken. "
-  + "The club deletes booking details after the event.";
+  + "The details are kept until an organiser deletes the event; nothing is deleted automatically.";
 
 const MAX_PRIVACY_NOTICE_CODE_POINTS = 1000;
 const MAX_CUTOFF_OFFSET_MINUTES = 7 * 24 * 60;

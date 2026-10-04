@@ -37,3 +37,14 @@ Things to know:
 - Nothing notifies the person. If you move, swap or clear a booking, tell them yourself.
 - A booking whose slot is no longer in the schedule is listed under "Not in the schedule", where it can be moved or cleared, so it can't hide.
 - Each change is applied in one step and is checked at that moment: moving a booking to a slot someone else took a moment earlier, or an event that was edited while you were working, is refused and the page reloads the schedule. A swap that fails part-way changes nothing.
+
+## Archiving and deleting
+
+Events never delete themselves. The admin list has three sections: **Upcoming** (events that have not ended), **Past** (ended, not archived) and **Archived**. Past and Archived are collapsed by default and show the 100 most recent events each, with a note if there are more. Every event is in exactly one section, and archived wins over the date.
+
+- **Archive** hides an event from Upcoming and Past without deleting anything: its bookings are kept and you can **Unarchive** it at any time. An archived event's public booking link still works, but shows the event as closed to bookings.
+- **Delete…** permanently deletes one event with its breaks and all its bookings. It can't be undone. The page says how many bookings will go and asks you to type the event's name; the server checks the name exactly (capitals and spacing matter) and deletes nothing if it differs.
+- **Clear out the Past section**: tick the past events (or Select all) and choose **Delete selected**. The page lists them with the total number of bookings and asks you to type `DELETE`. Only events that have really ended are deleted, all in one step; anything else you ticked is left alone and reported.
+- Upcoming events show a **Full** badge when every slot is booked.
+
+The default privacy notice says the details are kept until an organiser deletes the event, so clear out old events when you no longer need the bookings.

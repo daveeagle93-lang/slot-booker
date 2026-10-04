@@ -29,12 +29,13 @@ describe("bookingCutoffOffsetMinutes", () => {
 });
 
 describe("privacyNotice", () => {
-  it("has a British English default that makes no promise of a deletion date", () => {
+  it("has a British English default that says what this build really does: kept until an organiser deletes the event", () => {
     expect(DEFAULT_PRIVACY_NOTICE).toBe(
       "We store your name, your dog's name and the slot you choose so the club can run the event. "
       + "The club's organisers can see these details; other people using this page only see which slots are taken. "
-      + "The club deletes booking details after the event.",
+      + "The details are kept until an organiser deletes the event; nothing is deleted automatically.",
     );
+    expect(DEFAULT_PRIVACY_NOTICE).not.toMatch(/deletes booking details after/i);
   });
 
   it.each([undefined, "", "   ", "\n\n \t\n"])("uses the default for %j", (raw) => {

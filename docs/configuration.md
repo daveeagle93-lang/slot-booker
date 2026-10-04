@@ -11,9 +11,11 @@ A slot can be booked only while the booking window is open and the slot's own st
 
 The default privacy notice is:
 
-> We store your name, your dog's name and the slot you choose so the club can run the event. The club's organisers can see these details; other people using this page only see which slots are taken. The club deletes booking details after the event.
+> We store your name, your dog's name and the slot you choose so the club can run the event. The club's organisers can see these details; other people using this page only see which slots are taken. The details are kept until an organiser deletes the event; nothing is deleted automatically.
 
-Clubs should replace this with their own wording. The last sentence is a promise the club keeps by hand: the app does not delete anything automatically yet, so if your club will not do that, change the text.
+The last sentence describes what the app really does. Organisers can delete one event, or clear out several past events at once, from the admin list (see "Archiving and deleting" in the README), which removes its bookings too; nothing is ever deleted automatically. If your club promises something different, such as deleting everything within a set time, change the text and make sure the club keeps that promise by hand.
+
+The default names no data controller and gives no contact. Clubs should add their own (UK GDPR transparency: who is responsible for the data and how to reach them) by setting `PRIVACY_NOTICE`.
 
 ## Setting them
 
