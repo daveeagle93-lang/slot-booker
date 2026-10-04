@@ -11,9 +11,9 @@ Needs Node 24.
 ```sh
 npm install
 npm run db:migrate:local   # apply migrations to the local D1 (.wrangler/state)
-npm run seed:local         # add a test event with sample bookings; prints its URL
+npm run seed               # add a test event with sample bookings; prints its URL (alias: seed:local)
 npm run dev                # serves on http://localhost:8788
 npm test                   # also: npm run typecheck
 ```
 
-Open the URL that `seed:local` prints. Each run adds a new event (nothing is wiped); pass `-- --no-bookings` to skip the sample bookings. The public booking page is at `/e/<slug>` (static files in `public/`, no build step); the raw event data is at `/api/events/<slug>`.
+Open the URL that `seed` prints. Each run adds a new event (nothing is wiped); pass `-- --no-bookings` to skip the sample bookings. The public booking page is at `/e/<slug>` (static files in `public/`, no build step); the raw event data is at `/api/events/<slug>`. To seed the remote preview database instead, see `docs/deploying.md` (`npm run seed -- --remote --env preview`).

@@ -1,9 +1,12 @@
-// Creates one test event in the LOCAL D1 (the state `wrangler pages dev` uses, .wrangler/state),
-// after applying any pending migrations. Each run adds a new event; nothing is wiped.
+// Creates one test event. Each run adds a new event; nothing is wiped.
 //
-//   npm run seed:local                      event plus 3 sample bookings
-//   npm run seed:local -- --no-bookings     event only
-//   SEED_PERSIST_TO=/some/dir npm run seed:local   use a throwaway state directory instead
+//   npm run seed                            LOCAL D1 (the state `wrangler pages dev` uses, .wrangler/state):
+//                                           applies pending migrations, then event plus 3 sample bookings
+//   npm run seed -- --no-bookings           event only
+//   SEED_PERSIST_TO=/some/dir npm run seed  use a throwaway local state directory instead
+//   npm run seed -- --remote --env preview  the REMOTE PREVIEW D1 only (never production). Migrations are NOT
+//                                           applied for you: apply them first (docs/deploying.md). Interactive.
+//   npm run seed:local                      same as `npm run seed -- --local`
 //
 // Plain Node (type stripping), hence the explicit .ts extensions.
 import { execFileSync } from "node:child_process";
@@ -13,12 +16,17 @@ import { join } from "node:path";
 import { identityKey } from "../src/core/identity.ts";
 import { generateSchedule } from "../src/core/schedule.ts";
 import { generateBookingToken, generateSlug } from "../src/core/slug.ts";
+import { executeArgs, migrateArgs, parseArgs } from "./seed-args.ts";
 
-const DB = "slot-booker-db";
 const PORT = 8788; // wrangler pages dev default
 const root = join(import.meta.dirname, "..");
-const persist = process.env.SEED_PERSIST_TO ? ["--persist-to", process.env.SEED_PERSIST_TO] : [];
-const withBookings = !process.argv.includes("--no-bookings");
+const parsed = parseArgs(process.argv.slice(2));
+if ("error" in parsed) {
+  console.error(parsed.error);
+  process.exit(2);
+}
+const { mode, withBookings } = parsed;
+const persistTo = process.env.SEED_PERSIST_TO;
 
 const londonParts = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Europe/London", hourCycle: "h23",
@@ -86,18 +94,19 @@ if (withBookings) {
   }
 }
 
-const wrangler = (args: string[]): void => {
-  execFileSync("npx", ["wrangler", "d1", ...args, DB, "--local", ...persist], {
-    cwd: root, stdio: ["ignore", "ignore", "inherit"], env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+const wrangler = (args: string[], stdio: "quiet" | "interactive"): void => {
+  execFileSync("npx", ["wrangler", ...args], {
+    cwd: root, stdio: stdio === "interactive" ? "inherit" : ["ignore", "ignore", "inherit"],
+    env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
   });
 };
 
-wrangler(["migrations", "apply"]);
+if (mode === "local") wrangler(migrateArgs(persistTo), "quiet");
 const dir = mkdtempSync(join(tmpdir(), "slot-booker-seed-"));
 try {
   const file = join(dir, "seed.sql");
   writeFileSync(file, sql.join("\n") + "\n");
-  wrangler(["execute", "--file", file]);
+  wrangler(executeArgs(mode, file, persistTo), mode === "local" ? "quiet" : "interactive");
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
@@ -109,4 +118,6 @@ console.log(slots.map((s) => hhmm(s.start)).join(" "));
 if (withBookings) console.log(`Bookings: ${bookings.length} sample (slots ${bookings.map((b) => hhmm(b.slot.start)).join(", ")})`);
 console.log(`Slug: ${slug}`);
 console.log(`Path: /e/${slug}`);
-console.log(`URL:  http://localhost:${PORT}/e/${slug}`);
+console.log(mode === "local"
+  ? `URL:  http://localhost:${PORT}/e/${slug}`
+  : "Seeded the remote PREVIEW database. Open the path above on your preview URL (https://<alias>.<project>.pages.dev).");

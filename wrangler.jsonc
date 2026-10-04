@@ -1,7 +1,11 @@
 // Pages project config. No club details or secrets live here: the setup
-// wizard / provisioning step overwrites the project name and database_id for
+// wizard / provisioning step overwrites the project name and database_ids for
 // each club's own Cloudflare account. Secrets go in .dev.vars (local) or
 // Pages secrets (deployed), never in this file.
+//
+// Two databases: the top-level d1_databases is production (and what local dev and
+// the tests use); env.preview.d1_databases is a separate database for preview
+// deployments. d1_databases is non-inheritable, so each block is spelled out in full.
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "slot-booker",
@@ -10,10 +14,24 @@
   "d1_databases": [
     {
       "binding": "DB",
+      // The test global-setup migrates this name locally: do not rename it.
       "database_name": "slot-booker-db",
       // Placeholder: replaced by provisioning.
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
     }
-  ]
+  ],
+  "env": {
+    "preview": {
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "slot-booker-db-preview",
+          // Placeholder: replaced by provisioning. Must differ from production's.
+          "database_id": "00000000-0000-0000-0000-000000000001",
+          "migrations_dir": "migrations"
+        }
+      ]
+    }
+  }
 }
