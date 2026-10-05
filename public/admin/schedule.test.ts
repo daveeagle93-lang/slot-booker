@@ -86,6 +86,15 @@ describe("loading and rendering", () => {
     expect(rows()[3].textContent).toContain("Lunch");
   });
 
+  it("has a Download CSV link: a plain same-origin download of this event's export, styled as a button", async () => {
+    await start();
+    const link = $$("a").find((a) => a.textContent === "Download CSV")!;
+    expect(link.getAttribute("href")).toBe(`${BASE}/export.csv`);
+    expect(link.hasAttribute("download")).toBe(true);
+    expect(link.className).toBe("button");
+    expect(link.parentElement!.className).toBe("actions");
+  });
+
   it("shows booked slots with dog, handler and Move, Swap and Clear; free slots with Add booking", async () => {
     await start();
     const booked = row("09:15");

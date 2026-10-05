@@ -127,6 +127,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
 
     const links = [h("a", { class: "button", href: `/admin/edit?slug=${encodeURIComponent(slug)}` }, "Edit event")];
     if (isBookingPath(`/e/${slug}`)) links.push(h("a", { class: "button", href: `/e/${slug}` }, "Open public page"));
+    links.push(h("a", { class: "button", href: `${base}/export.csv`, download: true }, "Download CSV"));
     const fallback = h("div", { class: "field", hidden: true });
     const copy = h("button", { type: "button", class: "button primary" }, "Copy lineup");
     copy.addEventListener("click", async () => {
