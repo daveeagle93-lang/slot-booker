@@ -11,7 +11,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { experimental_readRawConfig } from "wrangler";
-import { buildConfig, describeJsonError, describeReadError, isGenerated, parseAccount, renderConfig } from "./configure-core.ts";
+import { buildConfig, describeJsonError, describeReadError, describeVars, isGenerated, parseAccount, renderConfig } from "./configure-core.ts";
 
 const root = join(import.meta.dirname, "..");
 const templatePath = join(root, "wrangler.jsonc");
@@ -71,11 +71,10 @@ refuseForeign();
 const { rawConfig } = experimental_readRawConfig({ config: templatePath });
 writeFileSync(outPath, renderConfig(buildConfig(rawConfig as Record<string, any>, parsed.account)));
 
-const names = Object.keys(parsed.account.vars);
 console.log(
   `Wrote wrangler.json from wrangler.jsonc and account.local.json: production and preview database IDs`
   + `${parsed.account.name ? `, project name ${parsed.account.name}` : ""}`
-  + `${names.length > 0 ? `, vars (top level and env.preview): ${names.join(", ")}` : ", no vars"}.\n`
+  + `, ${describeVars(parsed.account)}.\n`
   + "Wrangler now reads wrangler.json instead of wrangler.jsonc. Run this again after wrangler.jsonc or account.local.json changes.\n"
   + "Undo: npm run configure -- --clear",
 );

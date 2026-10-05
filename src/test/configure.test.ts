@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { experimental_readRawConfig, unstable_readConfig } from "wrangler";
-import { GENERATED_MARKER, buildConfig, describeJsonError, describeReadError, isGenerated, parseAccount, renderConfig } from "../../scripts/configure-core";
+import { GENERATED_MARKER, buildConfig, describeJsonError, describeReadError, describeVars, isGenerated, parseAccount, renderConfig } from "../../scripts/configure-core";
 
 const PROD = "3f2b8c1e-5a4d-4e6f-9b7a-1c2d3e4f5a6b";
 const PREVIEW = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
@@ -118,6 +118,31 @@ describe("parseAccount", () => {
     expect(errorsOf({ ...good, vars: { ADMIN_SESSION_SECRET: "x" } })).toContain("secret");
   });
 
+  it("accepts productionVars and previewVars alongside vars, each kept apart", () => {
+    const a = ok({ ...good, vars: { A: "shared" }, productionVars: { P: "prod" }, previewVars: { V: "preview" } });
+    expect(a.vars).toEqual({ A: "shared" });
+    expect(a.productionVars).toEqual({ P: "prod" });
+    expect(a.previewVars).toEqual({ V: "preview" });
+  });
+
+  it("applies the vars rules to productionVars and previewVars, naming the key", () => {
+    for (const key of ["productionVars", "previewVars"]) {
+      expect(errorsOf({ ...good, [key]: { A: 1 } }), key).toContain(`${key}: A must be a string`);
+      expect(errorsOf({ ...good, [key]: { "bad name": "x" } }), key).toContain(`${key}: "bad name"`);
+      expect(errorsOf({ ...good, [key]: ["x"] }), key).toContain(`${key} must be an object`);
+      expect(errorsOf({ ...good, [key]: null }), key).toContain(`${key} must be an object`);
+      expect(errorsOf({ ...good, [key]: { ADMIN_PASSWORD_HASH: "x" } }), key).toContain(`${key}: ADMIN_PASSWORD_HASH is a secret`);
+      expect(errorsOf({ ...good, [key]: { ADMIN_SESSION_SECRET: "x" } }), key).toContain(`${key}: ADMIN_SESSION_SECRET is a secret`);
+    }
+  });
+
+  it("names the per-environment keys in the unknown-key message", () => {
+    const e = errorsOf({ ...good, productionVar: {} });
+    expect(e).toContain('Unknown key "productionVar"');
+    expect(e).toContain("productionVars");
+    expect(e).toContain("previewVars");
+  });
+
   it("refuses a bad project name", () => {
     expect(errorsOf({ ...good, name: "Has Spaces" })).toContain("name");
     expect(errorsOf({ ...good, name: "" })).toContain("name");
@@ -184,6 +209,46 @@ describe("buildConfig", () => {
     expect(out.env.preview.vars).toEqual({ A: "mine", C: "template-preview" });
   });
 
+  it("puts productionVars only in the top level when there are no shared vars", () => {
+    const out = buildConfig(template(), ok({ ...good, productionVars: { ADMIN_AUTH: "access" } }));
+    expect(out.vars).toEqual({ ADMIN_AUTH: "access" });
+    expect(out.env.preview.vars).toBeUndefined();
+  });
+
+  it("puts previewVars only in env.preview when there are no shared vars", () => {
+    const out = buildConfig(template(), ok({ ...good, previewVars: { ADMIN_AUTH: "password" } }));
+    expect(out.vars).toBeUndefined();
+    expect(out.env.preview.vars).toEqual({ ADMIN_AUTH: "password" });
+  });
+
+  it("lets an environment's own vars override the shared value in that block only", () => {
+    const out = buildConfig(template(), ok({
+      ...good,
+      vars: { ADMIN_AUTH: "shared", BOOKING_CUTOFF_OFFSET_MINUTES: "-30" },
+      productionVars: { ADMIN_AUTH: "access", ACCESS_AUD: "aud" },
+      previewVars: { ADMIN_AUTH: "password" },
+    }));
+    expect(out.vars).toEqual({ ADMIN_AUTH: "access", BOOKING_CUTOFF_OFFSET_MINUTES: "-30", ACCESS_AUD: "aud" });
+    expect(out.env.preview.vars).toEqual({ ADMIN_AUTH: "password", BOOKING_CUTOFF_OFFSET_MINUTES: "-30" });
+  });
+
+  it("does not leak one environment's own vars into the other", () => {
+    const out = buildConfig(template(), ok({ ...good, vars: { S: "s" }, productionVars: { P: "p" }, previewVars: { V: "v" } }));
+    expect(out.vars).not.toHaveProperty("V");
+    expect(out.env.preview.vars).not.toHaveProperty("P");
+    expect(out.vars).toEqual({ S: "s", P: "p" });
+    expect(out.env.preview.vars).toEqual({ S: "s", V: "v" });
+  });
+
+  it("lets environment vars win over template vars too", () => {
+    const t: any = template();
+    t.vars = { A: "template", B: "template" };
+    t.env.preview.vars = { A: "template-preview", C: "template-preview" };
+    const out = buildConfig(t, ok({ ...good, vars: { A: "shared" }, productionVars: { A: "prod" }, previewVars: { C: "mine" } }));
+    expect(out.vars).toEqual({ A: "prod", B: "template" });
+    expect(out.env.preview.vars).toEqual({ A: "shared", C: "mine" });
+  });
+
   it("overrides the project name only when given", () => {
     expect(buildConfig(template(), ok({ ...good, name: "my-club" })).name).toBe("my-club");
   });
@@ -195,6 +260,31 @@ describe("buildConfig", () => {
     const noTop: any = template();
     noTop.d1_databases = [];
     expect(() => buildConfig(noTop, ok(good))).toThrow(/top-level/);
+  });
+});
+
+describe("describeVars", () => {
+  it("says there are no vars when none are set", () => {
+    expect(describeVars(ok(good))).toBe("no vars");
+  });
+
+  it("lists the same names for both blocks when only shared vars are used", () => {
+    expect(describeVars(ok({ ...good, vars: { A: "1", B: "2" } }))).toBe("vars (production): A, B; vars (preview): A, B");
+  });
+
+  it("lists names per block so the difference shows, without any value", () => {
+    const text = describeVars(ok({
+      ...good,
+      vars: { BOOKING_CUTOFF_OFFSET_MINUTES: "-30", ADMIN_AUTH: "shared-value" },
+      productionVars: { ADMIN_AUTH: "access-value", ACCESS_AUD: "aud-value" },
+      previewVars: { ADMIN_AUTH: "password-value" },
+    }));
+    expect(text).toBe("vars (production): BOOKING_CUTOFF_OFFSET_MINUTES, ADMIN_AUTH, ACCESS_AUD; vars (preview): BOOKING_CUTOFF_OFFSET_MINUTES, ADMIN_AUTH");
+    for (const value of ["-30", "shared-value", "access-value", "aud-value", "password-value"]) expect(text).not.toContain(value);
+  });
+
+  it("says none for a block with no vars", () => {
+    expect(describeVars(ok({ ...good, previewVars: { A: "x" } }))).toBe("vars (production): none; vars (preview): A");
   });
 });
 
@@ -212,6 +302,19 @@ describe("renderConfig / isGenerated", () => {
       expect(dbOf("preview")?.database_id).toBe(PREVIEW);
       expect(unstable_readConfig({ config: file }, {}).vars).toMatchObject({ ADMIN_AUTH: "password" });
       expect(unstable_readConfig({ config: file, env: "preview" }, {}).vars).toMatchObject({ ADMIN_AUTH: "password" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes per-environment vars that Wrangler reads back per environment", () => {
+    const text = renderConfig(buildConfig(template(), ok({ ...good, vars: { S: "s" }, productionVars: { ADMIN_AUTH: "access" }, previewVars: { ADMIN_AUTH: "password" } })));
+    const dir = mkdtempSync(join(tmpdir(), "slot-booker-configure-"));
+    try {
+      const file = join(dir, "wrangler.json");
+      writeFileSync(file, text);
+      expect(unstable_readConfig({ config: file }, {}).vars).toMatchObject({ S: "s", ADMIN_AUTH: "access" });
+      expect(unstable_readConfig({ config: file, env: "preview" }, {}).vars).toMatchObject({ S: "s", ADMIN_AUTH: "password" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

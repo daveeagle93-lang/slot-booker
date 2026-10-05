@@ -44,7 +44,7 @@ The committed `wrangler.jsonc` holds all-zero placeholder IDs, so no account det
    }
    ```
 
-   `vars` is optional: plain-text settings such as `ADMIN_AUTH`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `BOOKING_CUTOFF_OFFSET_MINUTES` and `PRIVACY_NOTICE` (`docs/admin-auth.md`, `docs/configuration.md`). Values are strings. `name` is also optional: your Pages project name, if `slot-booker` is taken. Secrets (`ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET`) are refused here; they go in Pages secrets (step 6) and `.dev.vars`.
+   `vars` is optional: plain-text settings such as `ADMIN_AUTH`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `BOOKING_CUTOFF_OFFSET_MINUTES` and `PRIVACY_NOTICE` (`docs/admin-auth.md`, `docs/configuration.md`). Values are strings. `vars` applies to both production and preview. When the two need different values, add `productionVars` and/or `previewVars` with the same shape: each is added to its own environment only and wins over `vars` there (`account.local.example.json` shows the pattern; `docs/configuration.md`, "Setting them", has the rules). `name` is also optional: your Pages project name, if `slot-booker` is taken. Secrets (`ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET`) are refused here; they go in Pages secrets (step 6) and `.dev.vars`.
 
 2. Generate the config:
 
@@ -52,7 +52,7 @@ The committed `wrangler.jsonc` holds all-zero placeholder IDs, so no account det
    npm run configure
    ```
 
-   It checks that both IDs are UUIDs, are not the all-zero placeholders and differ from each other, then writes `wrangler.json`: the contents of `wrangler.jsonc` with your production ID in the top-level `d1_databases`, your preview ID in `env.preview.d1_databases`, and your `vars` in **both** blocks (`vars` and `d1_databases` are not inherited by `env.preview`). It prints what it wrote, by variable name only. Run it again whenever `wrangler.jsonc` or `account.local.json` changes (for example after pulling). `npm run configure -- --clear` removes `wrangler.json`, so Wrangler uses the committed placeholders again; it will not delete or overwrite a `wrangler.json` it did not make.
+   It checks that both IDs are UUIDs, are not the all-zero placeholders and differ from each other, then writes `wrangler.json`: the contents of `wrangler.jsonc` with your production ID in the top-level `d1_databases`, your preview ID in `env.preview.d1_databases`, and your variables in each block: `vars` in **both**, plus `productionVars` in the top level and `previewVars` in `env.preview` (`vars` and `d1_databases` are not inherited by `env.preview`). It prints what it wrote, by variable name only, listed separately for production and preview so you can see where they differ. Run it again whenever `wrangler.jsonc` or `account.local.json` changes (for example after pulling). `npm run configure -- --clear` removes `wrangler.json`, so Wrangler uses the committed placeholders again; it will not delete or overwrite a `wrangler.json` it did not make.
 
 3. Keep the top-level `database_name` as `slot-booker-db`: the test suite and `npm run db:migrate:local` use it (the script does not change it).
 
@@ -125,7 +125,7 @@ The admin pages (`/admin/`) and the admin API (`/api/admin/*`) answer 503 until 
    npm run --silent generate-admin-secret
    ```
 
-2. Add the non-secret setting to `vars` in `account.local.json` (step 3) and run `npm run configure` again. The script puts it in **both** the top-level block and `env.preview` (`vars` is not inherited by `env.preview`; the Pages docs also say that once a Wrangler config file is used, the same fields can't be edited in the dashboard):
+2. Add the non-secret setting to `vars` in `account.local.json` (step 3) and run `npm run configure` again. Under `vars` the script puts it in **both** the top-level block and `env.preview` (`vars` is not inherited by `env.preview`; the Pages docs also say that once a Wrangler config file is used, the same fields can't be edited in the dashboard):
 
    ```jsonc
    "vars": { "ADMIN_AUTH": "password" }
@@ -173,7 +173,7 @@ The first should print `401` (it prints `503` if `ADMIN_AUTH` or its secrets are
 
 ## Production on a custom domain with Access
 
-Going live on a custom domain, with Cloudflare Access in front of `/admin/*` and `/api/admin/*`, is described click by click in "Access provider" in [`docs/admin-auth.md`](admin-auth.md#setting-it-up-custom-domain). Apart from that pointer a production go-live is out of scope here. Production also needs its migrations applied first (step 4, `npx wrangler d1 migrations apply slot-booker-db --remote`; check the pending list before applying) and its own `ADMIN_AUTH` variables in `account.local.json`: the script writes the same `vars` to production and preview, so read the note at the end of step 5 of that runbook.
+Going live on a custom domain, with Cloudflare Access in front of `/admin/*` and `/api/admin/*`, is described click by click in "Access provider" in [`docs/admin-auth.md`](admin-auth.md#setting-it-up-custom-domain). Apart from that pointer a production go-live is out of scope here. Production also needs its migrations applied first (step 4, `npx wrangler d1 migrations apply slot-booker-db --remote`; check the pending list before applying) and its own `ADMIN_AUTH` variables in `account.local.json`: put them under `productionVars` (and keep `ADMIN_AUTH` for previews under `previewVars`), because `vars` goes to both production and preview. See step 5 of that runbook.
 
 ## Not covered
 
@@ -213,7 +213,7 @@ Going live on a custom domain, with Cloudflare Access in front of `/admin/*` and
    cp account.local.example.json account.local.json
    ```
 
-   Edit it so it contains your two IDs and the password provider (`BOOKING_CUTOFF_OFFSET_MINUTES` is optional; delete the line if you want the default):
+   Edit it so it contains your two IDs and the password provider (a pages.dev-only deployment needs only `vars`; delete the `previewVars` and `productionVars` blocks of the example, and `BOOKING_CUTOFF_OFFSET_MINUTES` too if you want the default):
 
    ```jsonc
    {

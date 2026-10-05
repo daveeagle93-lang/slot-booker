@@ -31,7 +31,17 @@ Earlier builds' default notice said the club deletes booking details after the e
   "vars": { "BOOKING_CUTOFF_OFFSET_MINUTES": "-30" }
   ```
 
-  Values are strings. The script writes them into both the top level and `env.preview` of the generated `wrangler.json`, because `vars` is not inherited by `env.preview`. (Without the script, put the same `vars` block in both places in `wrangler.jsonc`, but then your settings are in a committed file.)
+  Values are strings. The script writes them into both the top level (production) and `env.preview` of the generated `wrangler.json`, because `vars` is not inherited by `env.preview`. (Without the script, put the same `vars` block in both places in `wrangler.jsonc`, but then your settings are in a committed file.)
+
+  When production and preview need different values, add `productionVars` and `previewVars`. They have the same shape and checks as `vars` (valid names, string values, no secrets):
+
+  ```jsonc
+  "vars": { "BOOKING_CUTOFF_OFFSET_MINUTES": "-30" },
+  "previewVars": { "ADMIN_AUTH": "password" },
+  "productionVars": { "ADMIN_AUTH": "access", "ACCESS_TEAM_DOMAIN": "<your-team-name>.cloudflareaccess.com", "ACCESS_AUD": "<the AUD tag>" }
+  ```
+
+  The production block gets `vars` plus `productionVars`, and `env.preview` gets `vars` plus `previewVars`. Where a name is in both `vars` and the environment's own object, the environment's value wins in that block only; neither environment sees the other's own variables. `npm run configure` prints the variable names written to each block (never the values).
 - Locally, put them in `.dev.vars` (see `.dev.vars.example`). Restart `npm run dev` after changing it.
 
 This project uses a Wrangler configuration file, which Cloudflare's [Pages configuration docs](https://developers.cloudflare.com/pages/functions/wrangler-configuration/) say becomes the source of truth: "you cannot edit the same fields in the dashboard once you are using this file". So set deployed variables through the config file (`account.local.json` and `npm run configure`) and redeploy, rather than in the dashboard. (Redeploying is the safe assumption; the docs don't say whether a variable change applies without a new deployment.)

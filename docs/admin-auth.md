@@ -25,7 +25,7 @@ This is a project rule, not something the Worker checks: with `ADMIN_AUTH=access
 | `ADMIN_PASSWORD_HASH` | **yes** | password | `hmac-sha256$<salt>$<mac>`, the hash line from `npm run --silent generate-admin-secret`. Anything else, including the earlier `pbkdf2-sha256$...` format, locks admin out. |
 | `ADMIN_SESSION_SECRET` | **yes** | password | At least 32 random characters. Signs the session cookie and keys the login rate-limit hashes. Shorter counts as not configured. |
 
-The two secrets must never be committed or put in `wrangler.jsonc`. `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are not secrets but are club details, so keep them out of the committed `wrangler.jsonc` as well: put them under `vars` in the git-ignored `account.local.json` and run `npm run configure` (`docs/deploying.md`, step 3). Locally, put them in `.dev.vars` (see `.dev.vars.example`) and restart `npm run dev`; only the password provider can be tried locally.
+The two secrets must never be committed or put in `wrangler.jsonc`. `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are not secrets but are club details, so keep them out of the committed `wrangler.jsonc` as well: put them under `productionVars` (they belong to production, not preview) in the git-ignored `account.local.json` and run `npm run configure` (`docs/deploying.md`, step 3). Locally, put them in `.dev.vars` (see `.dev.vars.example`) and restart `npm run dev`; only the password provider can be tried locally.
 
 ## Password provider
 
@@ -57,7 +57,7 @@ Only a value in exactly the generated form is accepted: 43 characters from that 
    ```
 
    `npx wrangler pages secret bulk <file>` also exists, taking a JSON or `.dev.vars` file. The help shows no flag for choosing the production or preview environment, and I haven't verified which one `put` targets, so check in the dashboard after setting them.
-4. Set `ADMIN_AUTH=password` (a plain variable) under `vars` in `account.local.json` and run `npm run configure` (`docs/deploying.md`, step 3; see `docs/configuration.md`). `vars` are not inherited by `env.preview`, so the script writes them into **both** the top-level block and `env.preview` of the generated `wrangler.json`. Secrets set with `wrangler pages secret` are separate from `vars`. The help for `put` lists only `--project-name`, with no option for production versus preview, so I can't say from it which environment a secret lands in; check in the dashboard.
+4. Set `ADMIN_AUTH=password` (a plain variable) under `vars` in `account.local.json` (or under `previewVars` if production differs) and run `npm run configure` (`docs/deploying.md`, step 3; see `docs/configuration.md`). `vars` are not inherited by `env.preview`, so the script writes `vars` into **both** the top-level block and `env.preview` of the generated `wrangler.json`; `previewVars` goes into `env.preview` only. Secrets set with `wrangler pages secret` are separate from `vars`. The help for `put` lists only `--project-name`, with no option for production versus preview, so I can't say from it which environment a secret lands in; check in the dashboard.
 
 To replace the secret, run the script again and set the new `ADMIN_PASSWORD_HASH`. Existing sessions stay valid until they expire or `ADMIN_SESSION_SECRET` is rotated. A stored value in the earlier `pbkdf2-sha256$...` format is refused as malformed: admin answers 503 and the log line says to run `npm run generate-admin-secret`.
 
@@ -112,17 +112,22 @@ The labels below are the ones on Cloudflare's pages when this was written (sourc
    The Worker guards bare `/admin` and `/api/admin` itself (checked locally, see "What `pages.dev` does under Access"), so the two bare entries are belt and braces, not the only protection. Entries with a `?` query string, a port or a `#` are not supported by Access application paths, so don't add any.
 3. **Add an Allow policy.** Under "Access policies" add an existing policy or create a new one that allows the organisers' email addresses. Cloudflare: "All Access applications are deny by default -- a user must match an Allow policy before they are granted access." (How to pick emails, such as an "Emails" selector, is not on the page fetched; check the dashboard.) Choose the identity providers you accept, and set "Session Duration" short (say 8 hours or less), so a token that leaks expires soon. Cloudflare: "Cloudflare checks every HTTP request to your application for a valid application token." Select "Create".
 4. **Copy the AUD tag and team domain.** Go to "Zero Trust" > "Access controls" > "Applications", select "Configure" for your application and, from "Additional settings", copy the "Application Audience (AUD) Tag" (Cloudflare: it "will never change unless you delete or recreate the Access application"). Your team domain is `<your-team-name>.cloudflareaccess.com`; Cloudflare says the team name is shown in Cloudflare One under "Settings".
-5. **Give the Worker the settings and redeploy.** In `account.local.json` (`docs/deploying.md`, step 3) add to `vars`, as strings and with the host only, no `https://`:
+5. **Give the Worker the settings and redeploy.** In `account.local.json` (`docs/deploying.md`, step 3) add the Access settings to `productionVars`, as strings and with the host only, no `https://`. Keep previews on the password provider with `previewVars`:
 
    ```jsonc
-   "vars": {
+   "productionVars": {
      "ADMIN_AUTH": "access",
      "ACCESS_TEAM_DOMAIN": "<your-team-name>.cloudflareaccess.com",
      "ACCESS_AUD": "<the AUD tag from step 4>"
+   },
+   "previewVars": {
+     "ADMIN_AUTH": "password"
    }
    ```
 
-   Run `npm run configure`. It refuses an `account.local.json` that has a database ID that is not a UUID or is a placeholder, the two IDs equal, an unknown key, a variable name that isn't a plain identifier, a value that isn't a string, or a secret (`ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET`: the Access provider uses neither). It does not check `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD`; the Worker does at run time and answers 503 on every admin request, logging which setting is wrong, if the team domain isn't a `<name>.cloudflareaccess.com` host or the AUD is empty. Then redeploy production (`docs/deploying.md`, step 7; use the production branch, `--branch main` if you made the project as in that doc). The script writes the same `vars` into `env.preview` too, so preview deployments also expect Access and admin does not work on them (401). The script cannot give previews different `vars`, so test a preview with the password provider (`docs/deploying.md`, "Runbook: deploy a preview") before you switch `ADMIN_AUTH` to `access`; I haven't worked out a supported way to run both at once.
+   `productionVars` goes into the top-level (production) block only and `previewVars` into `env.preview` only; anything in `vars` goes into both, and an environment's own value wins over `vars`.
+
+   Run `npm run configure`. It refuses an `account.local.json` that has a database ID that is not a UUID or is a placeholder, the two IDs equal, an unknown key, a variable name that isn't a plain identifier, a value that isn't a string, or a secret (`ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET`: the Access provider uses neither), in `vars`, `productionVars` or `previewVars`. It does not check `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD`; the Worker does at run time and answers 503 on every admin request, logging which setting is wrong, if the team domain isn't a `<name>.cloudflareaccess.com` host or the AUD is empty. Then redeploy production (`docs/deploying.md`, step 7; use the production branch, `--branch main` if you made the project as in that doc). With the example above, previews keep the password provider (`docs/deploying.md`, "Runbook: deploy a preview"), so you can test one before and after switching production to `access`. If you put the Access settings under `vars` instead, the script writes them into `env.preview` too, preview deployments also expect Access, and admin does not work on them (401).
 6. **Verify.** Replace the hostnames with yours.
 
    ```sh
