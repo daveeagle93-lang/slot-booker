@@ -99,6 +99,8 @@ npx wrangler d1 migrations list slot-booker-db-preview --remote --env preview
 
 The first command should list every file in `migrations/` as pending; the last should list none. `apply` asks for confirmation and takes a backup first.
 
+Apply **all** the migrations before deploying code that needs them; a newer deployment can need migrations an older database lacks (`0010_event_listed` adds `events.listed`, `0011_site_icons` adds the `site_icons` table). Without 0011, admin Settings, saving or removing the logo and uploading icons return errors, while public pages fall back to the default icons.
+
 Production, only when you are ready to go live:
 
 ```sh
