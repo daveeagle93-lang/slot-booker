@@ -29,7 +29,7 @@
     --text: #f1f3f6;
     --muted: #b3bbc7;
     --border: #3b4350;
-    --primary: #1563b0;
+    --primary: #236cb5;
     --on-primary: #ffffff;
     --accent: #4f8ac4;
     --focus: #fbbf24;
@@ -292,7 +292,8 @@ input[aria-invalid="true"] { border-color: var(--danger-text); }
 }
 /* The usual focus colour has no guaranteed contrast against the band; the text colour does. */
 .site-header a:focus-visible { outline-color: currentColor; }
-/* Shrinks with the row, so a wide logo can't push the band past a 320px screen. */
-.site-logo { max-height: 40px; max-width: 30%; width: auto; height: auto; flex: 0 1 auto; }
+/* At most the band's width, so a wide logo can't push it past a 320px screen; the band wraps, so a wide logo takes a
+   row to itself at a legible height instead of shrinking beside the name. */
+.site-logo { max-height: 40px; max-width: 100%; width: auto; height: auto; flex: 0 1 auto; }
 .site-footer { max-width: 40rem; margin: 0 auto; padding: 0 1rem 2rem; color: var(--muted); }
 .site-footer a { display: inline-flex; align-items: center; min-height: 48px; }

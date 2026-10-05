@@ -85,6 +85,30 @@ describe("page colours", () => {
   });
 });
 
+describe("style.css fallbacks", () => {
+  const css = readFileSync("public/style.css", "utf8");
+  const darkAt = css.indexOf("@media (prefers-color-scheme: dark)");
+  const block = (text: string, name: string) => text.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6});`))?.[1];
+  const light = css.slice(css.indexOf(":root"), darkAt);
+  const dark = css.slice(darkAt, css.indexOf("}\n}", darkAt));
+
+  // The fallbacks apply until /api/theme.css loads (or if it fails), so they must be what it outputs by default.
+  it("--primary, --on-primary and --accent equal the default theme's tokens in both modes", () => {
+    const tokens = themeTokens(DEFAULT_THEME);
+    for (const [mode, text] of [["light", light], ["dark", dark]] as const) {
+      for (const name of ["primary", "on-primary", "accent"]) {
+        expect(block(text, name), `${mode} --${name}`).toBe(tokens[mode][`--${name}` as keyof typeof tokens.light]);
+      }
+    }
+  });
+
+  it("the admin sample pages use the same --border as style.css", () => {
+    const admin = readFileSync("public/admin/admin.css", "utf8");
+    const borders = [...admin.matchAll(/\.pv[a-z-]*\s*\{[^}]*?--border:\s*(#[0-9a-f]{6})/g)].map((m) => m[1]);
+    expect(borders).toEqual([block(light, "border"), block(dark, "border")]);
+  });
+});
+
 describe("presets", () => {
   it("the first preset is today's look", () => {
     expect(DEFAULT_THEME).toEqual({ primary: "#0b5cad", accent: "#0b5cad" });
@@ -119,6 +143,7 @@ describe("checkTheme", () => {
       expect(ids).toEqual(expect.arrayContaining([
         `text-${mode}-page`, `text-${mode}-card`, `muted-${mode}-page`, `muted-${mode}-card`,
         `button-text-${mode}`, `accent-${mode}-page`, `accent-${mode}-card`, `button-shape-${mode}`,
+        `button-shape-${mode}-card`,
       ]));
     }
     for (const c of checks) {
@@ -147,7 +172,9 @@ describe("checkTheme", () => {
   it("treats a weak primary shape as a warning, not a failure", () => {
     const result = checkTheme({ primary: "#ffd400", accent: "#0b5cad" });
     expect(result.ok).toBe(true);
-    expect(result.checks.filter((c) => !c.pass).map((c) => [c.id, c.blocking])).toEqual([["button-shape-light", false]]);
+    expect(result.checks.filter((c) => !c.pass).map((c) => [c.id, c.blocking])).toEqual([
+      ["button-shape-light", false], ["button-shape-light-card", false],
+    ]);
   });
 
   it("reports invalid inputs by name and returns no checks", () => {
@@ -202,6 +229,15 @@ describe("themeTokens", () => {
     for (const c of all) {
       const result = checkTheme({ primary: DEFAULT_THEME.primary, accent: c });
       expect(result.checks.filter((x) => x.mode === "dark" && !x.pass), c).toEqual([]);
+    }
+  });
+
+  it("lifts the dark primary to 3:1 on the cards as well as the page, whatever the primary", () => {
+    // Buttons and selected slots sit on cards, which are lighter than the page, so the page alone is not enough.
+    for (const c of all) {
+      const p = themeTokens({ primary: c, accent: DEFAULT_THEME.accent }).dark["--primary"];
+      expect(contrastRatio(p, PAGE_COLOURS.dark.bg), c).toBeGreaterThanOrEqual(3);
+      expect(contrastRatio(p, PAGE_COLOURS.dark.surface), c).toBeGreaterThanOrEqual(3);
     }
   });
 

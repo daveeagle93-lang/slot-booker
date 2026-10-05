@@ -99,8 +99,8 @@ function lighten(hex, passes) {
 
 /**
  * The colour variables for both modes. The dark colours are derived: the primary is lightened until it stands out
- * on the dark page (3) and carries readable button text (4.5), the accent until it is readable text on both dark
- * surfaces (4.5). Throws RangeError unless both colours are hex.
+ * on both the dark page and the dark cards (3; buttons and selected slots sit on cards) and carries readable
+ * button text (4.5), the accent until it is readable text on both dark surfaces (4.5). Throws RangeError unless both colours are hex.
  * @param {{ primary: unknown, accent: unknown }} theme
  */
 export function themeTokens(theme) {
@@ -109,7 +109,10 @@ export function themeTokens(theme) {
   if (!primary || !accent) throw new RangeError("primary and accent must be hex colours");
   const { bg, surface } = PAGE_COLOURS.dark;
   // Mid-tones can fail with both white and dark button text, so the button text must be readable too.
-  const darkPrimary = lighten(primary, (c) => contrastRatio(c, bg) >= 3 && contrastRatio(textOn(c), c) >= 4.5);
+  const darkPrimary = lighten(
+    primary,
+    (c) => contrastRatio(c, bg) >= 3 && contrastRatio(c, surface) >= 3 && contrastRatio(textOn(c), c) >= 4.5,
+  );
   const darkAccent = lighten(accent, (c) => contrastRatio(c, surface) >= 4.5 && contrastRatio(c, bg) >= 4.5);
   return {
     light: { "--primary": primary, "--on-primary": textOn(primary), "--accent": accent },
@@ -161,6 +164,7 @@ export function checkTheme(theme) {
     add(mode, `accent-${mode}-page`, "Links and outlined buttons on the page background", t["--accent"], page.bg, 4.5);
     add(mode, `accent-${mode}-card`, "Links and outlined buttons on cards", t["--accent"], page.surface, 4.5);
     add(mode, `button-shape-${mode}`, "Main colour buttons against the page background", t["--primary"], page.bg, 3, false);
+    add(mode, `button-shape-${mode}-card`, "Main colour buttons against cards", t["--primary"], page.surface, 3, false);
   }
   return { ok: checks.every((c) => c.pass || !c.blocking), invalid, checks };
 }
