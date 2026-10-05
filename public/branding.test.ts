@@ -39,12 +39,23 @@ describe("loadSettings", () => {
       logo: { url: "//evil.example/x.png", width: 10, height: 10 },
     })));
     expect(s).toEqual({ clubName: null, website: null, privacyContact: null, logo: null, loaded: true });
-    for (const url of ["/\\evil.example", "https://evil.example/x", "api/logo", "javascript:alert(1)"]) {
+    const bad = [
+      "/\t/evil.example/x.png", "/\n/evil.example", "//evil.example/x.png", "/\\evil", "https://evil/x", "/evil.png",
+      "/api/logo", "/api/logo?v=0123456789abcde", "/api/logo?v=0123456789abcdef0", "/api/logo?v=0123456789ABCDEF",
+      "/api/logo?v=0123456789abcdef\n", "api/logo", "javascript:alert(1)",
+    ];
+    for (const url of bad) {
       const r = await loadSettings(asFetch(async () => reply(200, { logo: { url, width: 10, height: 10 } })));
       expect(r.logo, url).toBeNull();
     }
     const sizes = await loadSettings(asFetch(async () => reply(200, { logo: { url: "/api/logo", width: 0, height: 1.5 } })));
     expect(sizes.logo).toBeNull();
+  });
+
+  it("keeps the exact logo url the server builds", async () => {
+    const url = "/api/logo?v=0123456789abcdef";
+    const s = await loadSettings(asFetch(async () => reply(200, { logo: { url, width: 10, height: 5 } })));
+    expect(s.logo).toEqual({ url, width: 10, height: 5 });
   });
 });
 

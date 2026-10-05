@@ -1,10 +1,10 @@
-import { brandPage, clubOrDefault, loadSettings } from "./branding.js";
+import { brandPage, loadSettings } from "./branding.js";
 import { formatDate, formatTimeRange, isBookingPath } from "./lib.js";
 
 /**
- * Wires the landing page into `#app`: the club name and the events open for booking. `settings` is the
- * branding promise (see branding.js); without it the page shows the default name. Resolves once the first load
- * has settled.
+ * Wires the landing page into `#app`: the events open for booking. `settings` is the branding promise (see
+ * branding.js), which adds the header band with the club name; without it the page has no band. Resolves once the
+ * first load has settled.
  */
 export async function init({ document, fetch, settings = null }) {
   const root = document.getElementById("app");
@@ -35,8 +35,9 @@ export async function init({ document, fetch, settings = null }) {
 
   async function load() {
     show(h("p", { class: "message", role: "status" }, "Loading…"));
-    const [club, events] = await Promise.all([branded, fetchEvents()]);
-    const heading = h("h1", {}, clubOrDefault(club));
+    // The header band already carries the club name and logo, so the heading says what the page is for.
+    const [, events] = await Promise.all([branded, fetchEvents()]);
+    const heading = h("h1", {}, "Upcoming events");
     if (!events) {
       const retry = h("button", { type: "button", class: "button" }, "Retry");
       retry.addEventListener("click", load);
@@ -46,7 +47,7 @@ export async function init({ document, fetch, settings = null }) {
     if (events.length === 0) {
       return show(heading, h("p", { class: "message", role: "status" }, "No events are open for booking right now."));
     }
-    show(heading, h("h2", {}, "Upcoming events"), h("ul", { class: "event-links" }, ...events.map((e) =>
+    show(heading, h("ul", { class: "event-links" }, ...events.map((e) =>
       h("li", {}, h("a", { class: "event-link", href: `/e/${e.slug}` },
         h("span", { class: "event-link-name" }, e.name),
         h("span", { class: "event-link-when" }, `${formatDate(e.startUtc)}, ${formatTimeRange(e.startUtc, e.endUtc)}`))))));

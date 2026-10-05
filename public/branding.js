@@ -3,6 +3,12 @@
 
 export const DEFAULT_CLUB = "Slot booker";
 
+/**
+ * Exactly the shape the server builds (logoUrl in src/server/settings.ts). A looser "starts with one slash" test
+ * lets "/\t/evil.example" through, because URL parsers strip tabs and newlines and read it as "//evil.example".
+ */
+export const isLogoUrl = (url) => typeof url === "string" && /^\/api\/logo\?v=[0-9a-f]{16}$/.test(url);
+
 const NONE = { clubName: null, website: null, privacyContact: null, logo: null };
 
 const text = (v) => (typeof v === "string" && v.trim() !== "" ? v : null);
@@ -16,8 +22,7 @@ function clean(data) {
     clubName: text(data?.clubName),
     website: text(data?.website),
     privacyContact: text(c?.email) ? { name: typeof c.name === "string" ? c.name : "", email: c.email } : null,
-    // A same-origin path only (not "//host" or "/\host", which browsers read as another host).
-    logo: typeof l?.url === "string" && /^\/[^/\\]/.test(l.url) && dimension(l.width) && dimension(l.height)
+    logo: isLogoUrl(l?.url) && dimension(l.width) && dimension(l.height)
       ? { url: l.url, width: l.width, height: l.height }
       : null,
   };

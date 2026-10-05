@@ -30,7 +30,7 @@ const created = () => reply(201, {
 type Call = { url: string; init?: RequestInit };
 type Handler = (call: Call) => Response | Promise<Response>;
 
-async function start(handler: Handler, pathname = `/e/${SLUG}`, settings?: unknown) {
+async function start(handler: Handler, pathname = `/e/${SLUG}`, settings?: unknown, settingsTimeoutMs?: number) {
   document.body.innerHTML = '<main id="app"></main>';
   const calls: Call[] = [];
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
@@ -42,6 +42,7 @@ async function start(handler: Handler, pathname = `/e/${SLUG}`, settings?: unkno
   await init({
     document, fetch: fetch as unknown as typeof globalThis.fetch, location: { pathname }, clipboard,
     settings: (settings === undefined ? null : Promise.resolve(settings)) as never,
+    ...(settingsTimeoutMs === undefined ? {} : { settingsTimeoutMs }),
   });
   return { calls, clipboard };
 }
@@ -706,6 +707,8 @@ describe("branding, privacy contact and the admin notice", () => {
     privacyContact: { name: "Ann Lee", email: "ann@barkside.example" },
   };
   const SESSION = "/api/admin/session";
+  /** What GET /api/admin/session really answers for a signed-in admin. */
+  const SIGNED_IN = { identity: "ann@example.com", provider: "password", csrfToken: "tok" };
   const withSettings = (over: Record<string, unknown> = {}) => ({ ...SETTINGS, ...over });
   const probes = (calls: Call[]) => calls.filter((c) => c.url === SESSION);
   /** Event requests get the event, the session probe gets `session`. */
@@ -760,7 +763,7 @@ describe("branding, privacy contact and the admin notice", () => {
   });
 
   it("shows the admin notice, with a link to Settings, when the contact is missing and the probe answers 200", async () => {
-    const { calls } = await start(route(() => reply(200, { csrfToken: "x" })), `/e/${SLUG}`, withSettings({ privacyContact: null }));
+    const { calls } = await start(route(() => reply(200, SIGNED_IN)), `/e/${SLUG}`, withSettings({ privacyContact: null }));
     expect(probes(calls)).toHaveLength(1);
     expect(probes(calls)[0].init).toEqual({ credentials: "same-origin", cache: "no-store" });
     expect(banner()!.textContent).toBe(
@@ -772,7 +775,7 @@ describe("branding, privacy contact and the admin notice", () => {
   });
 
   it("keeps the admin notice through later renders", async () => {
-    await start(route(() => reply(200, {})), `/e/${SLUG}`, withSettings({ privacyContact: null }));
+    await start(route(() => reply(200, SIGNED_IN)), `/e/${SLUG}`, withSettings({ privacyContact: null }));
     slotButton("09:20").click();
     expect(banner()).toBeDefined();
     expect(document.querySelectorAll(".notice").length).toBeGreaterThan(1); // the booking notice (hidden) and the admin one
@@ -792,24 +795,102 @@ describe("branding, privacy contact and the admin notice", () => {
     expect(slotButtons()).toHaveLength(3);
   });
 
+  it.each([
+    ["HTML", () => new Response("<html><body>Sign in</body></html>", { status: 200, headers: { "Content-Type": "text/html" } })],
+    ["an empty body", () => new Response("", { status: 200 })],
+    ["invalid JSON", () => new Response("{nope", { status: 200 })],
+    ["JSON without an identity", () => reply(200, { csrfToken: "x" })],
+    ["an empty identity", () => reply(200, { identity: "" })],
+    ["a non-string identity", () => reply(200, { identity: 5 })],
+    ["JSON null", () => reply(200, null)],
+    ["an array", () => reply(200, [{ identity: "a" }])],
+  ])("shows nothing when the probe answers 200 with %s", async (_name, answer) => {
+    const { calls } = await start(route(answer), `/e/${SLUG}`, withSettings({ privacyContact: null }));
+    expect(probes(calls)).toHaveLength(1);
+    expect(banner()).toBeUndefined();
+    expect(slotButtons()).toHaveLength(3);
+  });
+
   it("shows nothing when the probe was redirected, even to a 200 page", async () => {
-    const redirected = () => Object.defineProperty(new Response("<html>", { status: 200 }), "redirected", { value: true });
+    const redirected = () => Object.defineProperty(reply(200, SIGNED_IN), "redirected", { value: true });
     await start(route(redirected), `/e/${SLUG}`, withSettings({ privacyContact: null }));
     expect(banner()).toBeUndefined();
   });
 
   it("makes no probe and shows no notice when the settings are unavailable", async () => {
     const unavailable = { clubName: null, website: null, privacyContact: null, logo: null, loaded: false };
-    const { calls } = await start(route(() => reply(200, {})), `/e/${SLUG}`, unavailable);
+    const { calls } = await start(route(() => reply(200, SIGNED_IN)), `/e/${SLUG}`, unavailable);
     expect(probes(calls)).toHaveLength(0);
     expect(banner()).toBeUndefined();
-    const { calls: noSettings } = await start(route(() => reply(200, {})));
+    const { calls: noSettings } = await start(route(() => reply(200, SIGNED_IN)));
     expect(probes(noSettings)).toHaveLength(0);
   });
 
   it("makes no probe at all when a contact is set", async () => {
-    const { calls } = await start(route(() => reply(200, {})), `/e/${SLUG}`, SETTINGS);
+    const { calls } = await start(route(() => reply(200, SIGNED_IN)), `/e/${SLUG}`, SETTINGS);
     expect(probes(calls)).toHaveLength(0);
     expect(banner()).toBeUndefined();
+  });
+
+  describe("settings that are slow", () => {
+    const never = () => new Promise<never>(() => {});
+    const startWith = async (settings: Promise<unknown>, wait = 10) => {
+      document.body.innerHTML = '<main id="app"></main>';
+      const calls: Call[] = [];
+      const fetch = async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return url === SESSION ? reply(200, SIGNED_IN) : getOk();
+      };
+      const done = init({
+        document, fetch: fetch as unknown as typeof globalThis.fetch, location: { pathname: `/e/${SLUG}` },
+        clipboard: undefined, settings: settings as never, settingsTimeoutMs: wait,
+      });
+      return { calls, done };
+    };
+
+    it("renders the form without club details when the settings never arrive, and still finishes", async () => {
+      const { calls, done } = await startWith(never());
+      await done;
+      expect(slotButtons()).toHaveLength(3);
+      expect(document.title).toBe("Trial Day");
+      expect(document.querySelector(".site-header")).toBeNull();
+      expect(document.querySelector(".privacy")).not.toBeNull();
+      expect(text()).not.toContain("Questions about your details");
+      expect(calls.filter((c) => c.url === SESSION)).toHaveLength(0); // unknown, so no admin probe
+      expect(banner()).toBeUndefined();
+    });
+
+    it("patches in the header, title and contact when the settings arrive late, keeping what was typed", async () => {
+      let arrive!: (s: unknown) => void;
+      const late = new Promise((r) => { arrive = r; });
+      const { done } = await startWith(late);
+      await done;
+      expect(document.querySelector(".site-header")).toBeNull();
+      slotButton("09:20").click();
+      fill("Biscuit", "Ann Lee");
+      const dogInput = $("#dog-name");
+
+      arrive(SETTINGS);
+      await vi.waitFor(() => expect(document.querySelector(".site-header")).not.toBeNull());
+      await vi.waitFor(() => expect(document.querySelector(".privacy a")).not.toBeNull());
+      expect(document.querySelector(".site-header a")!.textContent).toBe("Barkside Agility");
+      expect(document.title).toBe("Trial Day – Barkside Agility");
+      expect(document.querySelector(".privacy p:last-child")!.textContent)
+        .toBe("Questions about your details, or want them deleted? Contact Ann Lee, ann@barkside.example.");
+      expect(document.querySelectorAll(".privacy p:last-child a")).toHaveLength(1);
+      // The same form and the same inputs, so nothing typed was lost and the chosen slot is still chosen.
+      expect($("#dog-name")).toBe(dogInput);
+      expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
+      expect(($("#handler-name") as HTMLInputElement).value).toBe("Ann Lee");
+      expect(form().hidden).toBe(false);
+      expect(slotButton("09:20").getAttribute("aria-pressed")).toBe("true");
+    });
+
+    it("does not wait at all when the settings are quick", async () => {
+      const { done } = await startWith(Promise.resolve(SETTINGS), 60_000);
+      await done;
+      expect(document.title).toBe("Trial Day – Barkside Agility");
+      expect(document.querySelector(".privacy a")).not.toBeNull();
+    });
   });
 });

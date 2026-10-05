@@ -10,9 +10,10 @@ const SAVED_EARLIER = "We'd already saved a booking from this page, so we haven'
 
 /**
  * Wires the booking page into `#app`. `settings` is the branding promise (see branding.js); without it the page
- * has no branding, no privacy contact and no admin warning. Resolves once the first load has settled.
+ * has no branding, no privacy contact and no admin warning. The form waits at most `settingsTimeoutMs` for it;
+ * settings that arrive later are patched in. Resolves once the first load has settled.
  */
-export function init({ document, fetch, location, clipboard, settings = null }) {
+export function init({ document, fetch, location, clipboard, settings = null, settingsTimeoutMs = 2000 }) {
   const root = document.getElementById("app");
   const slug = slugFromPathname(location.pathname);
   let event = null;
@@ -27,6 +28,26 @@ export function init({ document, fetch, location, clipboard, settings = null }) 
   let club = null; // the settings once they arrive; null while unknown or unavailable
   let banner = null; // the admin-only warning, kept across re-renders
   const branded = settings ? brandPage(document, settings, { pageTitle: "Book a slot", home: "/" }) : Promise.resolve(null);
+  let timedOut = false;
+
+  // The branding promise, or null if it takes longer than the timeout: /api/settings is a nicety, and a slow one
+  // must not hold up the booking form.
+  function settingsInTime() {
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => { timedOut = true; resolve(null); }, settingsTimeoutMs);
+    });
+    return Promise.race([branded, timeout]).finally(() => clearTimeout(timer));
+  }
+
+  // Settings that arrive after we gave up waiting. brandPage has already added the header band by now; this fixes
+  // the title it just overwrote and adds the contact, without re-rendering the form the visitor may be typing in.
+  branded.then((s) => {
+    if (!timedOut) return;
+    club = s;
+    if (event) document.title = pageTitle(event.name, s?.clubName);
+    if (s?.privacyContact) view?.privacy?.append(contactLine(s.privacyContact));
+  });
 
   // All text goes through textContent; nothing here ever parses HTML.
   const h = (tag, attrs = {}, ...children) => {
@@ -66,15 +87,19 @@ export function init({ document, fetch, location, clipboard, settings = null }) 
 
   /**
    * Tells a signed-in admin, and nobody else, that no privacy contact is set. A single probe of the session
-   * endpoint: anything but a plain 200 (401, a redirect, a network error, or a cross-origin Access redirect that
-   * the CSP blocks) shows nothing. If the settings didn't load we don't know, so we don't warn.
+   * endpoint: anything but a 200 with the session's JSON (an `identity` string) shows nothing, so a 401, a
+   * redirect, a network error, a cross-origin Access redirect that the CSP blocks, or a 200 page of HTML from
+   * somewhere in front of the site does not count. If the settings didn't load, or are late, we don't know, so
+   * we don't warn.
    */
   async function warnAdmin() {
-    const s = await branded;
+    const s = await settingsInTime();
     if (!s?.loaded || s.privacyContact) return;
     try {
       const res = await fetch("/api/admin/session", { credentials: "same-origin", cache: "no-store" });
       if (res.status !== 200 || res.redirected) return;
+      const session = await res.json();
+      if (typeof session?.identity !== "string" || session.identity === "") return;
     } catch {
       return;
     }
@@ -113,7 +138,7 @@ export function init({ document, fetch, location, clipboard, settings = null }) 
     slots = shown(r.data.slots);
     privacyText = r.data.privacyNotice ?? "";
     selected = null;
-    club = await branded;
+    club = await settingsInTime();
     document.title = pageTitle(event.name, club?.clubName);
     if (isClosed(r.data)) showClosed();
     else showBooking();
@@ -145,19 +170,19 @@ export function init({ document, fetch, location, clipboard, settings = null }) 
     const progress = h("p", { class: "progress", "aria-live": "polite" });
     const privacy = privacyParagraphs(privacyText).map((p) => h("p", {}, p));
     if (club?.privacyContact) privacy.push(contactLine(club.privacyContact));
+    const privacySection = privacy.length > 0
+      ? h("section", { class: "privacy", "aria-labelledby": "privacy-heading" }, h("h3", { id: "privacy-heading" }, "Privacy"), ...privacy)
+      : null;
     const form = h("form", { id: "booking-form", hidden: true },
       heading,
       formError,
       h("div", { class: "field" }, h("label", { for: "dog-name" }, "Dog's name"), dog, dogError),
       h("div", { class: "field" }, h("label", { for: "handler-name" }, "Handler's name"), handler, handlerError),
-      ...(privacy.length > 0
-        ? [h("section", { class: "privacy", "aria-labelledby": "privacy-heading" },
-          h("h3", { id: "privacy-heading" }, "Privacy"), ...privacy)]
-        : []),
+      ...(privacySection ? [privacySection] : []),
       submit,
       progress);
 
-    view = { notice, slotsLeft, grid, form, heading, submit, progress, formError, dog, handler, dogError, handlerError };
+    view = { privacy: privacySection, notice, slotsLeft, grid, form, heading, submit, progress, formError, dog, handler, dogError, handlerError };
     show(
       eventHeader(event),
       h("section", { class: "slots", "aria-labelledby": "slots-heading" },

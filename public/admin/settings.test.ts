@@ -8,7 +8,7 @@ import { init } from "./settings.js";
 const reply = (status: number, body: unknown = null) =>
   ({ status, ok: status >= 200 && status < 300, json: async () => body }) as unknown as Response;
 const SESSION = { identity: "ann@example.com", provider: "password", csrfToken: "tok" };
-const LOGO = { url: "/api/logo?v=abc", width: 300, height: 150, contentType: "image/webp", bytes: 20480 };
+const LOGO = { url: "/api/logo?v=0123456789abcdef", width: 300, height: 150, contentType: "image/webp", bytes: 20480 };
 const SETTINGS = {
   clubName: "Wag Club",
   privacyContact: { name: "Ann Lee", email: "ann@example.com" },
@@ -264,7 +264,7 @@ describe("logo", () => {
   it("shows the current logo from the settings url with its size", async () => {
     await start();
     const img = $("#logo .logo-current img") as HTMLImageElement;
-    expect(img.getAttribute("src")).toBe("/api/logo?v=abc");
+    expect(img.getAttribute("src")).toBe("/api/logo?v=0123456789abcdef");
     expect(img.getAttribute("alt")).toBe("Current logo");
     expect($("#logo .logo-current").textContent).toBe("Current logo: 300 × 150 px, 20.0 KB");
     expect(button("Remove logo").hidden).toBe(false);
@@ -278,8 +278,10 @@ describe("logo", () => {
   });
 
   it("won't show a logo url that leaves the site", async () => {
-    await start({}, { settings: { ...SETTINGS, logo: { ...LOGO, url: "//evil.example/x.png" } } });
-    expect($("#logo .logo-current img")).toBeNull();
+    for (const url of ["//evil.example/x.png", "/\t/evil.example/x.png", "/\n/evil.example", "/\\evil", "https://evil/x", "/api/logo?v=abc"]) {
+      await start({}, { settings: { ...SETTINGS, logo: { ...LOGO, url } } });
+      expect($("#logo .logo-current img"), JSON.stringify(url)).toBeNull();
+    }
   });
 
   it("has a labelled file input that accepts only PNG, JPEG and WebP", async () => {
@@ -304,7 +306,7 @@ describe("logo", () => {
   });
 
   it("uploads the processed picture as base64 JSON only when Use this logo is chosen", async () => {
-    const newLogo = { ...LOGO, url: "/api/logo?v=new", width: 512, height: 256, bytes: 4096 };
+    const newLogo = { ...LOGO, url: "/api/logo?v=fedcba9876543210", width: 512, height: 256, bytes: 4096 };
     const { writes } = await start({ "PUT /api/admin/settings/logo": () => reply(200, { logo: newLogo }) });
     await choose(picture());
     expect(writes()).toHaveLength(0);
@@ -316,7 +318,7 @@ describe("logo", () => {
     expect(Object.keys(put.body)).toEqual(["data"]);
     expect(put.body.data).toBe(btoa(String.fromCharCode(...new Uint8Array(4096).fill(7))));
     expect($("#logo [role=status]").textContent).toBe("Logo saved.");
-    expect(($("#logo .logo-current img") as HTMLImageElement).getAttribute("src")).toBe("/api/logo?v=new");
+    expect(($("#logo .logo-current img") as HTMLImageElement).getAttribute("src")).toBe("/api/logo?v=fedcba9876543210");
     expect($("#logo .logo-preview").hidden).toBe(true);
     expect(button("Use this logo").hidden).toBe(true);
     expect(document.activeElement).toBe(input("logo-file"));
@@ -490,13 +492,44 @@ describe("colours", () => {
     expect($(".pv-dark .pv-header").textContent).toBe("Slot booker");
   });
 
-  it("announces passing colours politely", async () => {
+  it("keeps the detailed contrast block out of the live region and announces through one separate element", async () => {
     await start();
-    const summary = $(".contrast");
-    expect(summary.getAttribute("role")).toBe("status");
-    expect(summary.textContent).toContain("All contrast checks pass.");
+    const detail = $(".contrast");
+    expect(detail.hasAttribute("role")).toBe(false);
+    expect(detail.hasAttribute("aria-live")).toBe(false);
+    expect(detail.textContent).toContain("All contrast checks pass.");
     expect(button("Save colours").disabled).toBe(false);
     expect($("#theme-blocked").hidden).toBe(true);
+    const live = $$("#theme [role=status]").filter((n) => n.classList.contains("visually-hidden"));
+    expect(live).toHaveLength(1);
+    expect(live[0].textContent).toBe("All contrast checks pass.");
+  });
+
+  it("announces only when the overall result changes, not on every colour dragged through", async () => {
+    await start();
+    const live = $("#theme .visually-hidden[role=status]");
+    const observer = new MutationObserver(() => {});
+    observer.observe(live, { childList: true, characterData: true, subtree: true });
+    // Setting textContent replaces the text node: one record that adds a node per announcement.
+    const announcements = () => observer.takeRecords().filter((r) => r.addedNodes.length > 0).length;
+    let updates = 0;
+    // Many different colours, all passing with the same result.
+    for (const c of ["#0b5cad", "#1b6b3a", "#a1235f", "#b4400f", "#0f6b6e", "#3d4a5c", "#0a5cad", "#0a5bad", "#0a5aad"]) type("primary-colour", c);
+    updates += announcements();
+    expect(updates).toBe(0);
+    expect($(".contrast").textContent).toContain("All contrast checks pass."); // the detail still follows the pickers
+
+    // A different failing set, then the same set again with different colours: one announcement for each change.
+    type("accent-colour", "#ffd400");
+    type("accent-colour", "#ffe000");
+    type("accent-colour", "#fff000");
+    updates += announcements();
+    expect(updates).toBe(1);
+    expect(live.textContent).toContain("can't be saved yet");
+    type("accent-colour", "#0b5cad");
+    updates += announcements();
+    expect(updates).toBe(2);
+    expect(live.textContent).toBe("All contrast checks pass.");
   });
 
   it("disables Save with a written explanation when contrast fails, and re-enables it when fixed", async () => {
@@ -526,6 +559,28 @@ describe("colours", () => {
     expect($(".contrast").textContent).toContain("All contrast checks pass.");
     expect($(".contrast").textContent).toContain("Advice");
     expect($(".contrast").textContent).toMatch(/Main colour buttons against the page background \(light mode\) has a contrast of \d\.\d\d:1; 3:1 is recommended/);
+  });
+
+  it("clears a stale Colours saved line when the colours change or stop passing", async () => {
+    await start({ "PUT /api/admin/settings/theme": () => reply(200, { theme: { primary: "#1b6b3a", accent: "#1b6b3a", isDefault: false } }) });
+    const status = () => $("#theme .form-status").textContent;
+    const save = async () => { submit("theme"); await flush(); };
+
+    swatchOf("Forest").click();
+    await save();
+    expect(status()).toBe("Colours saved.");
+    swatchOf("Berry").click();
+    expect(status()).toBe("");
+
+    await save();
+    expect(status()).toBe("Colours saved.");
+    type("primary-colour", "#123456");
+    expect(status()).toBe("");
+
+    await save();
+    expect(status()).toBe("Colours saved.");
+    type("accent-colour", "#ffd400"); // fails the check
+    expect(status()).toBe("");
   });
 
   it("saves with PUT, restyles the page's stylesheet and announces it", async () => {

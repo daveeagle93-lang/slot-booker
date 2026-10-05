@@ -213,16 +213,17 @@ form .note { overflow-wrap: anywhere; }
 form h3 { margin: 1rem 0 0.25rem; font-size: 1.125rem; }
 form .actions .button { margin: 0; }
 
+/* Readable by a screen reader but not drawn (the usual clip technique; display:none would hide it from both). */
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
 .logo-current { margin: 0 0 1rem; }
 .logo-img { display: block; max-width: 100%; height: auto; max-height: 160px; margin: 0 0 0.5rem; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
 .logo-preview { margin: 0 0 1rem; }
 input[type="file"] { padding: 0.5rem 0.75rem; }
 
 .presets-group { margin: 0 0 1rem; }
-.presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); margin-top: 0.25rem; }
-@media (min-width: 360px) {
-  .presets { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
+/* 8.5rem gives two columns at 320 px (about 288 px of content) and more as the page widens, with no breakpoint. */
+.presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr)); gap: var(--gap); margin-top: 0.25rem; }
 .preset {
   display: flex;
   align-items: center;
@@ -238,10 +239,13 @@ input[type="file"] { padding: 0.5rem 0.75rem; }
   border-radius: var(--radius);
   cursor: pointer;
   touch-action: manipulation;
+  /* A long name wraps instead of pushing the tick out of the button. */
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 /* A thicker accent border and a tick, so the chosen preset isn't shown by colour alone. */
 .preset[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
-.preset[aria-pressed="true"]::after { content: "✓"; content: "✓" / ""; margin-left: auto; }
+.preset[aria-pressed="true"]::after { content: "✓"; content: "✓" / ""; flex: none; margin-left: auto; }
 .swatch {
   flex: none;
   width: 28px;

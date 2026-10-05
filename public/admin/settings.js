@@ -1,4 +1,4 @@
-import { brandPage, DEFAULT_CLUB, loadSettings } from "../branding.js";
+import { brandPage, DEFAULT_CLUB, isLogoUrl, loadSettings } from "../branding.js";
 import { checkTheme, DEFAULT_THEME, normaliseHex, PAGE_COLOURS, PRESETS, themeTokens } from "../theme.js";
 import { createApi, makeH } from "./api.js";
 import { browserImage, bytesToBase64, LogoError, prepareLogo } from "./logo-image.js";
@@ -11,8 +11,6 @@ const SETTINGS_URL = "/api/admin/settings";
 const messageOf = (data, fallback = GENERIC) => data?.error?.message ?? data?.message ?? fallback;
 const formatBytes = (n) => (n < 1024 ? `${n} bytes` : `${(n / 1024).toFixed(1)} KB`);
 const sizeText = (w, h, bytes) => `${w} × ${h} px, ${formatBytes(bytes)}`;
-// Same-origin paths only, as in branding.js; anything else is not shown rather than fetched.
-const safeLogoUrl = (url) => typeof url === "string" && /^\/[^/\\]/.test(url);
 
 /**
  * Wires the settings page into `#app`: club details, logo and colours, each its own form with its own Save and
@@ -209,7 +207,7 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
     function renderCurrent() {
       if (logo) {
         current.replaceChildren(
-          ...(safeLogoUrl(logo.url) ? [h("img", { class: "logo-img", src: logo.url, width: String(logo.width), height: String(logo.height), alt: "Current logo" })] : []),
+          ...(isLogoUrl(logo.url) ? [h("img", { class: "logo-img", src: logo.url, width: String(logo.width), height: String(logo.height), alt: "Current logo" })] : []),
           h("p", { class: "note" }, `Current logo: ${sizeText(logo.width, logo.height, logo.bytes)}`));
       } else {
         current.replaceChildren(h("p", { class: "note" }, "No logo"));
@@ -333,7 +331,7 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
       input.value = start[key];
       const hex = h("span", { id: `${id}-hex`, class: "hex" });
       const error = h("p", { id: `${id}-error`, class: "field-error" });
-      input.addEventListener("input", update);
+      input.addEventListener("input", edited);
       const node = h("div", { class: "field" }, h("label", { for: id }, label),
         h("div", { class: "colour-row" }, input, hex), h("p", { class: "note", id: `${id}-hint` }, hint), error);
       return { key, input, hex, error, node };
@@ -349,7 +347,7 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
       button.addEventListener("click", () => {
         primary.input.value = preset.primary;
         accent.input.value = preset.accent;
-        update();
+        edited();
       });
       return { preset, button };
     });
@@ -367,7 +365,11 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
     };
     const panels = [panel("light", "Light"), panel("dark", "Dark")];
 
-    const contrast = h("div", { class: "contrast", role: "status" });
+    // The detail block is rebuilt on every input event, so it is not a live region: a screen reader would read out
+    // a stream while a picker is dragged. This element is, and it only changes when the overall result does.
+    const contrast = h("div", { class: "contrast" });
+    const announcement = h("p", { class: "visually-hidden", role: "status" });
+    let announced = "";
     const blocked = h("p", { class: "note", id: "theme-blocked", hidden: true },
       "Save is unavailable until the contrast problems above are fixed. Try a darker main or accent colour.");
     const save = h("button", { type: "submit", class: "button primary", "aria-describedby": "theme-blocked" }, "Save colours");
@@ -396,6 +398,15 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
       }
       contrast.setAttribute("class", check.ok ? "contrast" : "contrast fail");
       contrast.replaceChildren(...nodes);
+
+      const state = JSON.stringify([check.invalid, failed.map((c) => c.id), advice.map((c) => c.id)]);
+      if (state === announced) return;
+      announced = state;
+      announcement.textContent = failed.length > 0
+        ? `These colours can't be saved yet: ${failed.length} contrast ${failed.length === 1 ? "check fails" : "checks fail"}. Details are below the previews.`
+        : !check.ok ? "These colours can't be saved yet: one of them isn't a valid colour."
+        : advice.length > 0 ? "All contrast checks pass. There is advice about the main colour below the previews."
+        : "All contrast checks pass.";
     }
 
     /** Everything that follows from the two colours: hex text, pressed preset, both previews, contrast and Save. */
@@ -421,6 +432,12 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
       ok = check.ok;
       blocked.hidden = ok;
       s.sync();
+    }
+
+    /** A change made by the admin (not a save or reset result), so any earlier "Colours saved." no longer applies. */
+    function edited() {
+      s.status.textContent = "";
+      update();
     }
 
     const restyle = () => {
@@ -477,7 +494,7 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
       h("h3", {}, "Preview"),
       h("p", { class: "note" }, "Dark mode uses lightened versions of your colours automatically. These samples don't depend on your device's setting."),
       h("div", { class: "pv-grid" }, ...panels.map((p) => p.node)),
-      contrast, s.summary,
+      contrast, announcement, s.summary,
       h("div", { class: "actions" }, save, reset),
       blocked, s.status);
     update();

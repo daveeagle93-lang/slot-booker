@@ -26,7 +26,10 @@ describe("landing page", () => {
   it("lists upcoming events as links to their booking pages, with London date and time", async () => {
     const fetch = await start(() => reply(200, { events: [EVENT] }), SETTINGS);
     expect(fetch).toHaveBeenCalledWith("/api/events", { cache: "no-store" });
-    expect(document.querySelector("h1")!.textContent).toBe("Barkside Agility");
+    // The header band carries the club name, so it isn't repeated as the heading.
+    expect(document.querySelector("h1")!.textContent).toBe("Upcoming events");
+    expect(document.querySelector("header.site-header")!.textContent).toBe("Barkside Agility");
+    expect(document.querySelectorAll("h1, h2")).toHaveLength(1);
     expect(links()).toHaveLength(1);
     expect(links()[0].getAttribute("href")).toBe(`/e/${SLUG}`);
     expect(links()[0].textContent).toContain("Trial Day");
@@ -38,17 +41,18 @@ describe("landing page", () => {
     expect(document.title).toBe("Barkside Agility");
     await start(() => reply(200, { events: [] }), { ...SETTINGS, clubName: null });
     expect(document.title).toBe("Slot booker");
-    expect(document.querySelector("h1")!.textContent).toBe("Slot booker");
+    expect(document.querySelector("header.site-header")!.textContent).toBe("Slot booker");
   });
 
-  it("uses the default name when there are no settings at all", async () => {
+  it("still has the Upcoming events heading when there are no settings at all", async () => {
     await start(() => reply(200, { events: [EVENT] }));
-    expect(document.querySelector("h1")!.textContent).toBe("Slot booker");
+    expect(document.querySelector("h1")!.textContent).toBe("Upcoming events");
     expect(document.querySelector("header")).toBeNull();
   });
 
   it("shows the empty state", async () => {
     await start(() => reply(200, { events: [] }), SETTINGS);
+    expect(document.querySelector("h1")!.textContent).toBe("Upcoming events");
     expect(text()).toContain("No events are open for booking right now.");
     expect(links().filter((a) => a.getAttribute("href")!.startsWith("/e/"))).toHaveLength(0);
   });
@@ -92,7 +96,7 @@ describe("landing page", () => {
       return reply(200, { events: [EVENT] });
     }, SETTINGS);
     expect(text()).toContain("couldn't load the events");
-    expect(document.querySelector("h1")!.textContent).toBe("Barkside Agility");
+    expect(document.querySelector("h1")!.textContent).toBe("Upcoming events");
     broken = false;
     document.querySelector<HTMLButtonElement>("button")!.click();
     await vi.waitFor(() => expect(links()).toHaveLength(1));
