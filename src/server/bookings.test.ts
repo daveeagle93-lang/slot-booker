@@ -69,7 +69,33 @@ describe("validateBookingInput: names", () => {
     expect(fieldsOf({ dogName: `a${ch}b` })).toHaveProperty("dogName");
   });
 
-  it.each(ORDINARY_NAMES)("still accepts %s", (name) => {
+  // The shared list also holds a plain emoji ("🐕"), which event and club names accept but a dog's or handler's name does not.
+  it.each(ORDINARY_NAMES.filter((n) => /[\p{L}\p{N}]/u.test(n)))("still accepts %s", (name) => {
     expect(input({ dogName: name, handlerName: name })).toMatchObject({ dogName: name, handlerName: name });
+  });
+
+  it.each([
+    ["Hangul filler U+3164", "\u3164"],
+    ["halfwidth Hangul filler U+FFA0", "\uFFA0"],
+    ["braille blank U+2800", "\u2800"],
+    ["variation selector-16", "\uFE0F"],
+    ["a variation selector and a tag-range selector", "\uFE0F\u{E0100}"],
+    ["combining grapheme joiner", "\u034F"],
+    ["a plain emoji", "\u{1F436}"],
+    ["an emoji and spaces", " \u{1F436} \u2764\uFE0F "],
+    ["punctuation only", "-'.!"],
+  ])("refuses a dog's and a handler's name with no letter or number in it: %s", (_what, name) => {
+    for (const [key, label] of [["dogName", "dog's name"], ["handlerName", "handler's name"]]) {
+      expect(fieldsOf({ [key]: name })?.[key], key).toBe(`The ${label} must contain at least one letter or number.`);
+    }
+  });
+
+  it("still says Enter the name for an empty or all-whitespace name", () => {
+    expect(fieldsOf({ dogName: "   " })?.dogName).toBe("Enter the dog's name.");
+    expect(fieldsOf({ handlerName: "" })?.handlerName).toBe("Enter the handler's name.");
+  });
+
+  it.each(["Rex \u2764\uFE0F", "Zo\u00EB", "7", "\uFF21\uFF4E\uFF4E", "Rex\uFE0F"])("accepts %j, which has a letter or number", (name) => {
+    expect(input({ dogName: name, handlerName: name })).toMatchObject({ dogName: name.trim(), handlerName: name.trim() });
   });
 });

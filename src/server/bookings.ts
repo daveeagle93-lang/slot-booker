@@ -93,6 +93,12 @@ export function checkName(value: unknown, label: string): { name: string } | { m
     return { message: `The ${label} must be at most ${MAX_NAME_CODE_POINTS} characters.` };
   }
   if (/\p{Cc}/u.test(name)) return { message: `The ${label} can't contain control characters.` };
+  // Invisible characters outside Cf (variation selectors, Hangul fillers, ...) and blank-looking symbols could make a
+  // name that looks empty or that a second booking could copy, so there must be a real letter or number. Emoji are
+  // still fine beside one ("Rex ❤️").
+  if (!/[\p{L}\p{N}]/u.test(name.replace(/\p{Default_Ignorable_Code_Point}/gu, ""))) {
+    return { message: `The ${label} must contain at least one letter or number.` };
+  }
   if (identityKey(name) === "") return { message: `Enter the ${label}.` };
   return { name };
 }

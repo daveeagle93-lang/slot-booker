@@ -84,6 +84,29 @@ describe("addBooking", () => {
     expect(await rows(e.id)).toHaveLength(1);
   });
 
+  it("reports a repeat that hides an invisible character as a duplicate, and stores the display names as entered", async () => {
+    const e = await seed();
+    const first = ok(await addBooking(t.env.DB, e.event, { slot: e.s[4], dogName: "Rex \u2764\uFE0F", handlerName: "Sam Smith" }));
+    for (const [dog, handler] of [["Rex \u2764", "Sam Smith"], ["Rex\u3164 \u2764\uFE0F", "Sam\uFE0F Smith"]]) {
+      const f = failed(await addBooking(t.env.DB, e.event, { slot: e.s[5], dogName: dog, handlerName: handler }));
+      expect(f, `${dog}/${handler}`).toMatchObject({
+        status: 409, code: "duplicate_booking",
+        extra: { booking: { id: first.id, slotStart: e.s[4], dogName: "Rex \u2764\uFE0F", handlerName: "Sam Smith" } },
+      });
+    }
+    expect(await rows(e.id)).toHaveLength(1);
+  });
+
+  it("refuses a name with no letter or number, writing nothing", async () => {
+    const e = await seed();
+    for (const dogName of ["\u3164", "\u2800", "\uFE0F", "\u{1F436}"]) {
+      expect(failed(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName, handlerName: "Sam" })), dogName).toMatchObject({
+        status: 400, code: "invalid_input", extra: { fields: { dogName: "The dog's name must contain at least one letter or number." } },
+      });
+    }
+    expect(await rows(e.id)).toHaveLength(0);
+  });
+
   it("answers a clash on the same slot with the same pair as a duplicate, and a different pair as slot_taken even if that pair booked elsewhere", async () => {
     const e = await seed();
     const rex = ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "Rex", handlerName: "Sam" }));
@@ -122,7 +145,7 @@ describe("addBooking", () => {
       }
     }
     expect(failed(await addBooking(t.env.DB, e.event, { dogName: "Rex", handlerName: "Sam" })).extra).toEqual({ fields: { slot: "Choose a slot." } });
-    expect(ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "x".repeat(80), handlerName: "😀".repeat(80) })).dogName).toHaveLength(80);
+    expect(ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "x".repeat(80), handlerName: `a${"😀".repeat(79)}` })).dogName).toHaveLength(80);
     expect(await rows(e.id)).toHaveLength(1);
   });
 

@@ -78,7 +78,7 @@ Deploying to Cloudflare is a step-by-step runbook in [docs/deploying.md](docs/de
 - **The admin event list builds each upcoming event's schedule in the Worker.** Measured in Node on a dev machine (not in workerd), a 500-slot event costs about 0.45 ms, so a list with around 20 events of that size could exceed the Free plan's 10 ms CPU limit. Typical events (about 30 slots) cost well under 1 ms each. Storing the slot count would remove the cost if it ever matters.
 - **Booked counts and the Full badge count every booking row.** Bookings on slots that are no longer in the schedule (orphans) should no longer be creatable now that edits, swaps and public bookings are guarded, but legacy data could contain them, and they would be counted.
 - **Archived events are not included in the Past bulk clear-out.** They can be deleted one at a time, and nothing reminds anyone to, so organisers should delete archived events they no longer need.
-- **Names and club text refuse every Unicode format character** (category Cf), which includes the invisible joiners that emoji sequences and some scripts use. Plain emoji and accented names are fine.
+- **Names and club text refuse every Unicode format character** (category Cf), which includes the invisible joiners that emoji sequences and some scripts use. Plain emoji and accented names are fine. A dog's or handler's name must also contain at least one letter or number (so a name of only an emoji is refused), and invisible characters such as variation selectors and Hangul fillers are ignored when deciding whether two bookings are the same dog and handler.
 
 ## Workers Free plan
 

@@ -153,6 +153,31 @@ describe("POST /api/events/:slug/bookings", () => {
       expect(await rows(id)).toHaveLength(1);
     });
 
+    it("rejects the same dog+handler again when the repeat hides an invisible character, and stores display names as entered", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      expect((await post(slug, entry("2026-06-13T08:00:00Z", "Rex \u2764\uFE0F", "Sam Jones"))).status).toBe(201);
+      for (const [dog, handler] of [
+        ["Rex \u2764", "Sam Jones"],
+        ["Rex \u2764\uFE0F\uFE0F", "Sam\u3164 Jones"],
+        ["Rex\u034F \u2764\uFE0F", "Sam Jones\uFE0F"],
+      ]) {
+        const res = await post(slug, entry("2026-06-13T08:15:00Z", dog, handler));
+        expect(res.status, `${dog}/${handler}`).toBe(409);
+        expect(((await res.json()) as ErrorBody).error.code).toBe("duplicate_booking");
+      }
+      const stored = await rows(id);
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject({ dog_name: "Rex \u2764\uFE0F", handler_name: "Sam Jones" });
+    });
+
+    it("refuses a name with no letter or number, with a 400 naming the field", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const res = await post(slug, entry("2026-06-13T08:00:00Z", "\u3164", "Sam Jones"));
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as ErrorBody).fields).toEqual({ dogName: "The dog's name must contain at least one letter or number." });
+      expect(await rows(id)).toHaveLength(0);
+    });
+
     it("allows the same handler with a different dog, and the same pair in a different event", async () => {
       const a = await insertEvent(t.env.DB);
       const b = await insertEvent(t.env.DB);
@@ -528,8 +553,8 @@ describe("POST /api/events/:slug/bookings", () => {
 
     it("counts the 80-character limit in code points, not UTF-16 units", async () => {
       const { slug } = await insertEvent(t.env.DB);
-      expect((await post(slug, entry(SLOT, "🐕".repeat(80), "Sam"))).status).toBe(201);
-      expect((await post(slug, entry("2026-06-13T08:15:00Z", "🐕".repeat(81), "Sam"))).status).toBe(400);
+      expect((await post(slug, entry(SLOT, `a${"🐕".repeat(79)}`, "Sam"))).status).toBe(201);
+      expect((await post(slug, entry("2026-06-13T08:15:00Z", `a${"🐕".repeat(80)}`, "Sam"))).status).toBe(400);
     });
   });
 
