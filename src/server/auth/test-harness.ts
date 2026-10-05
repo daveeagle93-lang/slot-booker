@@ -55,8 +55,9 @@ export const jwksFetch = (keys: () => AccessKey[]) =>
 /**
  * `/api/admin/whoami` is a stand-in for the other admin routes: it echoes what the middleware put in context.data.
  * Any other path the middleware lets through ends at a 404, as a missing static file would.
+ * `routes` adds more routes (return undefined for a path it doesn't handle), so a test can put a real handler behind the real middleware.
  */
-export function adminApp(deps: AuthDeps = {}) {
+export function adminApp(deps: AuthDeps = {}, routes?: (context: never) => Response | Promise<Response> | undefined) {
   const middleware = createAdminMiddleware(deps);
   const login = createLoginHandler(deps);
   return (env: AppEnv, path: string, init: RequestInit = {}): Promise<Response> => {
@@ -69,6 +70,8 @@ export function adminApp(deps: AuthDeps = {}) {
       if (pathname === "/api/admin/login" && request.method === "POST") return login(context);
       if (pathname === "/api/admin/logout" && request.method === "POST") return logout(context);
       if (pathname === "/api/admin/whoami") return json({ data });
+      const routed = routes?.(context);
+      if (routed) return routed;
       return new Response("not found", { status: 404 });
     };
     return Promise.resolve(middleware({ request, env, data, params: {}, next: async () => route() } as never));

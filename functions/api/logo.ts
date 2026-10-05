@@ -1,0 +1,41 @@
+import { noStore } from "../../src/server/bookings";
+import type { AppEnv } from "../../src/server/env";
+import { apiHeaders, errorResponse } from "../../src/server/http";
+import { loadLogo, loadLogoInfo, logoVersion } from "../../src/server/settings";
+
+/** True if an If-None-Match header lists the tag (weak or strong) or is `*`. */
+const matches = (header: string, etag: string): boolean =>
+  header.split(",").some((t) => t.trim().replace(/^W\//, "") === etag || t.trim() === "*");
+
+/** The `v` parameter only chooses the cache lifetime and is never echoed: the URL changes with the image, so the current one can be kept for a year. */
+const headersFor = (request: Request, sha256: string): Headers =>
+  new Headers({
+    ...apiHeaders,
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+    ETag: `"${sha256}"`,
+    "Cache-Control": new URL(request.url).searchParams.get("v") === logoVersion(sha256)
+      ? "public, max-age=31536000, immutable"
+      : "public, max-age=300",
+  });
+
+/**
+ * The club logo, from the database. Only the stored, allow-listed type is served (never what the uploader
+ * claimed), with headers that stop a browser sniffing it into anything else or running it as a page.
+ */
+export const onRequest: PagesFunction<AppEnv> = async ({ request, env }) => {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return errorResponse(405, "method_not_allowed", "Method not allowed.", {}, { ...noStore, Allow: "GET, HEAD" });
+  }
+  const condition = request.headers.get("If-None-Match");
+  if (condition !== null) {
+    // A revalidation is answered from the row's metadata, without reading the image.
+    const info = await loadLogoInfo(env.DB);
+    if (info && matches(condition, `"${info.sha256}"`)) return new Response(null, { status: 304, headers: headersFor(request, info.sha256) });
+  }
+  const logo = await loadLogo(env.DB);
+  if (!logo) return errorResponse(404, "not_found", "There is no logo.", {}, { "Cache-Control": "no-cache" });
+  const headers = headersFor(request, logo.info.sha256);
+  headers.set("Content-Type", logo.info.contentType);
+  headers.set("Content-Length", String(logo.data.byteLength));
+  return new Response(request.method === "HEAD" ? null : logo.data, { headers });
+};
