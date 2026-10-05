@@ -3,11 +3,19 @@ import { whatsappMessage } from "../lib.js";
 import { createApi, makeH, writeClipboard } from "./api.js";
 import { mountEventForm } from "./event-form.js";
 
-/** Wires the create-event page into `#app`. Resolves once the form is on screen. */
-export async function init({ document, fetch, navigate, clipboard, location }) {
+/**
+ * Wires the create-event page into `#app`. Resolves once the form is on screen. `settings` is the branding
+ * promise (see branding.js); the club name heads the WhatsApp message once it has loaded, and without it the
+ * message has no club line.
+ */
+export async function init({ document, fetch, navigate, clipboard, location, settings = null }) {
   const root = document.getElementById("app");
   const api = createApi({ fetch, navigate });
   const h = makeH(document);
+
+  // Not awaited: the form must not wait for the settings. They are long settled by the time an event is saved.
+  let clubName = "";
+  settings?.then((s) => { if (s?.loaded) clubName = s.clubName ?? ""; }, () => {});
 
   try {
     if (!(await api.loadSession())) return;
@@ -24,7 +32,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
 
   function showCreated({ event, path }, noticeText) {
     const url = location.origin + path;
-    const message = whatsappMessage(event, url);
+    const message = whatsappMessage(event, url, clubName);
     const heading = h("h1", { tabindex: "-1" }, "Event created");
     const copyStatus = h("p", { class: "copy-status", "aria-live": "polite" });
     const link = h("input", { id: "booking-link", type: "text", readonly: true });
@@ -69,9 +77,10 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
 
 // Browser entry only: the page opts in with data-autostart, so importing this module (tests) does nothing.
 if (globalThis.document?.getElementById("app")?.hasAttribute("data-autostart")) {
-  brandPage(document, loadSettings((...args) => fetch(...args)), { pageTitle: document.title, home: "/admin/" });
+  const settings = loadSettings((...args) => fetch(...args));
+  brandPage(document, settings, { pageTitle: document.title, home: "/admin/" });
   init({
-    document, location, clipboard: navigator.clipboard,
+    document, location, clipboard: navigator.clipboard, settings,
     fetch: (...args) => fetch(...args),
     navigate: (url) => location.assign(url),
   });

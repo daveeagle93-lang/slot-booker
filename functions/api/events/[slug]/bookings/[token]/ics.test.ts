@@ -4,6 +4,7 @@ import { generateBookingToken } from "../../../../../../src/core/slug";
 import { identityKey } from "../../../../../../src/core/identity";
 import { createTestEnv, insertBreak, insertEvent, type TestEnv } from "../../../../../../src/test/db";
 import { bookingUid } from "../../../../../../src/server/ics";
+import { saveSettings } from "../../../../../../src/server/settings";
 import { onRequestPost } from "../../bookings";
 import { onRequestGet } from "./ics";
 
@@ -128,6 +129,26 @@ describe("GET /api/events/:slug/bookings/:token/ics", () => {
     expect(ev.summary).toBe(`${dog} – Fun; games, etc.`);
     expect(ev.description).toContain(`Dog: ${dog}`);
     expect(ev.description).toContain("Handler: Sam \\ Jones, Esq.");
+  });
+
+  it("starts the description with the club name when one is set, and is as before when it is not", async () => {
+    const { id, slug } = await insertEvent(t.env.DB, { details: "Bring water" });
+    const token = await book(id, SLOT, "Rex", "Sam Jones");
+    const before = await (await getIcs(slug, token)).text();
+    const setClub = (clubName: string) => saveSettings(t.env.DB, { clubName, privacyContact: { name: "", email: "" }, website: "" });
+    try {
+      const name = "Hill, Dale; \\ Zoë 🐕 Club";
+      await setClub(name);
+      const text = await (await getIcs(slug, token)).text();
+      expect(vevent(text).description.split("\n")[0]).toBe(name);
+      expect(vevent(text).description).toContain("Dog: Rex");
+      expect(text.replace(/\r\n /g, "")).toContain("DESCRIPTION:Hill\\, Dale\\; \\\\ Zoë 🐕 Club\\nDog: Rex");
+      await setClub("");
+      expect(await (await getIcs(slug, token)).text()).toBe(before);
+    } finally {
+      await setClub("");
+    }
+    expect(vevent(before).description.split("\n")[0]).toBe("Dog: Rex");
   });
 
   it("never contains other bookings' names", async () => {

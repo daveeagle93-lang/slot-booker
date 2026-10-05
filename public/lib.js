@@ -80,9 +80,13 @@ export function penceFromPounds(text) {
   return { pence };
 }
 
-/** Ready-to-paste WhatsApp text for a newly created event (`event` is the create response's `event`). */
-export function whatsappMessage(event, url) {
+/**
+ * Ready-to-paste WhatsApp text for a newly created event (`event` is the create response's `event`).
+ * A club name, when there is one, is the first line.
+ */
+export function whatsappMessage(event, url, clubName = "") {
   return [
+    ...(clubName ? [clubName] : []),
     event.name,
     `${formatDate(event.startUtc)}, ${formatTimeRange(event.startUtc, event.endUtc)}`,
     `Venue: ${event.venuePostcode}`,

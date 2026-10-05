@@ -4,13 +4,15 @@ import { utcToLondon } from "./london";
  * The running order as plain text for pasting into a chat. Pure: London wall-clock times from the UTC
  * instants (never the host's time zone), British English long date, 24-hour times.
  *
- * Nothing is escaped or marked up: names are printed exactly as stored, and the text adds no formatting of
- * its own. Names can't fake a new line (the server refuses control characters and U+2028/U+2029), but
+ * Nothing is escaped or marked up: names (the club's included) are printed exactly as stored, and the text adds no
+ * formatting of its own. Names can't fake a new line (the server refuses control characters and U+2028/U+2029), but
  * WhatsApp's own markup characters (`*`, `_`, `~` and backticks) are allowed in names, so a name containing them
  * can still make part of the message bold, italic or struck through when pasted into the chat. That is not
  * coded around.
  */
 export interface LineupInput {
+  /** The club's name, if one is set: the first line, above the event name. */
+  clubName?: string;
   name: string;
   venuePostcode: string;
   /** The event's start; its London date heads the message. */
@@ -40,6 +42,6 @@ export function buildLineup(input: LineupInput): string {
       line: `${utcToLondon(b.start).time}–${utcToLondon(b.end).time} — ${b.label === "" ? "Break" : b.label}`,
     })),
   ].sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order));
-  const head = [input.name, `${longDate(input.startUtc)} · ${input.venuePostcode}`];
+  const head = [...(input.clubName ? [input.clubName] : []), input.name, `${longDate(input.startUtc)} · ${input.venuePostcode}`];
   return [...head, ...(items.length > 0 ? ["", ...items.map((i) => i.line)] : [])].join("\n");
 }

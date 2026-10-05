@@ -27,7 +27,7 @@ type Handler = (call: Call) => Response | Promise<Response>;
 const PREVIEW = "/api/admin/events/preview";
 const CREATE = "/api/admin/events";
 
-async function start(opts: { preview?: Handler; create?: Handler; clipboard?: unknown } = {}) {
+async function start(opts: { preview?: Handler; create?: Handler; clipboard?: unknown; settings?: Promise<unknown> } = {}) {
   document.body.innerHTML = '<main id="app"></main>';
   const calls: Call[] = [];
   const navigate = vi.fn();
@@ -42,7 +42,7 @@ async function start(opts: { preview?: Handler; create?: Handler; clipboard?: un
   });
   await init({
     document, fetch: fetch as unknown as typeof globalThis.fetch, navigate, location: { origin: ORIGIN },
-    clipboard: clipboard as never,
+    clipboard: clipboard as never, ...(opts.settings ? { settings: opts.settings as never } : {}),
   });
   return { calls, navigate, clipboard: clipboard as { writeText: ReturnType<typeof vi.fn> } };
 }
@@ -912,6 +912,39 @@ describe("created view", () => {
     expect(wa.getAttribute("rel")).toBe("noopener noreferrer");
     expect($$("a").find((a) => a.textContent === "Create another")!.getAttribute("href")).toBe("/admin/new");
     expect($$("a").find((a) => a.textContent === "Back to events")!.getAttribute("href")).toBe("/admin/");
+  });
+
+  describe("club name in the WhatsApp message", () => {
+    const PLAIN = "Trial Day\nSaturday 13 June 2026, 09:00–16:00\nVenue: SW1A 1AA\nCost: £12.50\nBook your slot: https://club.example/e/abc123";
+    const message = () => input("whatsapp-text").value;
+    const wa = () => $$("a").find((a) => a.textContent === "Open in WhatsApp")!;
+
+    it("heads the message when the settings loaded with a club name", async () => {
+      await create({ settings: Promise.resolve({ clubName: "Hillside Dog Club", loaded: true }) });
+      expect(message()).toBe(`Hillside Dog Club\n${PLAIN}`);
+      expect(wa().getAttribute("href")).toBe(`https://wa.me/?text=${encodeURIComponent(message())}`);
+    });
+
+    it("adds nothing when the settings loaded with no club name", async () => {
+      await create({ settings: Promise.resolve({ clubName: null, loaded: true }) });
+      expect(message()).toBe(PLAIN);
+    });
+
+    it("adds nothing when the settings did not load", async () => {
+      await create({ settings: Promise.resolve({ clubName: "Hillside Dog Club", loaded: false }) });
+      expect(message()).toBe(PLAIN);
+    });
+
+    it("adds nothing, and still works, when the settings promise rejects", async () => {
+      await create({ settings: Promise.reject(new Error("offline")) });
+      expect(message()).toBe(PLAIN);
+      expect($("h1").textContent).toBe("Event created");
+    });
+
+    it("adds nothing without settings", async () => {
+      await create();
+      expect(message()).toBe(PLAIN);
+    });
   });
 
   it("copies the link and the message", async () => {

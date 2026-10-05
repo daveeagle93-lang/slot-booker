@@ -181,6 +181,30 @@ describe("buildLineup", () => {
   });
 });
 
+describe("buildLineup with a club name", () => {
+  const base = { start: "2026-03-14T09:00:00Z", end: "2026-03-14T09:20:00Z", session: 10, booked: { "2026-03-14T09:00:00Z": ["Rex", "Sam Smith"] } as Booked };
+
+  it("puts the club name on the first line, above the event name", () => {
+    const plain = buildLineup(input(base));
+    expect(buildLineup({ ...input(base), clubName: "Hillside Dog Club" })).toBe(`Hillside Dog Club\n${plain}`);
+  });
+
+  it("is unchanged when it is missing or empty", () => {
+    const plain = buildLineup(input(base));
+    expect(buildLineup({ ...input(base), clubName: "" })).toBe(plain);
+    expect(buildLineup({ ...input(base), clubName: undefined })).toBe(plain);
+  });
+
+  it("is printed exactly as stored, like event names", () => {
+    expect(buildLineup({ ...input(base), clubName: "*Hill* & <Dale>, _Club_" }).split("\n")[0]).toBe("*Hill* & <Dale>, _Club_");
+  });
+
+  it("heads a lineup with nothing to list", () => {
+    expect(buildLineup({ clubName: "C", name: "E", venuePostcode: "P", startUtc: "2026-06-13T08:00:00Z", slots: [], breaks: [] }))
+      .toBe("C\nE\nSaturday 13 June 2026 · P");
+  });
+});
+
 describe("buildLineup with nothing to list", () => {
   it("ends after the date line, with no trailing blank line", () => {
     expect(buildLineup({ name: "E", venuePostcode: "P", startUtc: "2026-06-13T08:00:00Z", slots: [], breaks: [] })).toBe("E\nSaturday 13 June 2026 · P");

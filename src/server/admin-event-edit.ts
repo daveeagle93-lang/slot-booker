@@ -6,6 +6,7 @@ import { noStore } from "./bookings";
 import { guard, isGuardFailure } from "./db-guard";
 import type { EventRow } from "./events";
 import { errorResponse } from "./http";
+import { loadSettings } from "./settings";
 
 export type EditResult =
   | { kind: "saved"; event: EventRow; slotCount: number; removed: BookingRef[] }
@@ -57,7 +58,7 @@ export async function eventDetail(db: D1Database, event: EventRow) {
   const { slots } = generateSchedule({
     start: event.startUtc, end: event.endUtc, sessionMinutes: event.sessionMinutes, gapMinutes: event.gapMinutes, breaks: event.breaks,
   });
-  const bookings = await loadBookings(db, event.id);
+  const [bookings, { clubName }] = await Promise.all([loadBookings(db, event.id), loadSettings(db)]);
   const bySlot = new Map(bookings.map((b) => [b.slotStart, b]));
   const withBookings = slots.map((s) => {
     const b = bySlot.get(s.start);
@@ -67,7 +68,7 @@ export async function eventDetail(db: D1Database, event: EventRow) {
     event: eventView(event),
     slots: withBookings,
     orphans: bookingsOutside(bookings, slots),
-    lineup: buildLineup({ name: event.name, venuePostcode: event.venuePostcode, startUtc: event.startUtc, slots: withBookings, breaks: event.breaks }),
+    lineup: buildLineup({ clubName, name: event.name, venuePostcode: event.venuePostcode, startUtc: event.startUtc, slots: withBookings, breaks: event.breaks }),
   };
 }
 

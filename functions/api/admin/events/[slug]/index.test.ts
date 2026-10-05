@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { buildLineup } from "../../../../../src/core/lineup";
 import { generateSlug } from "../../../../../src/core/slug";
 import type { AppEnv } from "../../../../../src/server/env";
+import { saveSettings } from "../../../../../src/server/settings";
 import { countRows, createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../../../../../src/test/db";
 import { onRequestPost as book } from "../../../events/[slug]/bookings";
 import { onRequestGet as publicGet } from "../../../events/[slug]/index";
@@ -128,6 +129,23 @@ describe("GET /api/admin/events/[slug]", () => {
       breaks: [{ start: "2026-03-14T09:20:00Z", end: "2026-03-14T09:40:00Z", label: "Lunch" }],
     }));
     expect(body.lineup).not.toContain("Orphan");
+  });
+
+  it("puts the club name on the first line of the lineup when one is set", async () => {
+    const { slug } = await insertEvent(t.env.DB, {
+      name: "Spring Trial", startUtc: "2026-03-14T09:00:00Z", endUtc: "2026-03-14T09:20:00Z", sessionMinutes: 20, venuePostcode: "AB1 2CD",
+    });
+    const plain = (await detail(slug)).lineup;
+    const setClub = (clubName: string) => saveSettings(t.env.DB, { clubName, privacyContact: { name: "", email: "" }, website: "" });
+    try {
+      await setClub("Hillside Dog Club");
+      expect((await detail(slug)).lineup).toBe(`Hillside Dog Club\n${plain}`);
+      await setClub("");
+      expect((await detail(slug)).lineup).toBe(plain);
+    } finally {
+      await setClub("");
+    }
+    expect(plain).toBe("Spring Trial\nSaturday 14 March 2026 · AB1 2CD\n\n09:00 — free");
   });
 
   it("shows an archived event, flagged", async () => {

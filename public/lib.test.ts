@@ -159,4 +159,16 @@ describe("whatsappMessage", () => {
   it("says Free for a free event", () => {
     expect(whatsappMessage({ ...event, costPence: 0 }, "https://c.example/e/x")).toContain("\nCost: Free\n");
   });
+
+  it("puts the club name on the first line when there is one", () => {
+    expect(whatsappMessage(event, "https://club.example/e/abc", "Hillside Dog Club")).toBe(
+      "Hillside Dog Club\nTrial Day\nSaturday 13 June 2026, 09:00–16:00\nVenue: SW1A 1AA\nCost: £15.00\nBook your slot: https://club.example/e/abc",
+    );
+  });
+
+  it("is unchanged for an empty or missing club name", () => {
+    const plain = whatsappMessage(event, "https://club.example/e/abc");
+    expect(whatsappMessage(event, "https://club.example/e/abc", "")).toBe(plain);
+    expect(whatsappMessage(event, "https://club.example/e/abc", undefined)).toBe(plain);
+  });
 });

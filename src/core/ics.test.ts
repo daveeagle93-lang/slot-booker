@@ -157,6 +157,50 @@ describe("buildBookingIcs structure", () => {
   });
 });
 
+describe("club name", () => {
+  const description = (clubName?: string) => prop(make({ clubName }), "DESCRIPTION");
+  const WITHOUT = "DESCRIPTION:Dog: Rex\\nHandler: Sam Jones\\nSlot: 09:00–09:20\\nCost: £12.50\\n\\nBring water.";
+
+  it("is the first line of the description, then the existing lines", () => {
+    expect(description("Hillside Dog Club")).toBe(`DESCRIPTION:Hillside Dog Club\\n${WITHOUT.slice("DESCRIPTION:".length)}`);
+  });
+
+  it("changes nothing when it is missing, empty or only whitespace", () => {
+    const plain = make();
+    expect(description()).toBe(WITHOUT);
+    expect(make({ clubName: "" })).toBe(plain);
+    expect(make({ clubName: " \t\n " })).toBe(plain);
+  });
+
+  it("is trimmed", () => {
+    expect(description("  Hillside  ")).toMatch(/^DESCRIPTION:Hillside\\nDog: Rex/);
+  });
+
+  it("is escaped like other text, and survives a round trip through ical.js", () => {
+    const name = "Hill, Dale; \\ Zoë 🐕 Club";
+    expect(description(name)).toMatch(/^DESCRIPTION:Hill\\, Dale\\; \\\\ Zoë 🐕 Club\\nDog: Rex/);
+    expect(parse(make({ clubName: name })).event.description.split("\n")[0]).toBe(name);
+  });
+
+  it("cannot start a new property line with a newline or control character", () => {
+    const ics = make({ clubName: "Club\r\nX-EVIL:1\nEND:VEVENT\u0007\u0000" });
+    expectWellFormed(ics);
+    expect(unfold(ics).filter((l) => l.startsWith("X-EVIL") || l.startsWith("END:VEVENT"))).toEqual(["END:VEVENT"]);
+    expect(prop(ics, "DESCRIPTION")).toMatch(/^DESCRIPTION:Club\\nX-EVIL:1\\nEND:VEVENT\\nDog: Rex/);
+    expect(parse(ics).event.description.split("\n").slice(0, 3)).toEqual(["Club", "X-EVIL:1", "END:VEVENT"]);
+  });
+
+  it("folds a 200-character name within 75 octets and unfolds to the same text", () => {
+    const name = "Ünïcödé, Club; ".repeat(14).slice(0, 200);
+    expect([...name]).toHaveLength(200);
+    const ics = make({ clubName: name });
+    expectWellFormed(ics);
+    expectLinesDecodeCleanly(ics);
+    expect(physicalLines(ics).filter((l) => l.startsWith(" ")).length).toBeGreaterThan(2);
+    expect(parse(ics).event.description.split("\n")[0]).toBe(name);
+  });
+});
+
 describe("London wall-clock conversion", () => {
   const starts = (ics: string) => [prop(ics, "DTSTART"), prop(ics, "DTEND")];
 

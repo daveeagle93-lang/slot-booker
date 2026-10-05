@@ -2,6 +2,7 @@ import { buildBookingIcs } from "../core/ics";
 import { isValidToken } from "../core/slug";
 import { findSlot } from "./bookings";
 import type { EventRow } from "./events";
+import { loadSettings } from "./settings";
 
 /**
  * Stable per booking identity within an event (not per slot or token), so if an admin moves the
@@ -33,6 +34,7 @@ export async function loadBookingIcs(db: D1Database, event: EventRow, token: str
   if (!booking) return null;
   const range = findSlot(event, booking.slot_start_utc);
   if (!range) return null;
+  const { clubName } = await loadSettings(db);
   return buildBookingIcs({
     uid: await bookingUid(event.slug, booking.dog_key, booking.handler_key),
     dtstamp: booking.created_at,
@@ -43,5 +45,6 @@ export async function loadBookingIcs(db: D1Database, event: EventRow, token: str
     venuePostcode: event.venuePostcode,
     costPence: event.costPence,
     details: event.details,
+    clubName,
   });
 }

@@ -22,6 +22,8 @@ export interface BookingIcsInput {
   venuePostcode: string;
   costPence: number;
   details: string;
+  /** The club's name, if one is set: the first line of the description. */
+  clubName?: string;
 }
 
 const TZID = "Europe/London";
@@ -96,7 +98,9 @@ export function buildBookingIcs(input: BookingIcsInput): string {
 
   const s = london(start);
   const e = london(end);
+  const clubName = input.clubName?.trim();
   const description = [
+    ...(clubName ? [clubName] : []),
     `Dog: ${input.dogName}`,
     `Handler: ${input.handlerName}`,
     `Slot: ${s.hour}:${s.minute}–${e.hour}:${e.minute}`,
