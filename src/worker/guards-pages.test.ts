@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  accessEnv, accessJwt, jwksFetch, NOW, newAccessKey, ORIGIN, passwordEnv, TEST_PASSWORD, adminApp,
+  accessEnv, accessJwt, d1Env, jwksFetch, NOW, newAccessKey, ORIGIN, passwordEnv, TEST_PASSWORD, adminApp,
 } from "../server/auth/test-harness";
 import type { AppEnv } from "../server/env";
 import { createTestEnv, type TestEnv } from "../test/db";
@@ -86,5 +86,44 @@ describe("admin pages when unconfigured", () => {
         expect(reached).toBe(false);
       }
     }
+  });
+});
+
+describe("admin pages with credentials in D1", () => {
+  const clearRow = () => t.env.DB.prepare("DELETE FROM admin_credentials").run();
+
+  it("sends every page, the login pages included, to /setup while there are no credentials and setup is open", async () => {
+    await clearRow();
+    for (const path of [...PAGES, "/admin/login", "/admin/login.html", "/admin/login.js"]) {
+      const { res, reached } = await visit(d1Env(t.env.DB), path);
+      expect(res.status, path).toBe(302);
+      expect(res.headers.get("location"), path).toBe("/setup");
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(reached, path).toBe(false);
+    }
+  });
+
+  it("answers 503 text/plain, with no redirect, while there are no credentials and SETUP_CODE is missing or too short", async () => {
+    await clearRow();
+    for (const SETUP_CODE of [undefined, "short"]) {
+      for (const path of [...PAGES, "/admin/login"]) {
+        const { res, reached } = await visit(d1Env(t.env.DB, { SETUP_CODE }), path);
+        expect(res.status, path).toBe(503);
+        expect(res.headers.get("content-type")).toContain("text/plain");
+        expect(res.headers.get("location")).toBeNull();
+        expect(reached).toBe(false);
+      }
+    }
+  });
+
+  it("behaves like any password deployment once credentials exist: the login pages are served, the rest go to the login page", async () => {
+    await clearRow();
+    const hash = (await passwordEnv(t.env.DB)).ADMIN_PASSWORD_HASH!;
+    await t.env.DB.prepare("INSERT INTO admin_credentials (id, secret_hash, session_secret, created_at) VALUES (1, ?, ?, ?)")
+      .bind(hash, "s".repeat(43), "2026-10-05T10:00:00.000Z").run();
+    for (const path of ["/admin/login", "/admin/login.html", "/admin/login.js"]) expect((await visit(d1Env(t.env.DB), path)).reached, path).toBe(true);
+    const { res } = await visit(d1Env(t.env.DB), "/admin/");
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/admin/login");
   });
 });

@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SESSION_COOKIE } from "../../../server/auth/session";
-import { generateAdminSecret } from "../../../server/auth/crypto";
+import { generateAdminSecret, hashAdminSecret, parseAdminSecretHash } from "../../../server/auth/crypto";
+import { createPasswordAuth } from "../../../server/auth/password";
 import { csrfToken } from "../../../server/auth/csrf";
 import { clientKey } from "../../../server/auth/ratelimit";
-import { adminApp, NOW, ORIGIN, passwordEnv, SESSION_SECRET, TEST_PASSWORD } from "../../../server/auth/test-harness";
+import { adminApp, beforeStatement, d1Env, NOW, ORIGIN, passwordEnv, SESSION_SECRET, TEST_PASSWORD } from "../../../server/auth/test-harness";
+import { loadCredentials, saveCredentials } from "../../../server/auth/credentials";
 import type { AppEnv } from "../../../server/env";
 import { createTestEnv, type TestEnv } from "../../../test/db";
 
@@ -233,5 +235,77 @@ describe("POST /api/admin/login", () => {
     });
     for (let i = 0; i < 5; i++) await noIp("wrong");
     expect((await noIp(TEST_PASSWORD)).status).toBe(429);
+  });
+});
+
+describe("POST /api/admin/login with credentials in D1", () => {
+  const T0 = "2026-10-05T10:00:00.000Z";
+  const D1_SESSION = "d1-session-secret-0123456789-abcdefghij-xyz";
+  let hash: string;
+  let d1: AppEnv;
+  beforeAll(async () => { hash = await hashAdminSecret(TEST_PASSWORD); d1 = d1Env(t.env.DB); });
+  beforeEach(async () => {
+    await t.env.DB.prepare("DELETE FROM admin_credentials").run();
+    await saveCredentials(t.env.DB, { secretHash: hash, sessionSecret: D1_SESSION, createdAt: T0 });
+  });
+  const loginTo = (target: AppEnv, password: unknown, ip = newIp()) => app(target, "/api/admin/login", {
+    method: "POST", headers: { Origin: ORIGIN, "Content-Type": "application/json", "CF-Connecting-IP": ip }, body: JSON.stringify({ password }),
+  });
+  const firstLogin = async () => (await loadCredentials(t.env.DB))?.firstLoginAt;
+
+  it("signs in with the generated secret, sets a cookie signed by the stored session secret, and records the first sign-in", async () => {
+    const res = await loginTo(d1, TEST_PASSWORD);
+    expect(res.status).toBe(200);
+    const cookie = res.headers.get("set-cookie")!.split(";")[0];
+    expect((await app(d1, "/api/admin/session", { headers: { Cookie: cookie } })).status).toBe(200);
+    // Not the environment secret, and not any other stored one: only the D1 session secret makes this cookie valid.
+    const other = createPasswordAuth({ hash: parseAdminSecretHash(hash)!, sessionSecret: SESSION_SECRET }, { now: () => clock.ms });
+    expect(await other.authenticate(new Request(`${ORIGIN}/`, { headers: { Cookie: cookie } }))).toBeNull();
+    expect(await firstLogin()).toBe(new Date(clock.ms).toISOString());
+  });
+
+  it("does not mark the first sign-in for a wrong secret, a rate-limited attempt or a malformed body", async () => {
+    expect((await loginTo(d1, wrongSecret())).status).toBe(401);
+    expect((await loginTo(d1, "")).status).toBe(400);
+    const ip = newIp();
+    for (let i = 0; i < 5; i++) await loginTo(d1, wrongSecret(), ip);
+    expect((await loginTo(d1, TEST_PASSWORD, ip)).status).toBe(429);
+    expect(await firstLogin()).toBeNull();
+  });
+
+  it("keeps the first sign-in's time through later sign-ins", async () => {
+    expect((await loginTo(d1, TEST_PASSWORD)).status).toBe(200);
+    const first = await firstLogin();
+    clock.ms += 3600_000;
+    expect((await loginTo(d1, TEST_PASSWORD)).status).toBe(200);
+    expect(await firstLogin()).toBe(first);
+  });
+
+  it("refuses the sign-in, with the usual 401 and no session, when setup replaced the secret after it was verified, and marks nothing", async () => {
+    const replacement = await hashAdminSecret(generateAdminSecret());
+    const racing = beforeStatement(t.env.DB, /^UPDATE admin_credentials SET first_login_at/, async () => {
+      await saveCredentials(t.env.DB, { secretHash: replacement, sessionSecret: D1_SESSION.replace("d1", "d2"), createdAt: T0 });
+    });
+    const res = await loginTo({ ...d1, DB: racing }, TEST_PASSWORD);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: { code: "invalid_credentials" } });
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect(await firstLogin()).toBeNull();
+    expect((await loadCredentials(t.env.DB))?.secretHash).toBe(replacement);
+  });
+
+  it("lets two near-simultaneous sign-ins both succeed, marking the row once", async () => {
+    const [a, b] = await Promise.all([loginTo(d1, TEST_PASSWORD), loginTo(d1, TEST_PASSWORD)]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(await firstLogin()).toBe(new Date(clock.ms).toISOString());
+    expect((await t.env.DB.prepare("SELECT COUNT(*) AS n FROM admin_credentials").first<{ n: number }>())?.n).toBe(1);
+  });
+
+  it("does not use the stored credentials, or mark them, when the deployment is in env mode", async () => {
+    expect((await loginTo(env, TEST_PASSWORD)).status).toBe(200); // the env hash, though the D1 row holds the same secret
+    expect(await firstLogin()).toBeNull();
+    const envWrong = await passwordEnv(t.env.DB);
+    expect((await loginTo({ ...envWrong, ADMIN_PASSWORD_HASH: await hashAdminSecret(generateAdminSecret()) }, TEST_PASSWORD)).status).toBe(401);
+    expect(await firstLogin()).toBeNull();
   });
 });

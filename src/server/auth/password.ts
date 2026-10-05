@@ -1,3 +1,4 @@
+import { markFirstSignIn } from "./credentials";
 import { parseAdminSecretHash, verifyAdminSecret, type AdminSecretHash } from "./crypto";
 import { clientKey } from "./ratelimit";
 import { clearedSessionCookie, issueSession, readSession, sessionCookie } from "./session";
@@ -13,7 +14,20 @@ export interface PasswordAuth extends AdminAuth {
   clearCookie(): string;
   /** The login rate-limit key for a client address, keyed with the session secret so stored keys are not reversible. */
   clientKey(ip: string | null): Promise<string>;
+  /**
+   * Called once the password has checked out. With credentials from D1 it records the first sign-in (which closes
+   * /setup) for the credentials that were verified, and is false if setup replaced them meanwhile: refuse then.
+   * With ADMIN_PASSWORD_HASH and ADMIN_SESSION_SECRET it does nothing and is true.
+   */
+  confirmSignIn(): Promise<boolean>;
 }
+
+/** Credentials that came from D1, which is what confirmSignIn needs to mark them. */
+export interface StoredSource { db: D1Database; secretHash: string }
+
+/** Env mode: either variable set (even if unusable) means the settings are the operator's, and D1 credentials are ignored. */
+export const envCredentialsSet = (env: { ADMIN_PASSWORD_HASH?: string; ADMIN_SESSION_SECRET?: string }): boolean =>
+  Boolean(env.ADMIN_PASSWORD_HASH) || Boolean(env.ADMIN_SESSION_SECRET);
 
 export interface PasswordConfig { hash: AdminSecretHash; sessionSecret: string }
 
@@ -30,7 +44,7 @@ export function parsePasswordConfig(
   return { hash, sessionSecret };
 }
 
-export function createPasswordAuth({ hash, sessionSecret }: PasswordConfig, deps: AuthDeps = {}): PasswordAuth {
+export function createPasswordAuth({ hash, sessionSecret }: PasswordConfig, deps: AuthDeps = {}, stored?: StoredSource): PasswordAuth {
   const now = deps.now ?? Date.now;
   return {
     kind: "password",
@@ -41,6 +55,7 @@ export function createPasswordAuth({ hash, sessionSecret }: PasswordConfig, deps
     },
     clearCookie: clearedSessionCookie,
     clientKey: (ip) => clientKey(ip, sessionSecret),
+    confirmSignIn: async () => !stored || markFirstSignIn(stored.db, stored.secretHash, new Date(now()).toISOString()),
     async authenticate(request) {
       try {
         const sid = await readSession(sessionSecret, request.headers.get("Cookie"), now());

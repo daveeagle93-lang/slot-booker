@@ -7,8 +7,8 @@ import type { Route } from "./router";
 const table = createRoutes();
 const ROUTES_DIR = join(import.meta.dirname, "../routes");
 
-/** Patterns for things that are not files under src/routes/: the two public pages the Worker sees first. */
-const PAGE_PATTERNS = ["/", "/e/:slug"];
+/** Patterns for things that are not files under src/routes/: the public pages the Worker sees first. */
+const PAGE_PATTERNS = ["/", "/e/:slug", "/setup"];
 
 /** `api/admin/events/[slug]/export.csv.ts` -> `/api/admin/events/:slug/export.csv`; `index.ts` stands for its directory. */
 const patternOf = (file: string): string => {
@@ -28,7 +28,7 @@ const METHOD_OF: Record<string, Route["method"]> = {
 const label = (r: Route) => `${r.method} ${r.pattern}`;
 
 describe("the route table matches the handler files", () => {
-  it("has a pattern for every file under src/routes/, and no pattern without a file (apart from the two pages)", () => {
+  it("has a pattern for every file under src/routes/, and no pattern without a file (apart from the pages)", () => {
     const fromFiles = handlerFiles.map(patternOf).sort();
     const fromTable = [...new Set(table.map((r) => r.pattern))].filter((p) => !PAGE_PATTERNS.includes(p)).sort();
     expect(fromTable).toEqual(fromFiles);
@@ -43,8 +43,8 @@ describe("the route table matches the handler files", () => {
       expect(entries.map((r) => r.method).sort(), file).toEqual(exported.map((k) => METHOD_OF[k]).sort());
       for (const entry of entries) {
         const name = Object.keys(METHOD_OF).find((k) => METHOD_OF[k] === entry.method)!;
-        // The login handler is built per Worker (so tests can inject a clock); it is not the exported instance.
-        if (pattern === "/api/admin/login") expect(typeof entry.handler, label(entry)).toBe("function");
+        // The login and setup handlers are built per Worker (so tests can inject a clock); they are not the exported instances.
+        if (pattern === "/api/admin/login" || pattern === "/api/setup") expect(typeof entry.handler, label(entry)).toBe("function");
         else expect(entry.handler, `${label(entry)} -> ${file}`).toBe(module[name]);
       }
     }
@@ -73,10 +73,12 @@ describe("access", () => {
       "* /api/logo",
       "* /api/manifest.webmanifest",
       "GET /api/settings",
+      "POST /api/setup",
       "* /api/theme.css",
       "* /favicon.ico",
       "GET /",
       "GET /e/:slug",
+      "GET /setup",
     ]);
   });
 

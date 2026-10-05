@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { AppEnv } from "../server/env";
 import {
-  accessClaims, accessEnv, accessJwt, adminApp, jwksFetch, NOW, newAccessKey, ORIGIN, passwordEnv, TEST_PASSWORD,
+  accessClaims, accessEnv, accessJwt, adminApp, d1Env, jwksFetch, NOW, newAccessKey, ORIGIN, passwordEnv, TEST_PASSWORD,
   writeHeaders,
 } from "../server/auth/test-harness";
 import { createTestEnv, type TestEnv } from "../test/db";
@@ -166,6 +166,52 @@ describe("unconfigured admin", () => {
         expect(res.headers.get("cache-control")).toBe("no-store");
         expect(await res.json()).toMatchObject({ error: { code: "admin_not_configured" } });
       }
+    }
+  });
+});
+
+describe("admin API with credentials in D1 (the password provider with no ADMIN_PASSWORD_HASH or ADMIN_SESSION_SECRET)", () => {
+  const paths: [string, string][] = [
+    ["/api/admin/session", "GET"], ["/api/admin/login", "POST"], ["/api/admin/logout", "POST"], ["/api/admin/events", "GET"],
+    ["/api/admin/nope", "DELETE"], ["/api/admin", "GET"], ["/api/admin/whoami", "GET"],
+  ];
+  const app = adminApp({ now: () => NOW });
+
+  it("answers 503 admin_not_configured on every admin path and method while there are no credentials, login included", async () => {
+    await t.env.DB.prepare("DELETE FROM admin_credentials").run();
+    for (const [path, method] of paths) {
+      const res = await app(d1Env(t.env.DB), path, { method, headers: writeHeaders("x"), body: method === "GET" ? undefined : "{}" });
+      expect(res.status, `${method} ${path}`).toBe(503);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(await res.json()).toMatchObject({ error: { code: "admin_not_configured" } });
+    }
+  });
+
+  it("answers 401 unauthenticated once credentials exist, and lets the login route through", async () => {
+    await t.env.DB.prepare("DELETE FROM admin_credentials").run();
+    const hash = (await passwordEnv(t.env.DB)).ADMIN_PASSWORD_HASH!;
+    await t.env.DB.prepare("INSERT INTO admin_credentials (id, secret_hash, session_secret, created_at) VALUES (1, ?, ?, ?)")
+      .bind(hash, "s".repeat(43), "2026-10-05T10:00:00.000Z").run();
+    for (const [path, method] of paths) {
+      if (path === "/api/admin/login") continue;
+      const res = await app(d1Env(t.env.DB), path, { method, headers: writeHeaders("x"), body: method === "GET" ? undefined : "{}" });
+      expect(res.status, `${method} ${path}`).toBe(401);
+      expect(await res.json()).toMatchObject({ error: { code: "unauthenticated" }, provider: "password" });
+    }
+    const login = await app(d1Env(t.env.DB), "/api/admin/login", {
+      method: "POST", headers: { Origin: ORIGIN, "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.201" }, body: JSON.stringify({ password: TEST_PASSWORD }),
+    });
+    expect(login.status).toBe(200);
+  });
+
+  it("does not let stored credentials rescue env mode: one variable set, the other missing, is 503", async () => {
+    const hash = (await passwordEnv(t.env.DB)).ADMIN_PASSWORD_HASH!;
+    await t.env.DB.prepare("DELETE FROM admin_credentials").run();
+    await t.env.DB.prepare("INSERT INTO admin_credentials (id, secret_hash, session_secret, created_at) VALUES (1, ?, ?, ?)")
+      .bind(hash, "s".repeat(43), "2026-10-05T10:00:00.000Z").run();
+    for (const env of [d1Env(t.env.DB, { ADMIN_PASSWORD_HASH: hash }), d1Env(t.env.DB, { ADMIN_SESSION_SECRET: "s".repeat(43) })]) {
+      const res = await app(env, "/api/admin/session", { headers: writeHeaders("x") });
+      expect(res.status).toBe(503);
     }
   });
 });

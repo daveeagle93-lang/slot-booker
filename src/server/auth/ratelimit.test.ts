@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestEnv, type TestEnv } from "../../test/db";
 import { utf8 } from "./crypto";
-import { clearAttempts, clientKey, countAttempt, PURGE_SQL, rateLimitBucket } from "./ratelimit";
+import { clearAttempts, clientKey, countAttempt, PURGE_SQL, rateLimitBucket, setupClientKey } from "./ratelimit";
 
 let t: TestEnv;
 beforeAll(async () => { t = await createTestEnv(); });
@@ -190,5 +190,23 @@ describe("the purge of old rows", () => {
       left.push(await count("backlog-"));
     }
     expect(left).toEqual([150, 50, 0, 0]);
+  });
+});
+
+describe("setupClientKey", () => {
+  it("is a hex HMAC-SHA-256 of the bucket under the setup code, a different keyspace from the login key, and stable per client", async () => {
+    const setup = await setupClientKey("203.0.113.9", SECRET);
+    expect(setup).toMatch(/^[0-9a-f]{64}$/);
+    expect(await setupClientKey("203.0.113.9", SECRET)).toBe(setup);
+    expect(setup).not.toBe(await keyOf("203.0.113.9"));
+    expect(await setupClientKey("203.0.113.10", SECRET)).not.toBe(setup);
+    expect(await setupClientKey("203.0.113.9", `${SECRET}x`)).not.toBe(setup);
+    expect(await setupClientKey("2001:db8:0:42::1", SECRET)).toBe(await setupClientKey("2001:db8:0:42:aaaa::2", SECRET));
+  });
+
+  it("leaves the login key as it was", async () => {
+    const key = await crypto.subtle.importKey("raw", utf8(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const mac = await crypto.subtle.sign("HMAC", key, utf8("slot-booker-ratelimit-v1:203.0.113.9"));
+    expect(await keyOf("203.0.113.9")).toBe([...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join(""));
   });
 });

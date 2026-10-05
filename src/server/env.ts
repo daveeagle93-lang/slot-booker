@@ -17,6 +17,8 @@ export interface AppEnv {
   ADMIN_PASSWORD_HASH?: string;
   /** Password only, SECRET: at least 32 random characters that sign the session cookie. */
   ADMIN_SESSION_SECRET?: string;
+  /** Password only, SECRET: a phrase the club chooses (at least 12 characters), typed once on /setup to create the admin secret. Not needed when the two above are set. */
+  SETUP_CODE?: string;
 }
 
 /** What the Worker's router hands a route handler. `data` carries what the guards add (the admin session, under `admin`). */

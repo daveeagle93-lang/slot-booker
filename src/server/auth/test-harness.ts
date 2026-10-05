@@ -21,6 +21,27 @@ let hash: Promise<string> | undefined;
 export const passwordEnv = async (db: D1Database): Promise<AppEnv> => ({
   DB: db, ADMIN_AUTH: "password", ADMIN_PASSWORD_HASH: await (hash ??= hashAdminSecret(TEST_PASSWORD)), ADMIN_SESSION_SECRET: SESSION_SECRET,
 });
+/** A valid SETUP_CODE (12+ characters once trimmed) for the first-run setup tests. */
+export const SETUP_CODE = "club-setup-phrase";
+/** The password provider with no ADMIN_PASSWORD_HASH or ADMIN_SESSION_SECRET: credentials are in D1 (made on /setup), as on a new deployment. */
+export const d1Env = (db: D1Database, over: Partial<AppEnv> = {}): AppEnv => ({ DB: db, ADMIN_AUTH: "password", SETUP_CODE, ...over });
+/**
+ * The database, except that a statement whose SQL matches `match` first awaits `hook` each time it runs: lets a test slip
+ * another request in between two steps of one handler (an interleaving at the SQL level). Only the methods the handlers use.
+ */
+export function beforeStatement(db: D1Database, match: RegExp, hook: () => Promise<void>): D1Database {
+  const wrap = (stmt: D1PreparedStatement): D1PreparedStatement => ({
+    bind: (...values: unknown[]) => wrap(stmt.bind(...values)),
+    run: async () => { await hook(); return stmt.run(); },
+    first: async (column?: string) => { await hook(); return column === undefined ? stmt.first() : stmt.first(column); },
+    all: async () => { await hook(); return stmt.all(); },
+    raw: async () => { await hook(); return stmt.raw(); },
+  }) as unknown as D1PreparedStatement;
+  return {
+    prepare: (sql: string) => (match.test(sql) ? wrap(db.prepare(sql)) : db.prepare(sql)),
+    batch: (statements: D1PreparedStatement[]) => db.batch(statements),
+  } as unknown as D1Database;
+}
 export const accessEnv = (db: D1Database): AppEnv => ({
   DB: db, ADMIN_AUTH: "access", ACCESS_TEAM_DOMAIN: ACCESS_TEAM, ACCESS_AUD,
 });

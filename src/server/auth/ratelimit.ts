@@ -68,8 +68,17 @@ export function rateLimitBucket(ip: string | null): string {
  * an unkeyed hash would make the stored rows addresses. The value is pseudonymous, still personal data.
  */
 export async function clientKey(ip: string | null, secret: string): Promise<string> {
+  return hmacHex(secret, `slot-booker-ratelimit-v1:${rateLimitBucket(ip)}`);
+}
+
+/** The /setup rate-limit key: keyed with the SETUP_CODE and domain-separated, so setup attempts and admin logins are counted apart. */
+export async function setupClientKey(ip: string | null, setupCode: string): Promise<string> {
+  return hmacHex(setupCode, `slot-booker-setup-ratelimit-v1:${rateLimitBucket(ip)}`);
+}
+
+async function hmacHex(secret: string, message: string): Promise<string> {
   const key = await crypto.subtle.importKey("raw", utf8(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const mac = await crypto.subtle.sign("HMAC", key, utf8(`slot-booker-ratelimit-v1:${rateLimitBucket(ip)}`));
+  const mac = await crypto.subtle.sign("HMAC", key, utf8(message));
   return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 

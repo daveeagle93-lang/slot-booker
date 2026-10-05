@@ -3,6 +3,7 @@ import { csrfFailure, hasSameOrigin } from "../server/auth/csrf";
 import { noStore } from "../server/bookings";
 import type { AppEnv } from "../server/env";
 import { errorResponse } from "../server/http";
+import { setupState } from "../server/setup";
 
 const LOGIN_PATH = "/api/admin/login";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -10,7 +11,7 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // Only the password provider has a sign-in page, so only then may these be fetched unauthenticated.
 const LOGIN_PAGES = new Set(["/admin/login", "/admin/login.html", "/admin/login.js"]);
 
-const plain = (status: number, text: string, headers: HeadersInit = {}): Response =>
+export const plain = (status: number, text: string, headers: HeadersInit = {}): Response =>
   new Response(text, {
     status,
     headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", ...headers },
@@ -23,7 +24,7 @@ const plain = (status: number, text: string, headers: HeadersInit = {}): Respons
  * Returns the refusal, or what the handlers get as `data`: `{ admin }`, or `{}` for the login exemption.
  */
 export async function guardAdminApi(request: Request, env: AppEnv, deps?: AuthDeps): Promise<Response | Partial<AdminData>> {
-  const resolved = adminAuthFor(env, deps);
+  const resolved = await adminAuthFor(env, deps);
   if ("error" in resolved) {
     console.error(`Admin auth is not configured: ${resolved.reason}`);
     return errorResponse(503, "admin_not_configured", "Admin sign-in isn't set up.", {}, noStore);
@@ -51,9 +52,13 @@ export async function guardAdminApi(request: Request, env: AppEnv, deps?: AuthDe
  * let the request on to the static files.
  */
 export async function guardAdminPage(request: Request, env: AppEnv, deps?: AuthDeps): Promise<Response | null> {
-  const resolved = adminAuthFor(env, deps);
+  const resolved = await adminAuthFor(env, deps);
   if ("error" in resolved) {
     console.error(`Admin auth is not configured: ${resolved.reason}`);
+    // A new deployment with no admin secret yet: the way forward is /setup, if its code is in place.
+    if (resolved.awaitingSetup && (await setupState(env)) === "open") {
+      return new Response(null, { status: 302, headers: { Location: "/setup", "Cache-Control": "no-store" } });
+    }
     return plain(503, "Admin sign-in isn't set up.");
   }
   const { auth } = resolved;

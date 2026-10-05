@@ -1,7 +1,7 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { accessEnv, NOW, ORIGIN, passwordEnv, TEST_PASSWORD, writeHeaders } from "../server/auth/test-harness";
+import { accessEnv, d1Env, NOW, ORIGIN, passwordEnv, SETUP_CODE, TEST_PASSWORD, writeHeaders } from "../server/auth/test-harness";
 import type { AppEnv } from "../server/env";
 import { createTestEnv, type TestEnv } from "../test/db";
 import { publicAssets } from "../test/assets";
@@ -363,5 +363,163 @@ describe("failures", () => {
     } finally {
       log.mockRestore();
     }
+  });
+});
+
+describe("first-run setup through the Worker", () => {
+  const ip = (n: number) => `203.0.113.${n}`;
+  const postJson = (env: AppEnv, path: string, body: unknown, n = 1, headers: Record<string, string> = {}) =>
+    send(env, path, { method: "POST", headers: { Origin: ORIGIN, "Content-Type": "application/json", "CF-Connecting-IP": ip(n), ...headers }, body: JSON.stringify(body) });
+  const reset = async () => {
+    await t.env.DB.prepare("DELETE FROM admin_credentials").run();
+    await t.env.DB.prepare("DELETE FROM login_attempts").run();
+  };
+  const fresh = (): AppEnv => ({ ...d1Env(t.env.DB), ASSETS: recordingAssets().fetcher });
+
+  it("serves GET /setup from the clean /setup asset when setup is open: no conditional headers, no-store, security headers", async () => {
+    await reset();
+    const { seen, fetcher } = recordingAssets();
+    const res = await send({ ...d1Env(t.env.DB), ASSETS: fetcher }, "/setup", { headers: { "If-None-Match": '"x"', "If-Modified-Since": "Mon, 01 Jan 2024 00:00:00 GMT", Cookie: "a=b" } });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("asset:/setup");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(hasSecurityHeaders(res)).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].method).toBe("GET");
+    expect(new URL(seen[0].url).pathname).toBe("/setup");
+    expect(seen[0].headers.get("if-none-match")).toBeNull();
+    expect(seen[0].headers.get("if-modified-since")).toBeNull();
+    expect((await send({ ...d1Env(t.env.DB), ASSETS: fetcher }, "/setup", { method: "HEAD" })).status).toBe(200);
+  });
+
+  it("answers GET /setup with 404 when it is closed, without touching the assets: env mode, Access, any other ADMIN_AUTH, or after the first sign-in", async () => {
+    await reset();
+    const full = await passwordEnv(t.env.DB);
+    const { seen, fetcher } = recordingAssets();
+    for (const e of [{ ...full, SETUP_CODE }, d1Env(t.env.DB, { ADMIN_AUTH: "access" }), d1Env(t.env.DB, { ADMIN_AUTH: undefined }), d1Env(t.env.DB, { ADMIN_PASSWORD_HASH: full.ADMIN_PASSWORD_HASH })]) {
+      const res = await send({ ...e, ASSETS: fetcher }, "/setup");
+      expect(res.status, String(e.ADMIN_AUTH)).toBe(404);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(hasSecurityHeaders(res)).toBe(true);
+    }
+    await t.env.DB.prepare("INSERT INTO admin_credentials (id, secret_hash, session_secret, created_at, first_login_at) VALUES (1, ?, ?, ?, ?)")
+      .bind(full.ADMIN_PASSWORD_HASH, "s".repeat(43), "2026-10-05T10:00:00.000Z", "2026-10-05T10:01:00.000Z").run();
+    expect((await send({ ...d1Env(t.env.DB), ASSETS: fetcher }, "/setup")).status).toBe(404);
+    expect(seen).toHaveLength(0);
+    await reset();
+  });
+
+  it("answers GET /setup with a short 503 explanation, not the page, when SETUP_CODE is missing or too short", async () => {
+    await reset();
+    const { seen, fetcher } = recordingAssets();
+    for (const code of [undefined, "short"]) {
+      const res = await send({ ...d1Env(t.env.DB, { SETUP_CODE: code }), ASSETS: fetcher }, "/setup");
+      expect(res.status).toBe(503);
+      expect(res.headers.get("content-type")).toContain("text/plain");
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      const text = await res.text();
+      expect(text).toContain("SETUP_CODE");
+      expect(text).toContain("12");
+      expect(text).not.toContain("short");
+    }
+    expect(seen).toHaveLength(0);
+  });
+
+  it("allows only GET and HEAD on /setup, and only POST on /api/setup", async () => {
+    const env = fresh();
+    for (const method of ["POST", "PUT", "DELETE"]) expect((await send(env, "/setup", { method })).status, method).toBe(405);
+    expect((await send(env, "/setup", { method: "POST" })).headers.get("allow")).toBe("GET, HEAD");
+    for (const method of ["GET", "PUT", "DELETE"]) expect((await send(env, "/api/setup", { method })).status, method).toBe(405);
+    expect((await send(env, "/api/setup", { method: "GET" })).headers.get("allow")).toBe("POST");
+  });
+
+  it("does not treat variants of the path as the page (no case folding, trailing slash or encoding)", async () => {
+    await reset();
+    const { seen, fetcher } = recordingAssets();
+    const env = { ...d1Env(t.env.DB), ASSETS: fetcher };
+    for (const path of ["/Setup", "/setup/", "/%73etup"]) {
+      seen.length = 0;
+      await send(env, path);
+      // At most a plain pass-through of the request as asked: never the clean /setup page fetched on its behalf.
+      expect(seen.map((r) => new URL(r.url).pathname), path).toEqual([path]);
+    }
+  });
+
+  it("goes from nothing to a signed-in admin, then closes for good", async () => {
+    await reset();
+    const env = fresh();
+    expect((await postJson(env, "/api/setup", { code: "wrong code here" })).status).toBe(401);
+    const made = await postJson(env, "/api/setup", { code: SETUP_CODE });
+    expect(made.status).toBe(200);
+    expect(made.headers.get("set-cookie")).toBeNull(); // setup itself signs nobody in
+    expect(hasSecurityHeaders(made)).toBe(true);
+    const { secret } = (await made.json()) as { secret: string };
+    expect((await send(env, "/api/admin/session")).status).toBe(401); // credentials exist, but no session yet
+
+    const login = await postJson(env, "/api/admin/login", { password: secret }, 2);
+    expect(login.status).toBe(200);
+    const cookie = login.headers.get("set-cookie")!.split(";")[0];
+    expect((await send(env, "/api/admin/session", { headers: { Cookie: cookie } })).status).toBe(200);
+
+    expect((await send(env, "/setup")).status).toBe(404);
+    expect((await postJson(env, "/api/setup", { code: SETUP_CODE }, 3)).status).toBe(404);
+    expect((await send(env, "/api/admin/session", { headers: { Cookie: cookie } })).status).toBe(200);
+    const row = await t.env.DB.prepare("SELECT secret_hash, session_secret FROM admin_credentials").first<Record<string, string>>();
+    expect(JSON.stringify(row)).not.toContain(secret);
+  });
+
+  it("makes the old secret stop working when setup is run again before anyone has signed in", async () => {
+    await reset();
+    const env = fresh();
+    const first = ((await (await postJson(env, "/api/setup", { code: SETUP_CODE })).json()) as { secret: string }).secret;
+    const second = ((await (await postJson(env, "/api/setup", { code: SETUP_CODE })).json()) as { secret: string }).secret;
+    expect((await postJson(env, "/api/admin/login", { password: first }, 4)).status).toBe(401);
+    expect((await postJson(env, "/api/admin/login", { password: second }, 5)).status).toBe(200);
+    expect((await postJson(env, "/api/admin/login", { password: first }, 6)).status).toBe(401);
+  });
+
+  it("answers 503 admin_not_configured on every admin route and method while there are no credentials, and 401 once there are (never a 200)", async () => {
+    await reset();
+    const env = fresh();
+    for (const route of adminRoutes) {
+      for (const method of METHODS) {
+        const res = await send(env, fill(route.pattern), { method, headers: writeHeaders("anything") });
+        expect(res.status, `${method} ${route.pattern}`).toBe(503);
+        if (method !== "HEAD") expect(await res.json()).toMatchObject({ error: { code: "admin_not_configured" } });
+      }
+    }
+    await postJson(env, "/api/setup", { code: SETUP_CODE });
+    let n = 0;
+    for (const route of adminRoutes) {
+      for (const method of METHODS) {
+        if (route.pattern === "/api/admin/login" && method === "POST") continue;
+        const res = await send(env, fill(route.pattern), { method, headers: writeHeaders("anything") });
+        expect(res.status, `${method} ${route.pattern}`).toBe(401);
+        n++;
+      }
+    }
+    expect(n).toBeGreaterThan(150);
+    await reset();
+  });
+
+  it("sends the admin pages to /setup while there are no credentials and setup is open, and to a 503 when it is not ready", async () => {
+    await reset();
+    for (const path of ["/admin", "/admin/", "/admin/login", "/admin/settings"]) {
+      const { seen, fetcher } = recordingAssets();
+      const res = await send({ ...d1Env(t.env.DB), ASSETS: fetcher }, path);
+      expect(res.status, path).toBe(302);
+      expect(res.headers.get("location"), path).toBe("/setup");
+      expect(seen, path).toHaveLength(0);
+      expect((await send({ ...d1Env(t.env.DB, { SETUP_CODE: undefined }), ASSETS: fetcher }, path)).status, path).toBe(503);
+    }
+  });
+
+  it("keeps env mode exactly as it was: /setup and /api/setup are 404 and the admin sign-in is unaffected", async () => {
+    await reset();
+    const env = { ...(await passwordEnv(t.env.DB)), SETUP_CODE, ASSETS: recordingAssets().fetcher };
+    expect((await send(env, "/setup")).status).toBe(404);
+    expect((await postJson(env, "/api/setup", { code: SETUP_CODE })).status).toBe(404);
+    expect((await postJson(env, "/api/admin/login", { password: TEST_PASSWORD }, 7)).status).toBe(200);
+    expect(await t.env.DB.prepare("SELECT COUNT(*) AS n FROM admin_credentials").first<{ n: number }>()).toEqual({ n: 0 });
   });
 });

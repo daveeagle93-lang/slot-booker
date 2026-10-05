@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex" />
+    <title>Set up admin sign-in</title>
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/api/theme.css" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/api/icon/32" />
+    <link rel="apple-touch-icon" href="/api/icon/180" />
+    <link rel="manifest" href="/api/manifest.webmanifest" />
+    <script type="module" src="/setup.js"></script>
+  </head>
+  <body>
+    <main id="app" class="login" data-autostart>
+      <h1>Set up admin sign-in</h1>
+      <form id="setup-form" method="post">
+        <p>Enter the setup code you chose when you deployed this site. You will then be shown your admin secret.</p>
+        <div class="field">
+          <label for="code">Setup code</label>
+          <input id="code" name="code" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" maxlength="256" required />
+        </div>
+        <p id="setup-error" class="form-error" role="alert"></p>
+        <button type="submit" class="button primary">Continue</button>
+      </form>
+      <section id="secret-step" class="message" hidden>
+        <h2>Your admin secret</h2>
+        <p><strong>This is your admin secret. Save it in your password manager now: it is shown only this once.</strong></p>
+        <p id="secret" class="secret"></p>
+        <button type="button" id="copy" class="button">Copy</button>
+        <p id="copy-status" class="copy-status" role="status"></p>
+        <p>If you run setup again before you first sign in, this secret is replaced.</p>
+        <label class="check" for="saved"><input id="saved" type="checkbox" />I've saved it</label>
+        <a id="sign-in" class="button primary" aria-disabled="true">Go to sign in</a>
+      </section>
+      <noscript><p class="message">This page needs JavaScript to set up the admin sign-in.</p></noscript>
+    </main>
+  </body>
+</html>

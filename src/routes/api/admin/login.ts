@@ -19,7 +19,7 @@ const MAX_PASSWORD_LENGTH = 256;
  * including a value that is not shaped like a generated secret (those are refused before any hashing).
  */
 export const createLoginHandler = (deps: AuthDeps = {}): RouteHandler => async ({ request, env }) => {
-  const resolved = adminAuthFor(env, deps);
+  const resolved = await adminAuthFor(env, deps);
   if ("error" in resolved || resolved.auth.kind !== "password") return errorResponse(404, "not_found", "Not found.", {}, noStore);
   const { auth } = resolved;
 
@@ -44,7 +44,9 @@ export const createLoginHandler = (deps: AuthDeps = {}): RouteHandler => async (
         ...noStore, "Retry-After": String(attempt.retryAfterSeconds),
       });
     }
-    if (!(await auth.checkPassword(password))) {
+    // The secret was checked against the credentials loaded above. With credentials from D1, confirmSignIn records the
+    // first sign-in (closing /setup) for exactly those, and refuses if setup replaced them since: the same 401, no session.
+    if (!(await auth.checkPassword(password)) || !(await auth.confirmSignIn())) {
       return errorResponse(401, "invalid_credentials", "That admin secret isn't right.", {}, noStore);
     }
     await clearAttempts(env.DB, key);
