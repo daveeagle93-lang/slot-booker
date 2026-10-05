@@ -49,15 +49,17 @@ Only a value in exactly the generated form is accepted: 43 characters from that 
 2. Make the session secret: `openssl rand -base64 48`.
 
    Use a **different** generated admin secret and a different `ADMIN_SESSION_SECRET` for preview and for production (run `generate-admin-secret` twice). With identical values, a session cookie minted on a preview would also validate on production if stolen and replayed, and preview code from another branch would handle the production admin secret.
-3. Set the two secrets on the Pages project. The installed Wrangler (4.147.0) lists `wrangler pages secret put <key>` with a `--project-name` option (`npx wrangler pages secret put --help`); it asks for the value, so nothing secret goes on the command line. Paste the hash line from step 1 for `ADMIN_PASSWORD_HASH`:
+3. Set the two secrets on the Pages project, once it exists (`docs/deploying.md`, step 7). The installed Wrangler (4.147.0) lists `wrangler pages secret put <key>` with a `--project-name` option (`npx wrangler pages secret put --help`); it asks for the value, so nothing secret goes on the command line. Paste the hash line from step 1 for `ADMIN_PASSWORD_HASH`. For a preview:
 
    ```sh
-   npx wrangler pages secret put ADMIN_PASSWORD_HASH --project-name slot-booker
-   npx wrangler pages secret put ADMIN_SESSION_SECRET --project-name slot-booker
+   npx wrangler pages secret put ADMIN_PASSWORD_HASH --project-name slot-booker --env preview
+   npx wrangler pages secret put ADMIN_SESSION_SECRET --project-name slot-booker --env preview
    ```
 
-   `npx wrangler pages secret bulk <file>` also exists, taking a JSON or `.dev.vars` file. The help shows no flag for choosing the production or preview environment, and I haven't verified which one `put` targets, so check in the dashboard after setting them.
-4. Set `ADMIN_AUTH=password` (a plain variable) under `vars` in `account.local.json` (or under `previewVars` if production differs) and run `npm run configure` (`docs/deploying.md`, step 3; see `docs/configuration.md`). `vars` are not inherited by `env.preview`, so the script writes `vars` into **both** the top-level block and `env.preview` of the generated `wrangler.json`; `previewVars` goes into `env.preview` only. Secrets set with `wrangler pages secret` are separate from `vars`. The help for `put` lists only `--project-name`, with no option for production versus preview, so I can't say from it which environment a secret lands in; check in the dashboard.
+   For production (with its own different values, step 2) use `--env production` in both commands.
+
+   Without `--env`, `put` writes to the **production** environment, and `--env preview` targets Preview. That is from the maintainer's real preview deployment, confirmed by the command's own output; the flag is **not in `--help`**, which lists only `--project-name`, so do not leave it out. Check in the dashboard afterwards (Settings, Variables and Secrets) as a confirmation that the secrets are listed under the environment you meant. `npx wrangler pages secret bulk <file>` also exists, taking a JSON or `.dev.vars` file; I have not checked how it chooses the environment.
+4. Set `ADMIN_AUTH=password` (a plain variable) under `vars` in `account.local.json` (or under `previewVars` if production differs) and run `npm run configure` (`docs/deploying.md`, step 3; see `docs/configuration.md`). `vars` are not inherited by `env.preview`, so the script writes `vars` into **both** the top-level block and `env.preview` of the generated `wrangler.json`; `previewVars` goes into `env.preview` only. Secrets set with `wrangler pages secret` are separate from `vars`, and each goes to the environment named by its `--env` (step 3).
 
 To replace the secret, run the script again and set the new `ADMIN_PASSWORD_HASH`. Existing sessions stay valid until they expire or `ADMIN_SESSION_SECRET` is rotated. A stored value in the earlier `pbkdf2-sha256$...` format is refused as malformed: admin answers 503 and the log line says to run `npm run generate-admin-secret`.
 
@@ -137,7 +139,7 @@ The labels below are the ones on Cloudflare's pages when this was written (sourc
    ```
 
    - The first request has no Access session, so Access should turn it away before the Worker sees it. The Worker's own answer is the JSON `unauthenticated` body shown below, so if you see that body here, Access isn't in front of this path. The status Access itself returns (I'd expect a redirect to your team's login page) is not stated on the pages fetched and is **not verified**.
-   - The second and third go to `pages.dev`, where no Access token is attached, so they reach the Worker and are refused by it: 401 with `{"error":{"code":"unauthenticated","message":"Sign in to continue."},"provider":"access"}`, and 401 with the text "Sign in with Cloudflare Access to use the admin pages." (checked against the local dev server with a made-up Access configuration, not on Cloudflare). A 503 instead means a setting is missing or malformed (the Pages logs say which).
+   - The second and third go to `pages.dev`, where no Access token is attached, so they reach the Worker and are refused by it: 401 with `{"error":{"code":"unauthenticated","message":"Sign in to continue."},"provider":"access"}`, and 401 with the text "Sign in with Cloudflare Access to use the admin pages." (checked against the local dev server with a made-up Access configuration, not on Cloudflare). A 503 instead means a setting is missing or malformed (the function logs say which: see [Troubleshooting](deploying.md#troubleshooting)).
    - In a browser, open `https://<custom-domain>/admin` (no trailing slash) in a private window: you should reach Access's sign-in. Sign in with an allowed email and the admin list should load. A non-allowed email should be refused by Access. Also open `https://<custom-domain>/` and a booking link `/e/<slug>`: they must load without any sign-in. "Sign out" in the admin list sends the browser to `/cdn-cgi/access/logout`.
 
 ### What `pages.dev` does under Access
