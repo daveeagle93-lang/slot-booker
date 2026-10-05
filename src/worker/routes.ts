@@ -31,7 +31,7 @@ import { onRequestGet as publicSettings } from "../routes/api/settings";
 import { onRequest as themeCss } from "../routes/api/theme.css";
 import { onRequest as favicon } from "../routes/favicon.ico";
 import type { Route } from "./router";
-import { serveAsset, serveEventPage } from "./static";
+import { serveEventPage, serveLandingPage } from "./static";
 
 /**
  * Every route the Worker answers itself. Anything not listed is a 404 (under /api/) or a static file. The admin guard
@@ -83,7 +83,7 @@ export function createRoutes(deps?: AuthDeps): Route[] {
     { method: "*", pattern: "/favicon.ico", handler: favicon, access: "public" },
 
     // The public pages the Worker sees first (wrangler.jsonc run_worker_first). Other static files never reach it.
-    { method: "GET", pattern: "/", handler: serveAsset, access: "public" },
+    { method: "GET", pattern: "/", handler: serveLandingPage, access: "public" },
     { method: "GET", pattern: "/e/:slug", handler: serveEventPage, access: "public" },
   ];
 }

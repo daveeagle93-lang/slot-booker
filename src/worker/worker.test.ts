@@ -287,10 +287,10 @@ describe("routing", () => {
     for (const path of ["/api", "/api/", "/api/events/", "/api/events/x/bookings/", "/api/health/"]) expect((await send(env, path)).status, path).toBe(404);
   });
 
-  it("passes the original request to ASSETS for / and any other unmatched GET or HEAD, and answers other methods with JSON", async () => {
+  it("passes the original request to ASSETS for any unmatched GET or HEAD (/ is the rewritten landing page: open-graph.test.ts), and answers other methods with JSON", async () => {
     const { seen, fetcher } = recordingAssets();
     const env = { DB: t.env.DB, ASSETS: fetcher } as AppEnv;
-    for (const path of ["/", "/style.css", "/lib.js", "/e/", "/e/a/b", "/nothing"]) {
+    for (const path of ["/style.css", "/lib.js", "/e/", "/e/a/b", "/nothing"]) {
       const request = new Request(`${ORIGIN}${path}`);
       const res = await worker.fetch(request, env);
       expect(res.status, path).toBe(200);
