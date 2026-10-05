@@ -1,6 +1,6 @@
 # Configuration
 
-The booking API reads two optional settings from Pages environment variables. (The admin sign-in settings, `ADMIN_AUTH` and the rest, are separate: see `docs/admin-auth.md`.) They are plain text, not secrets, and both have defaults, so a deployment works without setting either.
+The booking API reads two optional settings from the Worker's variables. (The admin sign-in settings, `ADMIN_AUTH`, `SETUP_CODE` and the rest, are separate: see `docs/admin-auth.md`.) They are plain text, not secrets, and both have defaults, so a deployment works without setting either.
 
 | Name | Meaning | Default | Example |
 | --- | --- | --- | --- |
@@ -13,7 +13,7 @@ The default privacy notice is:
 
 > We store your name, your dog's name and the slot you choose so the club can run the event. The club's organisers can see these details; other people using this page only see which slots are taken. The organisers may share the running order, with names, with other participants (for example in a group chat). The details are kept until an organiser deletes the event; nothing is deleted automatically.
 
-The third sentence covers **Copy lineup**, which puts the bookers' names into text that organisers paste into group chats. The last sentence describes what the app really does. Organisers can delete one event, or clear out several past events at once, from the admin list (see "Archiving and deleting" in the README), which removes its bookings too; nothing is ever deleted automatically. If your club promises something different, such as deleting everything within a set time, change the text and make sure the club keeps that promise by hand.
+The third sentence covers **Copy lineup**, which puts the bookers' names into text that organisers paste into group chats. The last sentence describes what the app really does. Organisers can delete one event, or clear out several past events at once, from the admin list (see [Archiving, deleting and clearing out old events](admin-guide.md#9-archiving-deleting-and-clearing-out-old-events) in the admin guide), which removes its bookings too; nothing is ever deleted automatically. If your club promises something different, such as deleting everything within a set time, change the text and make sure the club keeps that promise by hand.
 
 The default notice itself names no data controller and gives no contact. If an admin has set a privacy contact on the Settings page (`/admin/settings`, see [`docs/branding.md`](branding.md)), the booking form appends a line under the notice, whichever notice is in use: "Questions about your details, or want them deleted? Contact <name>, <email>." The contact counts as set once it has an email address. So the statement that the booking page names no contact is only true until a contact is set; it still names no data controller by name unless the club writes that into the notice. Clubs should set the contact and add who is responsible for the data (UK GDPR transparency: who is responsible for the data and how to reach them), by setting `PRIVACY_NOTICE`. Until a contact is set, the booking page shows a signed-in admin (and nobody else) a warning with a link to Settings.
 
@@ -25,7 +25,8 @@ Earlier builds' default notice said the club deletes booking details after the e
 
 ## Setting them
 
-- For a deployment, under `vars` in the git-ignored `account.local.json`, then run `npm run configure` (`docs/deploying.md`, step 3):
+- For a club's own copy of the repo, add them to the `vars` block of `wrangler.jsonc` (it already has `"vars": { "ADMIN_AUTH": "password" }`; add the new names beside it) and deploy again. Values are strings. If the copy also has a preview environment, `env.preview` needs the same `vars` block, because `vars` is not inherited.
+- For the maintainer's deployment, under `vars` in the git-ignored `account.local.json`, then run `npm run configure` (see `docs/deploying.md`):
 
   ```jsonc
   "vars": { "BOOKING_CUTOFF_OFFSET_MINUTES": "-30" }
@@ -44,4 +45,4 @@ Earlier builds' default notice said the club deletes booking details after the e
   The production block gets `vars` plus `productionVars`, and `env.preview` gets `vars` plus `previewVars`. Where a name is in both `vars` and the environment's own object, the environment's value wins in that block only; neither environment sees the other's own variables. `npm run configure` prints the variable names written to each block (never the values).
 - Locally, put them in `.dev.vars` (see `.dev.vars.example`). Restart `npm run dev` after changing it.
 
-This project uses a Wrangler configuration file, which Cloudflare's [Pages configuration docs](https://developers.cloudflare.com/pages/functions/wrangler-configuration/) say becomes the source of truth: "you cannot edit the same fields in the dashboard once you are using this file". So set deployed variables through the config file (`account.local.json` and `npm run configure`) and redeploy, rather than in the dashboard. (Redeploying is the safe assumption; the docs don't say whether a variable change applies without a new deployment.)
+This project is a Worker with a Wrangler configuration file, and that file is the source of truth for variables: by default a deploy deletes every variable set in the dashboard and sets the ones in the config (`npx wrangler deploy --help`, the `--keep-vars` option, Wrangler 4.147.0). So set deployed variables through the config file (`wrangler.jsonc`, or `account.local.json` and `npm run configure` for the maintainer) and deploy again, rather than in the dashboard, where a later deploy would remove them. Secrets are different: a deploy never deletes them (same help text), so `SETUP_CODE` and the other secrets are set once with `npx wrangler secret put`, and stay. I have not tested what a variable edited in the dashboard looks like after a deploy.

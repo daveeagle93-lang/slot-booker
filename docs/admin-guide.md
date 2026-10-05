@@ -21,7 +21,22 @@ It is written for a club organiser using a phone. Every button name below is in 
 
 This part gets you into the admin pages and tells you what to do when you are signed out.
 
-There are two ways to sign in. Which one you have depends on how your club's site was set up.
+There are two ways to sign in. Which one you have depends on how your club's site was set up. Most sites use the password screen. A brand new site has to make its admin secret first, as in the next part.
+
+### The first time: making your admin secret
+
+A new site has no admin secret yet. Whoever deployed it chose a setup code, a phrase of at least 12 characters. You use it once.
+
+1. Open your site's setup page: add /setup to the end of your site's address. Opening an admin page on a new site sends you there too.
+2. Tap the box labelled "Setup code" and type the setup code.
+3. Tap "Continue".
+4. Under "Your admin secret" you see a long string of letters and numbers. It is shown only this once, and the site keeps only a scrambled copy that can't be turned back into it. Tap "Copy" and save it in your password manager now.
+5. Tick "I've saved it".
+6. Tap "Go to sign in" and sign in as in the next part.
+
+Until your first successful sign-in, the setup page stays open, and running it again makes a new secret and the old one stops working. After your first sign-in the setup page goes for good, and opening it shows "Not found." You can't make another secret from it.
+
+A wrong code gives "That setup code isn't right." After a few wrong tries you see "Too many attempts. Try again in" some minutes. If the page says "Setup isn't ready", the setup code hasn't been set or is too short, so ask whoever deployed the site. If you lose the secret, see "Lost the admin secret" below.
 
 ### The password screen
 
@@ -29,12 +44,12 @@ You will see a page called "Admin sign-in".
 
 1. Open the admin page.
 2. Tap the box labelled "Admin secret".
-3. Type or paste the password your club was given.
+3. Type or paste your admin secret.
 4. Tap "Sign in".
 
-You land on the events page. A wrong password gives a short message saying it isn't right. Too many wrong tries in a row gives "Too many attempts. Try again in" some minutes. Wait, then try again.
+You land on the events page. A wrong secret gives "That admin secret isn't right." Too many wrong tries in a row gives "Too many attempts. Try again in" some minutes. Wait, then try again.
 
-The password is long and random. Keep it in a password manager and paste it. Spaces before or after it are ignored.
+The admin secret is long and random. Keep it in a password manager and paste it. Spaces before or after it are ignored.
 
 If you tap an admin link in a chat app and land on the sign-in page, wait a moment. If you are already signed in, it takes you straight on.
 
@@ -61,9 +76,9 @@ When your time runs out, the next thing you tap takes you back to the sign-in pa
 
 To sign out yourself, go to the events page and tap "Sign out".
 
-### Forgot the password
+### Lost the admin secret
 
-Ask whoever looks after the site's setup. Changing the password is their job. They can find the steps in the section on changing the password in [handover.md](handover.md#4-changing-the-password-or-signing-everyone-out-password-mode-only).
+Ask whoever looks after the site's setup. A lost secret can't be looked up, and the setup page can't be used again after your first sign-in, so replacing it is their job. They can find the steps in [handover.md](handover.md#if-the-admin-secret-is-lost), section "If the admin secret is lost".
 
 ## 2. Club settings and branding
 
@@ -247,6 +262,12 @@ Tap "Copy message" and paste it where you want it. Or tap "Open in WhatsApp". It
 
 To make another event, tap "Create another". To leave, tap "Back to events".
 
+### The preview card
+
+When you paste an event's booking link into WhatsApp, or a similar app, it may show a small preview card. For an event, the card shows the event name and its date, then your club name, the venue postcode and the cost, with the club's icon. A link to the home page shows the club's name. It is made from what anyone can already see on the booking page, so the details text and the names of people booking are never in it.
+
+I haven't seen this on a real phone. WhatsApp remembers the preview it made the first time a link was shared. If you rename or change an event after sharing its link, people may keep seeing the old card for a while, and I don't know how long. The message you copy already has the details in it, so the card may repeat them.
+
 ### What people booking see
 
 1. They open your link and see the event name, date, time, venue and cost.
@@ -305,7 +326,7 @@ The person is not told. The page says "They won't be told. You need to let them 
 
 - You can add or move bookings after bookings have closed, and into slots that have already started. This is meant for sorting out the day itself.
 - A slot holds one booking. If it is taken, you see "That slot is already taken by" the dog and handler. The list refreshes.
-- A dog and handler can only have one booking per event. Capital letters and extra spaces do not make a name different. If they already have one, you are told which time.
+- A dog and handler can only have one booking per event. Capital letters, extra spaces and hidden characters do not make a name different. If they already have one, you are told which time.
 - If someone else changed things while you were working, you see "That changed while you were working. The schedule has been refreshed."
 - Names have the same rules as when people book. See [If something looks wrong](#10-if-something-looks-wrong).
 
@@ -439,6 +460,7 @@ The booking form's usual privacy note says details are kept until an organiser d
 This part lists what you might see and what to do.
 
 - **The page sends you to the sign-in page.** You were signed out. Sign in again. See [Signing in](#1-signing-in).
+- **You see "Admin sign-in isn't set up."** The admin sign-in is missing a setting on the site. Contact whoever looks after the site's setup. On a brand new site, opening an admin page should take you to the setup page instead: see [Signing in](#1-signing-in).
 - **A booking looks wrong.** Open "Schedule" for the event. Use "Move", "Swap", "Clear" or "Add booking". See [Fixing bookings](#5-fixing-bookings).
 - **A name was refused.** Messages like "The dog's name can't contain invisible or direction-changing characters." mean the name has a hidden mark in it. This happens with text pasted from elsewhere. It also happens with some emoji that are joined together with an invisible joiner. Some names in certain scripts need a joiner and are refused too. Retype the name by hand. For an emoji, pick a single plain one. The same rule applies to event names, break names, details, the club name and the contact details. An event or settings text saved earlier that has such a character in it can still be saved unchanged, but if you change that text, type it again as plain text. A dog's or handler's name also needs at least one letter or number in it ("The dog's name must contain at least one letter or number."), so a name made only of an emoji or symbols is refused; add a letter, for example "Rex 🐶".
 - **The logo won't upload.** Use a PNG, JPEG or WebP picture under 20 MB. A message says if it is the wrong type, too big, or can't be read. Try a simpler picture.

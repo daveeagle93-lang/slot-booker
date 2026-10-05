@@ -3,41 +3,65 @@
 Everything under `/admin/*` (the pages) and `/api/admin/*` (the API) is for the club's organisers. Handlers can't move or cancel bookings; only an admin can. Sign-in is pluggable: one `AdminAuth` interface (`src/server/auth/types.ts`) with two providers, chosen by configuration:
 
 - **`access`**: Cloudflare Access sits in front of the site and the Worker verifies the signed token Access adds. The admin's identity is the verified email address. It needs a custom domain (see the hard rule below).
-- **`password`**: one shared, generated admin secret, checked by the Worker, which then issues a signed session cookie. The identity is the fixed string `admin`. It is the option for local development, for previews and for deployments reachable only on `*.pages.dev`.
+- **`password`**: one shared, generated admin secret, checked by the Worker, which then issues a signed session cookie. The identity is the fixed string `admin`. It is the default (`wrangler.jsonc` sets `ADMIN_AUTH=password`), and the option for local development, for previews and for deployments reachable only on `*.workers.dev`. A new deployment makes its secret on the `/setup` page (see "First-run setup").
 
-It fails closed. If `ADMIN_AUTH` is unset, misspelt (`Password`, `none`, ` access`) or the chosen provider's settings are missing or malformed, **every** admin page and `/api/admin/*` request, including paths that don't exist, gets a 503 and a line in the logs saying which setting is wrong. The other provider's settings are never used as a fallback.
+It fails closed. If `ADMIN_AUTH` is unset, misspelt (`Password`, `none`, ` access`) or the chosen provider's settings are missing or malformed, **every** admin page and `/api/admin/*` request, including paths that don't exist, gets a 503 and a line in the logs saying which setting is wrong. The other provider's settings are never used as a fallback. With the password provider and no admin secret yet, the answer is the same 503, except that a request for an admin page is sent to `/setup` while setup is open (see "First-run setup").
 
-## Hard rule: Access needs a custom domain; `*.pages.dev` uses the password
+## Hard rule: Access needs a custom domain; `*.workers.dev` uses the password
 
-**`ADMIN_AUTH=access` is only for a deployment served on a custom domain, on a Cloudflare zone you control. A deployment reachable only on `*.pages.dev`, and every preview deployment, uses `ADMIN_AUTH=password`.**
+**`ADMIN_AUTH=access` is only for a deployment served on a custom domain, on a Cloudflare zone you control (one that uses Cloudflare's nameservers). A deployment reachable only on `*.workers.dev`, and every preview deployment, uses `ADMIN_AUTH=password`.**
 
-Why: Cloudflare documents no way to put a hand-made self-hosted Access application, scoped to `/admin/*` and `/api/admin/*`, on a `pages.dev` hostname. The self-hosted application guide lists "An active domain on Cloudflare" as a prerequisite and says "Domains must belong to an active zone in your Cloudflare account", and neither it nor the application-paths page mentions `pages.dev`. Pages' own "Enable access policy" is not a substitute: the Pages docs describe it per hostname with no path option, so it would put the public booking pages behind a login too, and by itself it covers previews only. (Sources and what was checked: "Cloudflare claims" at the end.)
+Why: Cloudflare's self-hosted application guide lists "An active domain on Cloudflare" as a prerequisite and says "Domains must belong to an active zone in your Cloudflare account". A `workers.dev` hostname is not a zone in your account. I haven't found a documented way to put an Access application scoped to `/admin/*` and `/api/admin/*` on one, and I haven't checked whether Cloudflare offers a switch for `workers.dev` hostnames as a whole (the guide was read on 4 October 2026, while the project still ran on Pages, and does not mention either host). A whole-hostname policy would put the public booking pages behind a login too, so it would not be a substitute anyway. (Sources and what was checked: "Cloudflare claims" at the end.)
 
-This is a project rule, not something the Worker checks: with `ADMIN_AUTH=access` on a `pages.dev`-only deployment the Worker starts normally and then answers 401 to every admin request, because no token ever arrives (see "What `pages.dev` does under Access"). The planned setup wizard will enforce the rule. Until then, follow it by hand.
+This is a project rule, not something the Worker checks: with `ADMIN_AUTH=access` on a `workers.dev`-only deployment the Worker starts normally and then answers 401 to every admin request, because no token ever arrives (see "What `workers.dev` does under Access"). The default configuration already follows the rule, because `wrangler.jsonc` sets `ADMIN_AUTH=password`, so a new deployment is safe until someone changes it.
 
 ## Settings
 
 | Name | Secret? | Used by | Meaning |
 | --- | --- | --- | --- |
-| `ADMIN_AUTH` | no | both | `access` or `password`, exactly. Anything else locks admin out. |
+| `ADMIN_AUTH` | no | both | `access` or `password`, exactly. Anything else locks admin out. `wrangler.jsonc` sets `password`. |
 | `ACCESS_TEAM_DOMAIN` | no | access | Your team's host, such as `your-team.cloudflareaccess.com`. Must match `<name>.cloudflareaccess.com`, because it decides where the signing keys are fetched from. |
 | `ACCESS_AUD` | no | access | The Access application's AUD (audience) tag. |
-| `ADMIN_PASSWORD_HASH` | **yes** | password | `hmac-sha256$<salt>$<mac>`, the hash line from `npm run --silent generate-admin-secret`. Anything else, including the earlier `pbkdf2-sha256$...` format, locks admin out. |
-| `ADMIN_SESSION_SECRET` | **yes** | password | At least 32 random characters. Signs the session cookie and keys the login rate-limit hashes. Shorter counts as not configured. |
+| `SETUP_CODE` | **yes** | password | A phrase you choose, at least 12 characters (counted after trimming). Typed once on `/setup` to make the admin secret. Not used once the first sign-in has happened, or when the two settings below are set. Missing or shorter counts as not ready: `/setup` answers 503. |
+| `ADMIN_PASSWORD_HASH` | **yes** | password, override | Optional. `hmac-sha256$<salt>$<mac>`, the hash line from `npm run --silent generate-admin-secret`. Anything else, including the earlier `pbkdf2-sha256$...` format, locks admin out. If this or `ADMIN_SESSION_SECRET` is set, the environment settings apply and `/setup` is 404 (see "First-run setup"). |
+| `ADMIN_SESSION_SECRET` | **yes** | password, override | Optional. At least 32 random characters. Signs the session cookie and keys the login rate-limit hashes. Shorter counts as not configured. |
 
-The two secrets must never be committed or put in `wrangler.jsonc`. `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are not secrets but are club details, so keep them out of the committed `wrangler.jsonc` as well: put them under `productionVars` (they belong to production, not preview) in the git-ignored `account.local.json` and run `npm run configure` (`docs/deploying.md`, step 3). Locally, put them in `.dev.vars` (see `.dev.vars.example`) and restart `npm run dev`; only the password provider can be tried locally.
+The three secrets must never be committed or put in `wrangler.jsonc`. Set them as Worker secrets (`npx wrangler secret put <NAME>` asks for the value, so nothing secret goes on the command line; the Deploy button prompts for `SETUP_CODE`). A deploy never deletes or replaces Worker secrets (`npx wrangler deploy --help`: "secrets are never deleted by deployments").
+
+`ADMIN_AUTH`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are plain variables, and they behave differently: by default a deploy replaces every variable set in the dashboard with the ones in the config file (`--keep-vars` in `npx wrangler deploy --help`). So set them in the config, not the dashboard. In a club's own copy of the repo that means the `vars` block of `wrangler.jsonc`. In the maintainer's copy they go under `productionVars` (they belong to production, not preview) in the git-ignored `account.local.json`, followed by `npm run configure` (see `docs/deploying.md`). Locally, put them in `.dev.vars` (see `.dev.vars.example`) and restart `npm run dev`; only the password provider can be tried locally.
 
 ## Password provider
+
+### First-run setup
+
+A new deployment has no admin secret, and nobody has to generate one by hand. The person who deployed it chooses a setup code, and the site makes the secret for them on a page of its own.
+
+1. Set `SETUP_CODE` as a Worker secret: a phrase of at least 12 characters that you keep to yourself. The Deploy button asks for it. Without it, or with a shorter one, `/setup` answers 503 with a line saying so, and the admin pages answer 503.
+2. Open `/setup` on the site. With no admin secret yet, any admin page sends you there (while setup is open).
+3. Type the code into "Setup code" and tap "Continue". The Worker makes a generated admin secret (the kind described below), and the page shows it **once**. Only a hash of it is stored, with a new session secret, in the `admin_credentials` table (migration `0013`), so it can't be shown again.
+4. Save the secret in a password manager, tick "I've saved it", then tap "Go to sign in". The link only works once the box is ticked.
+
+Rules:
+
+- `/setup` stays open until the first successful sign-in. Running it again before then makes a new secret and replaces the old one, which stops working. The page says so.
+- The first successful sign-in on `/admin/login` closes setup for good: `/setup` and `POST /api/setup` answer 404 from then on. The time is stored in `first_login_at`.
+- A wrong code gets 401 "That setup code isn't right." After 5 attempts from one client in 15 minutes the next gets 429 with `Retry-After`. The attempts are counted before the code is checked, in the `login_attempts` table with keys of their own (the sign-in count is separate), and a right code clears them. Client addresses are treated as in "Rate limiting".
+- If `ADMIN_PASSWORD_HASH` or `ADMIN_SESSION_SECRET` is set as a Worker secret, the older behaviour applies instead: D1 is never read, both settings must then be valid, one alone is a 503, and `/setup` is 404. See "Setting the secrets by hand".
+- `/setup` is only for the password provider. With `ADMIN_AUTH=access` it is 404.
+- Because the session secret sits in the database beside the hash, anyone who can read the `admin_credentials` table can sign a session cookie for themselves. A full export of the database includes that table, so keep exports private. (This is read from the table definition and the code; I haven't looked at an export.)
+- A lost secret can't be recovered, and `/setup` can't be used again after the first sign-in. Deleting the `admin_credentials` row reopens `/setup`; the steps are in [handover.md](handover.md#if-the-admin-secret-is-lost), section "If the admin secret is lost".
 
 ### Why a generated secret, not a password
 
 The password provider has one shared credential and nothing slows a guesser down except the rate limit (below). Workers have no strong password-hashing function: the only native one is PBKDF2, capped at 100,000 iterations (below the OWASP recommendation) and costing CPU time on every login. So the credential is not a password a person chooses. It is a **generated admin secret**: 32 random bytes from `crypto.getRandomValues`, written as 43 base64url characters (`A-Z a-z 0-9 - _`), which is 256 bits. Nobody can guess or brute-force 256 random bits, whether through the login form or from a stolen stored value, so the stored value needs no slow hash. It is `hmac-sha256$<salt>$<mac>`, where `mac` is HMAC-SHA-256 keyed with a random 16-byte salt over the secret, and the login compares in constant time.
 
-What that protects against: online guessing (rate limited, and hopeless against 256 bits anyway) and a leak of the stored `ADMIN_PASSWORD_HASH` (it can't be reversed into the secret, or attacked offline in any practical way). What it doesn't: the secret itself being stolen (a keylogger, a phished or shoulder-surfed secret, a screenshot, a shared note), someone with the Cloudflare account reading or replacing the settings, or a stolen session cookie (see "Sessions"). There is no second factor and no per-person identity (the identity is always `admin`); Access provides both. The secret is meant to live in a password manager and be filled in by it, not typed from memory: it is 43 characters of noise.
+What that protects against: online guessing (rate limited, and hopeless against 256 bits anyway) and a leak of the stored hash (`ADMIN_PASSWORD_HASH`, or the `secret_hash` column made by `/setup`; it can't be reversed into the secret, or attacked offline in any practical way). What it doesn't: the secret itself being stolen (a keylogger, a phished or shoulder-surfed secret, a screenshot, a shared note), someone with the Cloudflare account reading or replacing the settings, or a stolen session cookie (see "Sessions"). There is no second factor and no per-person identity (the identity is always `admin`); Access provides both. The secret is meant to live in a password manager and be filled in by it, not typed from memory: it is 43 characters of noise.
 
 Only a value in exactly the generated form is accepted: 43 characters from that alphabet that decode to 32 bytes and are the spelling the generator would print. (The last character of 43 base64url characters carries only 4 bits, so a few other spellings decode to the same bytes; they are refused, so each secret has one accepted spelling.) Any other value that reaches the check is refused with the same 401 as a wrong secret, before any hashing. Two cases never reach it and get 400 `invalid_input` instead: a value longer than 256 UTF-16 code units, and one that is empty, or only whitespace and zero-width characters, after trimming. Those are not counted toward the rate limit, which is harmless because no secret check happens. The form check reveals nothing that isn't already public, because the form is documented here. Whitespace and zero-width characters (spaces, tabs, line breaks, non-breaking spaces, zero-width spaces and joiners, soft hyphens) at the start or end of what is sent are ignored, because copying from a chat app or PDF often adds them; anything inside the secret is not ignored.
 
-### Setting it up
+### Setting the secrets by hand
+
+This is the override, for an existing deployment that already has these two secrets and for local development. A new deployment doesn't need it: use `/setup`.
 
 1. Generate the secret and its stored value. The script takes no arguments and reads no input:
 
@@ -49,17 +73,15 @@ Only a value in exactly the generated form is accepted: 43 characters from that 
 2. Make the session secret: `openssl rand -base64 48`.
 
    Use a **different** generated admin secret and a different `ADMIN_SESSION_SECRET` for preview and for production (run `generate-admin-secret` twice). With identical values, a session cookie minted on a preview would also validate on production if stolen and replayed, and preview code from another branch would handle the production admin secret.
-3. Set the two secrets on the Pages project, once it exists (`docs/deploying.md`, step 7). The installed Wrangler (4.147.0) lists `wrangler pages secret put <key>` with a `--project-name` option (`npx wrangler pages secret put --help`); it asks for the value, so nothing secret goes on the command line. Paste the hash line from step 1 for `ADMIN_PASSWORD_HASH`. For a preview:
+3. Set the two secrets on the Worker. `npx wrangler secret put <key>` asks for the value, so nothing secret goes on the command line (`npx wrangler secret put --help`, Wrangler 4.147.0). Paste the hash line from step 1 for `ADMIN_PASSWORD_HASH`:
 
    ```sh
-   npx wrangler pages secret put ADMIN_PASSWORD_HASH --project-name slot-booker --env preview
-   npx wrangler pages secret put ADMIN_SESSION_SECRET --project-name slot-booker --env preview
+   npx wrangler secret put ADMIN_PASSWORD_HASH
+   npx wrangler secret put ADMIN_SESSION_SECRET
    ```
 
-   For production (with its own different values, step 2) use `--env production` in both commands.
-
-   Without `--env`, `put` writes to the **production** environment, and `--env preview` targets Preview. That is from the maintainer's real preview deployment, confirmed by the command's own output; the flag is **not in `--help`**, which lists only `--project-name`, so do not leave it out. Check in the dashboard afterwards (Settings, Variables and Secrets) as a confirmation that the secrets are listed under the environment you meant. `npx wrangler pages secret bulk <file>` also exists, taking a JSON or `.dev.vars` file; I have not checked how it chooses the environment.
-4. Set `ADMIN_AUTH=password` (a plain variable) under `vars` in `account.local.json` (or under `previewVars` if production differs) and run `npm run configure` (`docs/deploying.md`, step 3; see `docs/configuration.md`). `vars` are not inherited by `env.preview`, so the script writes `vars` into **both** the top-level block and `env.preview` of the generated `wrangler.json`; `previewVars` goes into `env.preview` only. Secrets set with `wrangler pages secret` are separate from `vars`, and each goes to the environment named by its `--env` (step 3).
+   For the preview Worker add `--env preview` to both commands (`-e, --env` is in the help). Without it the secret goes to the production Worker, so don't leave it out. Set both: with only one of them set, admin answers 503, and `/setup` is already closed. Check in the dashboard afterwards that the secrets are listed on the Worker you meant (I haven't checked what the dashboard calls that page).
+4. `ADMIN_AUTH=password` is already set by `wrangler.jsonc`, so there is nothing more to set unless you changed it. In the maintainer's copy it can also come from `vars` (or `previewVars`) in `account.local.json` followed by `npm run configure` (see `docs/configuration.md`). `vars` are not inherited by `env.preview`, so the script writes `vars` into **both** the top-level block and `env.preview` of the generated `wrangler.json`; `previewVars` goes into `env.preview` only. Secrets are separate from `vars`, and each goes to the Worker named by its `--env`.
 
 To replace the secret, run the script again and set the new `ADMIN_PASSWORD_HASH`. Existing sessions stay valid until they expire or `ADMIN_SESSION_SECRET` is rotated. A stored value in the earlier `pbkdf2-sha256$...` format is refused as malformed: admin answers 503 and the log line says to run `npm run generate-admin-secret`.
 
@@ -68,15 +90,15 @@ To replace the secret, run the script again and set the new `ADMIN_PASSWORD_HASH
 Workers Free gives a request 10 ms of CPU ([Workers limits](https://developers.cloudflare.com/workers/platform/limits/)). Measured on this machine in local `workerd` (via `wrangler`), **not on real Workers**, and local workerd does not enforce that limit:
 
 - **The check itself.** A scratch worker ran the real `verifyAdminSecret` (shape check, HMAC key import, HMAC, constant-time compare) in a loop and read `performance.now()` around it. workerd's clock only advances at I/O boundaries and at awaits of crypto operations, so the figure was cross-checked against the wall time of the whole HTTP request, measured by `curl`; the two agreed. 10 runs of 10,000 verifications took 80 to 112 ms (median about 90 ms), about **9 microseconds each**. A secret refused by the shape check took under 1 microsecond.
-- **The whole request.** With `wrangler pages dev`, a throwaway local D1 and the password provider, 30 `POST /api/admin/login` requests with the correct secret took a median of **3.5 ms** and a p95 of 4.2 ms by `curl`'s `time_total` (a 401 for a well-formed wrong secret: median 2.7 ms; for a malformed one: median 2.6 ms). That is wall time including HTTP, JSON parsing and the D1 rate-limit write and read (local SQLite, so a real D1 will be slower, in time spent waiting on I/O rather than CPU), not CPU time. I didn't measure the CPU of the rest of the request separately.
+- **The whole request.** With `wrangler pages dev` (the earlier Pages build; not measured again on the Worker), a throwaway local D1 and the password provider, 30 `POST /api/admin/login` requests with the correct secret took a median of **3.5 ms** and a p95 of 4.2 ms by `curl`'s `time_total` (a 401 for a well-formed wrong secret: median 2.7 ms; for a malformed one: median 2.6 ms). That is wall time including HTTP, JSON parsing and the D1 rate-limit write and read (local SQLite, so a real D1 will be slower, in time spent waiting on I/O rather than CPU), not CPU time. I didn't measure the CPU of the rest of the request separately.
 
 So the HMAC is about three orders of magnitude below 10 ms. Whether the whole login fits the free plan's CPU limit on real Workers is **not verified**; the local wall time of the entire request being about a third of the limit is encouraging but isn't a CPU measurement.
 
 ### Sessions
 
-On a correct admin secret the Worker sets `__Host-sb_admin` with exactly `HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=28800` (8 hours, no `Domain`). Its value is `v1.<payload>.<signature>`: the payload is base64url JSON `{sid, iat, exp}` (a 128-bit random session id and times in seconds) and the signature is HMAC-SHA-256 over it with `ADMIN_SESSION_SECRET`. Each request verifies the signature first, then the claims (not expired, issued no later than a minute ahead, lifetime at most 24 hours, exactly those three fields).
+On a correct admin secret the Worker sets `__Host-sb_admin` with exactly `HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=28800` (8 hours, no `Domain`). Its value is `v1.<payload>.<signature>`: the payload is base64url JSON `{sid, iat, exp}` (a 128-bit random session id and times in seconds) and the signature is HMAC-SHA-256 over it with `ADMIN_SESSION_SECRET` (or, when the admin secret came from `/setup`, the session secret stored beside its hash). Each request verifies the signature first, then the claims (not expired, issued no later than a minute ahead, lifetime at most 24 hours, exactly those three fields).
 
-Sessions are **stateless**. Logout clears the cookie in the browser but cannot revoke a stolen copy before it expires. Rotating `ADMIN_SESSION_SECRET` invalidates every session at once; do that if a cookie may have leaked, and generate a new admin secret if the secret or its hash may have leaked.
+Sessions are **stateless**. Logout clears the cookie in the browser but cannot revoke a stolen copy before it expires. Rotating `ADMIN_SESSION_SECRET` invalidates every session at once; do that if a cookie may have leaked, and generate a new admin secret if the secret or its hash may have leaked. With a secret made on `/setup` there is no setting to rotate: see [handover.md](handover.md#if-the-admin-secret-is-lost), section "If the admin secret is lost".
 
 `SameSite=Strict` means the browser doesn't send the cookie on a cross-site navigation, such as a link to `/admin/` in a chat app. The first request then looks signed out and is redirected to the login page, whose script asks `/api/admin/session` (a same-origin request, which does carry the cookie) and continues to `/admin/` if already signed in.
 
@@ -85,7 +107,7 @@ Sessions are **stateless**. Logout clears the cookie in the browser but cannot r
 `POST /api/admin/login` allows 5 attempts per client per 15 minutes. Each attempt is counted atomically **before** the secret is checked, so parallel guesses can't exceed the limit, and a client over the limit gets 429 with `Retry-After` without any hashing. A correct secret clears the client's count. The counts are in the `login_attempts` table (migrations `0006` and `0007`).
 
 - **Who a client is.** The `CF-Connecting-IP` header (set by Cloudflare). An IPv4 address counts as itself. An IPv6 address counts as its **/64 prefix**, because one subscriber normally owns a whole /64 (2^64 addresses) and a per-address limit could be sidestepped by rotating through them. An IPv4-mapped IPv6 address (`::ffff:203.0.113.9`) counts as that IPv4 address, a zone id (`%eth0`) is ignored, and a value that can't be parsed counts as itself. Without the header (local development) all requests share one client.
-- **What is stored.** The key is the hex HMAC-SHA-256, keyed with `ADMIN_SESSION_SECRET`, of that client bucket (the message is domain-separated from the session signatures). It is keyed because an unkeyed hash of an IPv4 address can be reversed in minutes by hashing every address. The rows are therefore pseudonymous but **still personal data**: whoever holds the secret and the table can test a guess at an address. Rotating the secret makes old rows match nobody. Rows whose window ended more than a day ago are deleted as a side effect of later login attempts, at most 100 per attempt, so they stay until someone attempts a login. Rows written before migration `0007` were plain SHA-256 hashes; they match no client now and go the same way. With the Access provider the table is never touched.
+- **What is stored.** The key is the hex HMAC-SHA-256, keyed with the session secret (`ADMIN_SESSION_SECRET`, or the one stored by `/setup`), of that client bucket (the message is domain-separated from the session signatures). It is keyed because an unkeyed hash of an IPv4 address can be reversed in minutes by hashing every address. The rows are therefore pseudonymous but **still personal data**: whoever holds the secret and the table can test a guess at an address. Rotating the session secret makes old rows match nobody. Rows whose window ended more than a day ago are deleted as a side effect of later login attempts, at most 100 per attempt, so they stay until someone attempts a login. Rows written before migration `0007` were plain SHA-256 hashes; they match no client now and go the same way. With the Access provider the table is never touched.
 - **Shared addresses.** Anyone sharing the admin's address (carrier-grade NAT, venue wifi, the same /64) shares the count: they can use up the five attempts and lock the admin's address out for up to 15 minutes. That is a known property of limiting by address.
 - **No global lockout.** A limit across all clients would let anyone lock the real admin out from anywhere. So this limits one client, and does **not** stop a distributed attack that spreads guesses across many addresses; that is why the secret is 256 random bits rather than something a person chose.
 - **Cost of the purge.** `0007` indexes `window_start`. Without it the purge scanned the whole table on every attempt, so attempts from many addresses could read enough rows to use up D1's free daily read allowance and break the public booking page too.
@@ -94,11 +116,11 @@ Sessions are **stateless**. Logout clears the cookie in the browser but cannot r
 
 ### Setting it up (custom domain)
 
-Prerequisite: the hard rule above. You need a domain whose zone is active in your Cloudflare account, and the Pages project to serve the site on a hostname of that domain, such as `book.example.com`. The Access application is scoped to the paths `/admin/*` and `/api/admin/*` on that hostname, so the public booking pages stay public.
+Prerequisite: the hard rule above. You need a domain whose zone is active in your Cloudflare account, using Cloudflare's nameservers, and the Worker to serve the site on a hostname of that domain, such as `book.example.com`. The Access application is scoped to the paths `/admin/*` and `/api/admin/*` on that hostname, so the public booking pages stay public.
 
-The labels below are the ones on Cloudflare's pages when this was written (sources under "Cloudflare claims"). Nobody has run this against a real account here, so the dashboard itself may word things differently.
+The Access labels below are the ones on Cloudflare's pages when this was written (sources under "Cloudflare claims"). Nobody has run this against a real account here, so the dashboard itself may word things differently. The Worker side (steps 1 and 5) was written for the move from Pages to a Worker and I have not read Cloudflare's Workers pages for it, so check it against their current docs.
 
-1. **Attach the custom domain to the Pages project first.** In the Cloudflare dashboard go to "Workers & Pages", select your Pages project, then "Custom domains" and "Set up a domain". Enter the hostname and select "Continue". For an apex domain (`example.com`) Cloudflare's docs say the domain must be a zone in the same account with Cloudflare's nameservers. Do not add the CNAME record by hand instead: Cloudflare says that adding one without first associating the domain in the Pages dashboard "will result in your domain failing to resolve at the CNAME record address, and display a 522 error". Do this before step 2: Cloudflare lists as a known issue that "It is currently not possible to add a custom domain with a Cloudflare Access policy already enabled on that domain".
+1. **Put the custom domain on the Worker first.** Cloudflare's Workers settings have a place for custom domains (I believe "Settings", then "Domains & Routes", but I haven't verified the labels). In the config file the same thing is a `routes` entry with `custom_domain` set to `true` and the hostname as the `pattern` (`custom_domain` is in Wrangler's config schema; `npx wrangler deploy --help` also lists `--domains`). Do this before step 2: for Pages, Cloudflare listed as a known issue that a custom domain could not be added once an Access policy was already enabled on it. I haven't checked whether that holds for Workers, but doing it in this order costs nothing.
 2. **Create the Access application.** In the Cloudflare dashboard go to "Zero Trust" > "Access controls" > "Applications", select "Create new application", then "Self-hosted and private". Select "Add public hostname". In the "Domain" dropdown choose your domain (it must belong to an active zone), set the subdomain if you use one, and set the **Path** as below. Never leave the path empty: that protects the whole site, including the booking pages.
 
    Cloudflare's application-paths page says a wildcard in the Path field "does not cover the parent path": its example is that `example.com/alpha/*` covers `example.com/alpha/one` but not `example.com/alpha`. So `/admin/*` does **not** cover `/admin` itself, and you need an entry for each of these four paths on your hostname:
@@ -111,10 +133,24 @@ The labels below are the ones on Cloudflare's pages when this was written (sourc
    | `/api/admin/*` | everything below `/api/admin/`: the admin API |
 
    Select "Add public hostname" again for each further entry. The Cloudflare page documents the single-entry flow; adding several by repeating it is my assumption, so check it in the dashboard. A second application per path would work too but would give a second AUD tag, and the Worker accepts only one.
-   The Worker guards bare `/admin` and `/api/admin` itself (checked locally, see "What `pages.dev` does under Access"), so the two bare entries are belt and braces, not the only protection. Entries with a `?` query string, a port or a `#` are not supported by Access application paths, so don't add any.
+   The Worker guards bare `/admin` and `/api/admin` itself (checked in the Worker's tests, see "What `workers.dev` does under Access"), so the two bare entries are belt and braces, not the only protection. Entries with a `?` query string, a port or a `#` are not supported by Access application paths, so don't add any.
 3. **Add an Allow policy.** Under "Access policies" add an existing policy or create a new one that allows the organisers' email addresses. Cloudflare: "All Access applications are deny by default -- a user must match an Allow policy before they are granted access." (How to pick emails, such as an "Emails" selector, is not on the page fetched; check the dashboard.) Choose the identity providers you accept, and set "Session Duration" short (say 8 hours or less), so a token that leaks expires soon. Cloudflare: "Cloudflare checks every HTTP request to your application for a valid application token." Select "Create".
 4. **Copy the AUD tag and team domain.** Go to "Zero Trust" > "Access controls" > "Applications", select "Configure" for your application and, from "Additional settings", copy the "Application Audience (AUD) Tag" (Cloudflare: it "will never change unless you delete or recreate the Access application"). Your team domain is `<your-team-name>.cloudflareaccess.com`; Cloudflare says the team name is shown in Cloudflare One under "Settings".
-5. **Give the Worker the settings and redeploy.** In `account.local.json` (`docs/deploying.md`, step 3) add the Access settings to `productionVars`, as strings and with the host only, no `https://`. Keep previews on the password provider with `previewVars`:
+5. **Give the Worker the settings and redeploy.** Use the config file, not the dashboard: a deploy overwrites dashboard variables with the ones in the config (see "Settings"). The values are strings, with the host only for the team domain, no `https://`.
+
+   In a club's own copy of the repo, change `vars` in `wrangler.jsonc`:
+
+   ```jsonc
+   "vars": {
+     "ADMIN_AUTH": "access",
+     "ACCESS_TEAM_DOMAIN": "<your-team-name>.cloudflareaccess.com",
+     "ACCESS_AUD": "<the AUD tag from step 4>"
+   },
+   ```
+
+   Then run `npm run deploy` (it applies any new migrations, then deploys). Only the top-level `vars` is changed, so a preview environment, if you have one, stays on the password provider.
+
+   In the maintainer's copy, add the Access settings to `productionVars` in `account.local.json` (see `docs/deploying.md`) and keep previews on the password provider with `previewVars`:
 
    ```jsonc
    "productionVars": {
@@ -129,38 +165,38 @@ The labels below are the ones on Cloudflare's pages when this was written (sourc
 
    `productionVars` goes into the top-level (production) block only and `previewVars` into `env.preview` only; anything in `vars` goes into both, and an environment's own value wins over `vars`.
 
-   Run `npm run configure`. It refuses an `account.local.json` that has a database ID that is not a UUID or is a placeholder, the two IDs equal, an unknown key, a variable name that isn't a plain identifier, a value that isn't a string, or a secret (`ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET`: the Access provider uses neither), in `vars`, `productionVars` or `previewVars`. It does not check `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD`; the Worker does at run time and answers 503 on every admin request, logging which setting is wrong, if the team domain isn't a `<name>.cloudflareaccess.com` host or the AUD is empty. Then redeploy production (`docs/deploying.md`, step 7; use the production branch, `--branch main` if you made the project as in that doc). With the example above, previews keep the password provider (`docs/deploying.md`, "Runbook: deploy a preview"), so you can test one before and after switching production to `access`. If you put the Access settings under `vars` instead, the script writes them into `env.preview` too, preview deployments also expect Access, and admin does not work on them (401).
+   Run `npm run configure`. It refuses an `account.local.json` that has a database ID that is not a UUID or is a placeholder, the two IDs equal, an unknown key, a variable name that isn't a plain identifier, a value that isn't a string, or a secret (`ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET`: the Access provider uses neither), in `vars`, `productionVars` or `previewVars`. It does not check `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD`; the Worker does at run time and answers 503 on every admin request, logging which setting is wrong, if the team domain isn't a `<name>.cloudflareaccess.com` host or the AUD is empty. Then redeploy production (`npx wrangler deploy`, with no `--env`). With the example above, the preview Worker keeps the password provider, so you can test one before and after switching production to `access`. If you put the Access settings under `vars` instead, the script writes them into `env.preview` too, the preview Worker also expects Access, and admin does not work on it (401).
+
+   Admin secrets made by `/setup` stay in the database after the switch and are simply not used: with `ADMIN_AUTH=access` the password provider is not consulted.
 6. **Verify.** Replace the hostnames with yours.
 
    ```sh
    curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" https://<custom-domain>/api/admin/events
-   curl -s -i https://<project>.pages.dev/api/admin/events
-   curl -s -i https://<project>.pages.dev/admin
+   curl -s -i https://<worker>.<subdomain>.workers.dev/api/admin/events
+   curl -s -i https://<worker>.<subdomain>.workers.dev/admin
    ```
 
    - The first request has no Access session, so Access should turn it away before the Worker sees it. The Worker's own answer is the JSON `unauthenticated` body shown below, so if you see that body here, Access isn't in front of this path. The status Access itself returns (I'd expect a redirect to your team's login page) is not stated on the pages fetched and is **not verified**.
-   - The second and third go to `pages.dev`, where no Access token is attached, so they reach the Worker and are refused by it: 401 with `{"error":{"code":"unauthenticated","message":"Sign in to continue."},"provider":"access"}`, and 401 with the text "Sign in with Cloudflare Access to use the admin pages." (checked against the local dev server with a made-up Access configuration, not on Cloudflare). A 503 instead means a setting is missing or malformed (the function logs say which: see [Troubleshooting](deploying.md#troubleshooting)).
+   - The second and third go to `workers.dev`, where no Access token is attached, so they reach the Worker and are refused by it: 401 with `{"error":{"code":"unauthenticated","message":"Sign in to continue."},"provider":"access"}`, and 401 with the text "Sign in with Cloudflare Access to use the admin pages." (the Worker's tests send these requests with a made-up Access configuration; not seen on Cloudflare). A 503 instead means a setting is missing or malformed (the Worker's logs say which: see [Troubleshooting](deploying.md#troubleshooting)).
    - In a browser, open `https://<custom-domain>/admin` (no trailing slash) in a private window: you should reach Access's sign-in. Sign in with an allowed email and the admin list should load. A non-allowed email should be refused by Access. Also open `https://<custom-domain>/` and a booking link `/e/<slug>`: they must load without any sign-in. "Sign out" in the admin list sends the browser to `/cdn-cgi/access/logout`.
+   - **Unverified: whether Access's `Cf-Access-Jwt-Assertion` header reaches a Worker that serves static assets.** Cloudflare's docs are silent on it. The Worker validates the header itself (see "How the Worker checks the token"), so if the header does not arrive, every admin request after the Access login gets the 401 above and admin cannot be used. Test it as soon as you enable Access: the browser step above is the test. If you are signed in to Access and the admin list still answers 401, the header is not arriving, so switch `ADMIN_AUTH` back to `password` (and see Troubleshooting).
 
-### What `pages.dev` does under Access
+### What `workers.dev` does under Access
 
-Access is only in front of the custom domain. The Worker verifies the Access token itself and reads it only from the `Cf-Access-Jwt-Assertion` header, so a request to `<project>.pages.dev` has no token unless the caller adds one by hand. With `ADMIN_AUTH=access` and a valid configuration, checked locally:
+Access is only in front of the custom domain. The Worker verifies the Access token itself and reads it only from the `Cf-Access-Jwt-Assertion` header, so a request to `<worker>.<subdomain>.workers.dev` has no token unless the caller adds one by hand. With `ADMIN_AUTH=access` and a valid configuration (the Worker's tests, `src/worker/guards-pages.test.ts` and `guards-api.test.ts`):
 
-- `/admin`, `/admin/`, `/admin/login` and every other path under `/admin/` (the middleware in `functions/admin/_middleware.ts`) answer 401, `text/plain`, "Sign in with Cloudflare Access to use the admin pages." (the login pages are served unauthenticated only with the password provider).
-- `/api/admin` and everything under it (`functions/api/admin/_middleware.ts`) answer 401 JSON `unauthenticated` with `"provider":"access"`. `POST /api/admin/login` answers 404 `not_found`, because that route doesn't exist with Access.
+- `/admin`, `/admin/`, `/admin/login` and every other path under `/admin/` answer 401, `text/plain`, "Sign in with Cloudflare Access to use the admin pages." (the login pages are served unauthenticated only with the password provider).
+- `/api/admin` and everything under it answer 401 JSON `unauthenticated` with `"provider":"access"`. `POST /api/admin/login` answers 404 `not_found`, because that route doesn't exist with Access.
 
-So the `pages.dev` hostname is not an authentication bypass, but:
+So the `workers.dev` hostname is not an authentication bypass, but:
 
-- It still serves the public booking pages and API, and the static admin HTML and JavaScript at unusual paths (the known limit below).
-- Admin cannot be **used** on `pages.dev`, previews included, while `ADMIN_AUTH=access`.
-- The Worker accepts any validly signed, unexpired token for its AUD, whichever hostname the request arrives on, and the signing keys are per team, not per hostname. Someone who holds a token stolen from a signed-in organiser could add the header by hand on `pages.dev`, where Access is not there to enforce session revocation. A short session duration limits that, and the first optional step below removes the production `pages.dev` route.
+- It still serves the public booking pages and API.
+- Admin cannot be **used** on `workers.dev`, previews included, while `ADMIN_AUTH=access`.
+- The Worker accepts any validly signed, unexpired token for its AUD, whichever hostname the request arrives on, and the signing keys are per team, not per hostname. Someone who holds a token stolen from a signed-in organiser could add the header by hand on `workers.dev`, where Access is not there to enforce session revocation. A short session duration limits that.
 
-#### Optional: closing the `pages.dev` hostnames
+#### Optional: closing the `workers.dev` hostname
 
-Neither step is needed for the admin to work or be secure, and both are optional.
-
-- **Redirect the production `*.pages.dev` URL to the custom domain.** Cloudflare's custom-domains page lists, under "Disable access to *.pages.dev subdomain": "Redirect the `*.pages.dev` URL associated with your production Pages project to a custom domain. You can use the account-level Bulk Redirect feature to redirect your `*.pages.dev` URL to a custom domain." I haven't set this up, and that page gives no steps, only the pointer to Bulk Redirects.
-- **Pages' "Enable access policy" for previews.** In the Pages project go to "Settings" > "General" and select "Enable access policy". Cloudflare: "Note that this will only protect your preview deployments ... and not your `*.pages.dev` domain or custom domain." It is whole-hostname, so it protects previews only. It would also put your preview admin sign-in behind a Cloudflare login first, which suits a preview used by the organisers alone. The same page also describes extending it to the production `pages.dev` hostname by deleting the wildcard from the Access application's subdomain; that locks the public booking pages on `pages.dev` as well and is not recommended here.
+This is not needed for the admin to work or be secure. `wrangler.jsonc` has a `workers_dev` setting (in Wrangler's config schema: "Whether we use <name>.<subdomain>.workers.dev to test and deploy your Worker"), so setting it to `false` in the club's copy should turn that hostname off once the custom domain works. I haven't tried it, and `wrangler.jsonc` does not set it today.
 
 ### How the Worker checks the token
 
@@ -170,7 +206,7 @@ The Worker doesn't trust that Access is in front: it verifies the token itself, 
 - Checks, in order: three base64url segments (at most 8 KB); header `alg` exactly `RS256` and a string `kid` (so `none`, HS256 and every other algorithm are refused); the RSASSA-PKCS1-v1_5 SHA-256 signature, against the key in Access's key set with that `kid`. Only then is the payload read: `iss` equals `https://<team domain>`, `aud` (a string or a list) contains `ACCESS_AUD`, `exp` is a number and in the future (no leeway), `nbf` if present is not more than 30 seconds ahead, and `email` is a non-empty string containing `@`. Service tokens carry no email and are refused.
 - Keys come from `https://<team domain>/cdn-cgi/access/certs` (the `keys` list; `public_cert` is not used). Access rotates them about every 6 weeks with a 7-day overlap, so the key is chosen by `kid`. The set is cached for an hour; an unknown `kid` forces one refetch, at most once a minute, so junk tokens can't hammer the endpoint. A failed or malformed fetch denies the request, waits a minute before trying again, and logs the reason (never token contents).
 
-Access can't be tried locally: the token only exists behind Cloudflare. Use the password provider for local development, for previews and for `*.pages.dev`-only deployments.
+Access can't be tried locally: the token only exists behind Cloudflare. Use the password provider for local development, for previews and for `*.workers.dev`-only deployments.
 
 ### Logout
 
@@ -178,12 +214,12 @@ Access can't be tried locally: the token only exists behind Cloudflare. Use the 
 
 ## Requests from the admin pages
 
-One middleware, `functions/api/admin/_middleware.ts`, guards everything under `/api/admin/`, including paths no route handles yet, so a new route is protected by default:
+One guard, `guardAdminApi` in `src/worker/guards.ts`, runs in `src/worker.ts` before any route is matched. It covers everything under `/api/admin/`, including paths no route handles yet, so a new route is protected by default:
 
 1. Provider not configured: 503 `admin_not_configured`.
 2. Not authenticated: 401 `unauthenticated` (the body names the `provider`, so the login page knows whether to offer a password form).
 3. A state-changing method (anything other than GET, HEAD and OPTIONS) must also pass the CSRF checks below, or it gets 403 `csrf_failed` (415 for a non-JSON Content-Type).
-4. Otherwise `context.data.admin` is set to `{ identity, csrfBinding }` and the request continues. Handlers read `data.admin.identity`; type them as `PagesFunction<AppEnv, "param", AdminData>` (`AdminData` is exported from `src/server/auth`).
+4. Otherwise `data.admin` is set to `{ identity, csrfBinding }` and the request continues. Handlers read `data.admin.identity`; type them as `RouteHandler<"param", AdminData>` (`RouteHandler` is in `src/server/env.ts`, `AdminData` is exported from `src/server/auth`).
 
 The one exemption is `POST /api/admin/login` with the password provider: it gets the Origin check but no token (there is no session yet). With the Access provider that route does not exist (404).
 
@@ -196,23 +232,25 @@ The one exemption is `POST /api/admin/login` with the password provider: it gets
 
 `GET /api/admin/session` returns `{ identity, provider, csrfToken }`. A client fetches it once, sends the token as `X-CSRF-Token` on writes, and **re-fetches `/session` and retries once on a 403 `csrf_failed`**: under Access the JWT is refreshed periodically, which changes the token.
 
-The pages (`functions/admin/_middleware.ts`) are guarded too: signed out, the password provider redirects to `/admin/login` (only `/admin/login`, `/admin/login.html` and `/admin/login.js` are served without signing in), the access provider answers 401 text, and an unconfigured site answers 503. The pages hold no data and the API is protected on its own, so this is defence in depth.
+The pages (`guardAdminPage` in the same file) are guarded too: signed out, the password provider redirects to `/admin/login` (only `/admin/login`, `/admin/login.html` and `/admin/login.js` are served without signing in), the access provider answers 401 text, and an unconfigured site answers 503, or redirects to `/setup` when the only thing missing is the admin secret and setup is open. The pages hold no data and the API is protected on its own, so this is defence in depth.
+
+`run_worker_first` in `wrangler.jsonc` makes the Worker see `/`, `/e/*`, `/api/*`, `/admin`, `/admin/*` and `/setup` before the static files, so none of these can be served around the guards. `src/test/wrangler-config.test.ts` pins that list. Every other static file (scripts, styles, icons) is served straight from `public/`.
 
 ## Checking the security headers after deployment
 
-`public/_headers` gives every static file a `Content-Security-Policy` (including `frame-ancestors 'none'`), `Referrer-Policy`, `X-Content-Type-Options` and `X-Robots-Tag`. After deploying, check that they reach the admin pages:
+Every response the Worker returns (the API, redirects, errors and the files it fetches through the `ASSETS` binding) gets a `Content-Security-Policy` (including `frame-ancestors 'none'`), `Referrer-Policy`, `X-Content-Type-Options` and `X-Robots-Tag` from `withSecurityHeaders` in `src/worker/headers.ts`. `public/_headers` carries the same set for the static files Cloudflare serves itself, and `src/worker/headers.test.ts` fails if the two differ. After deploying, check that they reach the admin pages:
 
 ```sh
-curl -sI https://<your-preview-url>/admin/login
+curl -sI https://<your-worker-url>/admin/login
 ```
 
-The output should include a `Content-Security-Policy` with `frame-ancestors 'none'`. Locally (`wrangler pages dev` with the password provider configured) `HEAD /admin/login` returned those headers, but the 302 redirect from `/admin/` and the 503 answered when admin is not configured came from the Functions middleware and carried none of them. I have not checked how production applies `_headers` to responses that pass through the Functions middleware, so check it there rather than assume.
+The output should include a `Content-Security-Policy` with `frame-ancestors 'none'`. The tests check the headers on the Worker's own responses; I have not seen them on a deployed site, so check there rather than assume. (The icon and logo routes set their own stricter `Content-Security-Policy`, which is kept.)
 
 ## Known limits
 
 
-- **Static admin files can be reached by unusual paths in local dev.** Under `wrangler pages dev` (4.147.0), with signed-out requests, `/admin`, `/admin/`, `/admin/index.html`, `/admin/x.js`, `/admin/../admin/`, `/ADMIN/` and `/admin/%2e%2e/admin/` were all redirected to `/admin/login`, but a path that the Functions router doesn't match while the static file server still normalises it was served without signing in: `//admin/x.js`, `///admin/x.js`, `/%2fadmin/x.js`, `/admin%2fx.js` and `/%61dmin/x.js` (an encoded letter) returned the file (200). Only static files are affected. I could not see a way to make the API or any Function skip its middleware: every variant either matched the router (and got 401) or fell through to the static site's HTML. I haven't checked whether Cloudflare's edge normalises these paths before they reach Pages in production. Since the admin HTML and JavaScript contain no data and every API call is checked, the exposure is the admin UI's code and layout. A fix would be a root `functions/_middleware.ts`, but that would turn every static request into a Function invocation, so it was not done.
-- **The `pages.dev` hostname keeps serving the public site.** Under Access, admin cannot be used there and gets 401, but the booking pages and the static admin files are still reachable (see "What `pages.dev` does under Access" for the optional ways to close it).
+- **Unusual paths to the static admin files are not checked against the real asset service.** Earlier, on Pages under `wrangler pages dev`, paths such as `//admin/x.js`, `/%2fadmin/x.js` and `/%61dmin/x.js` returned the admin static files without signing in. The Worker runs its guard first for `/admin` and `/admin/*` (`run_worker_first`), and `src/worker/worker.test.ts` sends a long list of such variants (double slashes, encoded letters and slashes, dot segments, other cases) at it with a stand-in for the static files: each is guarded, or goes to the static files for a path outside `/admin`, or ends in a JSON 404 or 405, and none reaches an admin handler. That stand-in is not Cloudflare's asset service, and I haven't tried the variants on a deployed Worker, so whether it serves one of them without calling the Worker is unverified. Only the admin HTML and JavaScript, which hold no data (every API call is checked), could be exposed that way.
+- **The `workers.dev` hostname keeps serving the public site.** Under Access, admin cannot be used there and gets 401, but the booking pages are still reachable (see "What `workers.dev` does under Access" for the optional way to close it).
 - Whether a login fits in the free plan's 10 ms of CPU is unverified on real Workers; only local numbers exist (see "What a login costs").
 - Per-client login limiting doesn't stop a distributed attack, and clients sharing an address share the lockout (see "Rate limiting").
 - Logout can't revoke a password session before it expires (see above).
@@ -224,8 +262,8 @@ Each was read from the live page on 4 October 2026 (the pages' own "Last updated
 
 - Access needs an active zone, and the path rules: [Self-hosted public application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) (17 April 2026): prerequisite "An active domain on Cloudflare"; "Domains must belong to an active zone in your Cloudflare account"; the steps "Create new application", "Self-hosted and private", "Add public hostname", "Session Duration". The page does not mention `pages.dev`.
 - Paths: [Application paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/) (17 April 2026): for `example.com/alpha/*`, "Does not cover" `example.com/alpha`; "At most one wildcard in between each slash in the Path"; query strings, port numbers and `#` are not supported. The page does not mention `pages.dev`.
-- Custom domain on Pages, the 522 on a hand-made CNAME, and the `*.pages.dev` redirect: [Custom domains](https://developers.cloudflare.com/pages/configuration/custom-domains/) (21 April 2026).
-- No custom domain while Access is enabled on it: [Known issues](https://developers.cloudflare.com/pages/platform/known-issues/) (6 May 2026), under "Custom Domains". The same page describes extending the preview policy to `*.pages.dev`.
-- "Enable access policy" covers previews only: [Preview deployments](https://developers.cloudflare.com/pages/configuration/preview-deployments/) (3 June 2026).
+- Pages-era sources (the project has since moved to a Worker; these describe Pages and are kept for the record). Custom domain on Pages, the 522 on a hand-made CNAME, and the `*.pages.dev` redirect: [Custom domains](https://developers.cloudflare.com/pages/configuration/custom-domains/) (21 April 2026).
+- Pages-era: no custom domain while Access is enabled on it: [Known issues](https://developers.cloudflare.com/pages/platform/known-issues/) (6 May 2026), under "Custom Domains". The same page describes extending the preview policy to `*.pages.dev`.
 - Header, keys and AUD tag: [Validate JWTs](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/) (6 May 2026).
-- **Not on any of those pages:** the `Emails` selector for an Allow policy, the status code Access returns to an unauthenticated `curl`, whether several public hostnames can be added by repeating "Add public hostname", and the Bulk Redirect steps. None of these is claimed as verified above.
+- **Not read for the move to a Worker:** Cloudflare's Workers pages on custom domains, `workers.dev`, and Access in front of a Worker. Everything above about the Worker side of Access is from Wrangler's help and config schema (4.147.0) and the code, not from Cloudflare's documentation.
+- **Not on any of those pages:** the `Emails` selector for an Allow policy, the status code Access returns to an unauthenticated `curl`, whether several public hostnames can be added by repeating "Add public hostname". None of these is claimed as verified above.

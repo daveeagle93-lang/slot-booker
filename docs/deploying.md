@@ -1,347 +1,276 @@
-# Deploying a preview to Cloudflare
+# Deploying slot-booker
 
-These steps create two remote D1 databases (one for preview, one for production), apply the migrations to the preview one, seed it with a sample event and publish a Pages **preview** deployment. Run them from the repo root, in order. They need a Cloudflare account; nothing here is run by the repo's tests.
+This page gets your club its own copy of the app on Cloudflare's free plan. The first part is for a club organiser and needs no terminal. The advanced parts are for people comfortable with a command line.
 
-> **Hard rule.** Admin sign-in with Cloudflare Access (`ADMIN_AUTH=access`) is only for a deployment served on a custom domain on a Cloudflare zone you control. A deployment reachable only on `*.pages.dev`, and every preview, uses `ADMIN_AUTH=password`. This is a project rule that the Worker doesn't check, and the planned setup wizard will enforce it. The reasons are in [`docs/admin-auth.md`](admin-auth.md#hard-rule-access-needs-a-custom-domain-pagesdev-uses-the-password). The preview below therefore uses the password provider; the Access route for a custom domain is a pointer at the end.
+Your copy is **one Cloudflare Worker**, named `slot-booker` unless you change it. It serves the website and the booking API, and it uses one D1 database, `slot-booker-db`. The migrations in `migrations/` (0001 to 0013) build the database.
 
-Syntax checked against the installed Wrangler (4.147.0) `npx wrangler d1 <command> --help` output and these Cloudflare docs: [Wrangler configuration for Pages](https://developers.cloudflare.com/pages/functions/wrangler-configuration/), [D1 Wrangler commands](https://developers.cloudflare.com/d1/wrangler-commands/) and Pages Direct Upload.
+**What was and was not checked.** The button steps follow Cloudflare's documentation ([Deploy buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/)) and this repository's code and configuration. Nobody has run them against a real public copy of this repository, and no Cloudflare screen was seen while writing this. Where the text describes what a Cloudflare screen looks like, or says something the documentation and the code do not confirm, it says **unverified**. Dashboard labels may have changed.
 
-Three things below come from the maintainer's real preview deployment rather than from the docs or the Wrangler source: which environment `wrangler pages secret put` writes to (step 6), the `wrangler d1 create` prompt about the Wrangler config (step 2) and the API token permissions (step 1). Where this document says so, it also says which parts were not run.
+Contents:
 
-## 1. Log in (once)
+- [Before you start](#before-you-start)
+- [Deploy with the button](#deploy-with-the-button)
+- [Check that it works](#check-that-it-works)
+- [Advanced: deploy from the command line](#advanced-deploy-from-the-command-line)
+- [Custom domain and Cloudflare Access](#custom-domain-and-cloudflare-access)
+- [For maintainers: the preview environment](#for-maintainers-the-preview-environment)
+- [Updating your copy](#updating-your-copy)
+- [Troubleshooting](#troubleshooting)
+- [Before a real event](#before-a-real-event)
 
-```sh
-npx wrangler login
-npx wrangler whoami
-```
+## Before you start
 
-### Using an API token instead of `wrangler login`
+You need:
 
-If you set `CLOUDFLARE_API_TOKEN` instead of running `wrangler login`, the token needs these permissions (Account level): **D1 Edit** and **Pages Edit**. Without **User Details: Read**, `npx wrangler whoami` prints an error about the user lookup. That is harmless: deploy and D1 commands still worked without it. (Source: the maintainer's real preview deployment. I have not tried any other permission set.)
+- A **Cloudflare account** (free). Use a club email address that more than one person can reach.
+- A **GitHub or GitLab account.** The button copies the code into it.
+- The address of the template, which must be a **public** repository on github.com or gitlab.com. The button only works from a public one.
+- About 15 minutes.
 
-## 2. Create the two remote D1 databases
+Decide on a `SETUP_CODE` first: a private phrase of **at least 12 characters**, such as four unrelated words. It is **not** your admin secret. You will use it once, on your new site, to make the admin secret. Write it down somewhere safe.
 
-**When `wrangler d1 create` offers to add the binding to your Wrangler config, answer No.** If you answer Yes it edits `wrangler.jsonc` with a binding name that is not the committed one (the committed binding is `DB`; Wrangler proposes a different name). If you answered Yes by mistake, undo it with `git checkout -- wrangler.jsonc` and run `npm run configure` again (step 3). Answer No for both commands.
+## Deploy with the button
 
-```sh
-npx wrangler d1 create slot-booker-db-preview --location weur
-npx wrangler d1 create slot-booker-db --location weur
-```
+1. **Press the "Deploy to Cloudflare" button** in the [README](../README.md). It opens Cloudflare.
+2. **Sign in to Cloudflare**, or create the free account. The sign-up screens are Cloudflare's own: unverified here.
+3. **Connect your GitHub or GitLab account** when asked. Cloudflare's docs say the button copies the repository into your own account, so you end up with your own copy that you own.
+4. **Fill in the prompts.** Cloudflare's docs say you can customise the "repository name, Worker name, and required resource names". The suggestions are fine.
+   - The **Worker name** becomes part of your address: `https://<worker-name>.<your-workers-subdomain>.workers.dev`.
+   - The **database** (`DB`) is made for you. The description shown is the one in `package.json`: "Your club's booking database. Cloudflare creates it for you, so the suggested name is fine." (Whether that description appears is **unverified**.)
+   - **`SETUP_CODE`**: type your phrase. The description shown is the one in `package.json`. A code under 12 characters is accepted by the form but then `/setup` refuses it (see Troubleshooting). Whether the form shows `SETUP_CODE` as a prompt at all is **unverified**: if it does not, add it afterwards (see "If `/setup` says it isn't ready" below).
+5. **Deploy.** Cloudflare builds the copy with Workers Builds, creates the database, applies the migrations and publishes the Worker. The migrations run through the `deploy` script in `package.json` (`npm run db:migrations:apply`, then `wrangler deploy`). Wait for it to finish. Whether the log shows a warning about `env.preview` (it did in a dry run) is **unverified**; it does not stop a normal deploy as far as the code shows.
+6. **Find your address.** In the Cloudflare dashboard, open **Workers & Pages**, then the Worker (`slot-booker` by default). Its page shows its `workers.dev` address. These labels are **unverified**. A new account may have to pick a `workers.dev` subdomain first: also unverified.
+7. **Make your admin secret.** Open `https://<worker-name>.<your-workers-subdomain>.workers.dev/setup` and:
+   1. Type your `SETUP_CODE` and press **Continue**.
+   2. The page shows your **admin secret** (43 characters) **once**. Press **Copy** and paste it into a password manager now.
+   3. Tick **I've saved it**, then press **Go to sign in**.
+   4. On the sign-in page, paste the secret into **Admin secret** and press **Sign in**.
 
-`slot-booker-db-preview` is used by preview deployments and `slot-booker-db` by production. Production is optional until go-live, but creating both now keeps the names and IDs in one place.
+What to know about `/setup`:
 
-`--location weur` is a placement hint (Western Europe). If you need data held within the EU, use `--jurisdiction eu` instead (the location hint is then ignored). Use the same choice for both databases, so preview and production hold data in the same place.
+- It works only on a password-provider site (`ADMIN_AUTH=password`, which `wrangler.jsonc` sets) and only while no admin has signed in yet.
+- If you open an admin page before doing this, it sends you to `/setup` (once `SETUP_CODE` is in place).
+- Running `/setup` again before the first sign-in **replaces** the secret: the old one stops working.
+- After the first successful sign-in it is closed for good (404).
+- The setup code is limited to 5 wrong attempts per 15 minutes per visitor, compared in constant time, and the page accepts same-origin requests only.
+- Only a hash of the secret is stored (table `admin_credentials`). If you lose the secret, see [If the admin secret is lost](handover.md#if-the-admin-secret-is-lost).
 
-Each command prints a `database_id` (a UUID). Copy both, noting which is which.
+## Check that it works
 
-## 3. Keep your database IDs out of the repo: `npm run configure`
+On your phone or computer, with your own address:
 
-The committed `wrangler.jsonc` holds all-zero placeholder IDs, so no account details are committed. Your real IDs go in a git-ignored file, and a script turns the two into a git-ignored `wrangler.json` that Wrangler reads instead. You never edit `wrangler.jsonc`.
+1. Open `https://<your-address>/api/health`. It should show `{"ok":true}`.
+2. Open `https://<your-address>/`. You should see the landing page ("Slot booker" until you set a club name, and no events yet).
+3. Open `https://<your-address>/admin/` while signed out. It should send you to the sign-in page (or to `/setup` if you have not done step 7 yet).
+4. Sign in, open **Settings** (`/admin/settings`) and set the club name and the **privacy contact** (a name and an email address). Until then the booking page shows signed-in admins a warning and tells bookers nothing about who to contact. See [branding.md](branding.md).
+5. Create a test event (see [admin-guide.md](admin-guide.md)), open its booking link in a private window and book a slot. Then delete the test event.
+6. Press **Sign out**, then check `/admin/` sends you back to the sign-in page.
 
-1. Copy the example and fill it in with the two IDs from step 2 (the top-level block is production, `env.preview` is the preview database):
+## Advanced: deploy from the command line
 
-   ```sh
-   cp account.local.example.json account.local.json
-   ```
+Use this if you prefer a terminal, want to choose where the database lives, or want the deploy to happen from your own computer rather than from Workers Builds.
 
-   ```jsonc
-   {
-     "productionDatabaseId": "<database_id of slot-booker-db>",
-     "previewDatabaseId": "<database_id of slot-booker-db-preview>",
-     "vars": { "ADMIN_AUTH": "password" }   // optional, see below
-   }
-   ```
+You need Node 24 and Git. Every step below uses a command that exists in `package.json` or Wrangler.
 
-   `vars` is optional: plain-text settings such as `ADMIN_AUTH`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `BOOKING_CUTOFF_OFFSET_MINUTES` and `PRIVACY_NOTICE` (`docs/admin-auth.md`, `docs/configuration.md`). Values are strings. `vars` applies to both production and preview. When the two need different values, add `productionVars` and/or `previewVars` with the same shape: each is added to its own environment only and wins over `vars` there (`account.local.example.json` shows the pattern; `docs/configuration.md`, "Setting them", has the rules). `name` is also optional: your Pages project name, if `slot-booker` is taken. Secrets (`ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET`) are refused here; they go in Pages secrets (step 6) and `.dev.vars`.
-
-2. Generate the config:
-
-   ```sh
-   npm run configure
-   ```
-
-   It checks that both IDs are UUIDs, are not the all-zero placeholders and differ from each other, then writes `wrangler.json`: the contents of `wrangler.jsonc` with your production ID in the top-level `d1_databases`, your preview ID in `env.preview.d1_databases`, and your variables in each block: `vars` in **both**, plus `productionVars` in the top level and `previewVars` in `env.preview` (`vars` and `d1_databases` are not inherited by `env.preview`). It prints what it wrote, by variable name only, listed separately for production and preview so you can see where they differ. Run it again whenever `wrangler.jsonc` or `account.local.json` changes (for example after pulling). `npm run configure -- --clear` removes `wrangler.json`, so Wrangler uses the committed placeholders again; it will not delete or overwrite a `wrangler.json` it did not make.
-
-3. Keep the top-level `database_name` as `slot-booker-db`: the test suite and `npm run db:migrate:local` use it (the script does not change it).
-
-### Why this works, and how far it was checked
-
-Wrangler looks for `wrangler.json` before `wrangler.jsonc` in the same directory, so the generated file takes over without any flag. It is a normal config, so `env.preview` works. Evidence, by strength:
-
-- **Run locally on the installed Wrangler 4.147.0, in a throwaway copy of the repo (nothing remote):**
-  - `npx wrangler pages dev` started with the generated file, listed `env.DB (slot-booker-db)` and the `vars` as bindings, and served `/api/health`.
-  - `npx wrangler d1 migrations list slot-booker-db-preview --local --env preview` found the preview database, and `slot-booker-db ... --env preview` was rejected with "Couldn't find a D1 DB ... in your wrangler.json file" (the same production guard as step 4).
-  - `npx wrangler pages functions build` compiled. `npx wrangler pages functions build-env . --outfile f.json` runs Wrangler's Pages config reader and validator, which `pages deploy` also uses: with `PAGES_ENVIRONMENT=preview` it returned the `env.preview` vars, and with `PAGES_ENVIRONMENT=production` the top-level vars.
-  - `npm test` passed (1174 tests) with the generated file present, vars included. The tests do not depend on it: the test environment now exposes only the `DB` binding.
-- **Read from the Wrangler 4.147.0 source, not run (`pages deploy` needs a Cloudflare login and has no dry-run option):** `pages deploy` finds its config in the current directory (`wrangler.json` first), asks the Pages API which branch is production, and reads the config for `production` or `preview` accordingly, so a deploy with `--branch preview` uses the `env.preview` block (with no `--branch` it counts as production). It also sends that block's bindings with the deployment. I have **not verified** against a real deployment that Pages applies those bindings; step 8 checks the result.
-- **Not in Cloudflare's docs:** that `wrangler.json` takes priority over `wrangler.jsonc`. Cloudflare's [Wrangler configuration](https://developers.cloudflare.com/workers/wrangler/configuration/) page only says Wrangler "supports both JSON (`wrangler.json` or `wrangler.jsonc`)". This is Wrangler's lookup order in the installed code, and it may change in a later version. Check after upgrading Wrangler: `npx wrangler pages dev` lists your `vars` among its bindings when the generated file is in use.
-
-Local state: Wrangler keys the local D1 file on the `database_id` (checked: placeholder and real IDs gave different files under `.wrangler/state`). After `npm run configure`, `npm run dev` therefore starts from an empty local database: run `npm run db:migrate:local` (and `npm run seed:local` if you want sample data). `npm run configure -- --clear` brings the old one back.
-
-Cloudflare's docs on the `env.preview` block this relies on ([Wrangler configuration for Pages](https://developers.cloudflare.com/pages/functions/wrangler-configuration/)): "`production` and `preview` are the only two options available via `[env.<ENVIRONMENT>]`", and "if any one non-inheritable key is overridden for any environment... all non-inheritable keys must also be specified in the environment configuration". That is why the script fills both blocks.
-
-### Options that were checked and rejected
-
-- **Wrangler's "generated configuration" redirect** (`.wrangler/deploy/config.json` pointing at another file; [docs](https://developers.cloudflare.com/workers/wrangler/configuration/#generated-wrangler-configuration)). It does not fit a Pages project that needs two databases. Cloudflare's page says "The generated configuration file should not include any environments", and Wrangler 4.147.0 enforces it: with `env.preview` in the redirected file, `pages dev` stops with "Redirected configurations cannot include environments". Without `env`, one file is one environment, so preview and production deployments would share a database unless you regenerate before each deploy. `d1` commands also ignore the redirect (checked: "Couldn't find a D1 DB ... in your wrangler.jsonc file").
-- **`--config` / `--env`**: `wrangler pages deploy` refuses both ("Pages does not support custom paths for the Wrangler configuration file", "Pages does not support targeting an environment with the --env flag"; both seen locally) and `pages dev` refuses `--env`.
-- **Environment-variable substitution in the config file**: Cloudflare's configuration page (searched for it) describes no such mechanism, and `.env` / `.dev.vars` only feed local development. I did not search the Wrangler source for one.
-- **Fallback if you prefer to edit `wrangler.jsonc` itself:** replace the placeholders by hand (same structure as the generated file) and hide the edit from git with `git update-index --skip-worktree wrangler.jsonc` (undo: `--no-skip-worktree`). Git may then refuse to pull or switch branches when that file changes upstream (not tested here), and the edit is easy to commit by mistake with `--no-skip-worktree`; hence the script.
-
-## 4. Apply the migrations to the remote databases
-
-Preview first:
-
-```sh
-npx wrangler d1 migrations list slot-booker-db-preview --remote --env preview
-npx wrangler d1 migrations apply slot-booker-db-preview --remote --env preview
-npx wrangler d1 migrations list slot-booker-db-preview --remote --env preview
-```
-
-The first command should list every file in `migrations/` as pending; the last should list none. `apply` asks for confirmation and takes a backup first.
-
-Apply **all** the migrations before deploying code that needs them; a newer deployment can need migrations an older database lacks (`0010_event_listed` adds `events.listed`, `0011_site_icons` adds the `site_icons` table). Without 0011, admin Settings, saving or removing the logo and uploading icons return errors, while public pages fall back to the default icons.
-
-Production, only when you are ready to go live:
-
-```sh
-npx wrangler d1 migrations apply slot-booker-db --remote
-```
-
-Always pass the database name and, for preview, `--env preview`. With `--env preview`, Wrangler looks the database up only in `env.preview.d1_databases`, so `slot-booker-db --env preview` is rejected ("Couldn't find a D1 DB with the name or binding 'slot-booker-db'"), as is the preview name without `--env preview`. That guards against migrating production by mistake. (Checked locally with `--local`; the remote commands resolve the name the same way but were not run for this document.)
-
-Wrangler's `--preview` flag ("Execute commands/files against a preview D1 DB") is a different, older mechanism based on `preview_database_id`. This repo does not use it; do not mix it with `--env preview`.
-
-## 5. Seed the preview with a sample event
-
-A fresh database has no events, so the preview has nothing to book yet. After the migrations are applied (step 4):
-
-```sh
-npm run seed -- --remote --env preview
-```
-
-This inserts the same sample event and bookings as `npm run seed:local` into the remote **preview** database, and only that one: `--remote` requires `--env preview`, and the script refuses production or any other environment. Pass `--no-bookings` to skip the sample bookings. Wrangler's own prompts appear in your terminal; answer them there.
-
-The script does not apply migrations. If you run it first, Wrangler fails with `no such table: events`; apply the migrations (step 4) and run it again. Each run adds another event.
-
-It prints the event details and a path such as `/e/<slug>`. Open that path on your preview URL (step 7 gives the URL). For a local database use `npm run seed:local` as before.
-
-## 6. Set up admin sign-in
-
-The admin pages (`/admin/`) and the admin API (`/api/admin/*`) answer 503 until `ADMIN_AUTH` is set to `password` or `access`. On `pages.dev`, which is where a preview lives, the answer is `password` (see the hard rule above). `docs/admin-auth.md` explains both providers and the limits of each; its Access runbook is for a custom domain only. For the password provider on the preview:
-
-1. Generate the admin secret. It prints the secret on stderr, once (store it in your password manager now; it can't be recovered from the hash), and only the hash to stdout:
+1. **Get the code and install.**
 
    ```sh
-   npm run --silent generate-admin-secret
+   git clone <your-copy-or-the-template-url> slot-booker
+   cd slot-booker
+   npm ci
    ```
 
-2. Add the non-secret setting to `vars` in `account.local.json` (step 3) and run `npm run configure` again. Under `vars` the script puts it in **both** the top-level block and `env.preview` (`vars` is not inherited by `env.preview`; the Pages docs also say that once a Wrangler config file is used, the same fields can't be edited in the dashboard):
-
-   ```jsonc
-   "vars": { "ADMIN_AUTH": "password" }
-   ```
-
-3. Set the two secrets, `ADMIN_PASSWORD_HASH` (the hash line from step 1, not the secret) and `ADMIN_SESSION_SECRET` (at least 32 random characters, for example from `openssl rand -base64 48`). Each command prompts for the value. Run them once the Pages project exists (step 7 creates it; the runbook below does that first):
+2. **Log in to the club's Cloudflare account.**
 
    ```sh
-   npx wrangler pages secret put ADMIN_PASSWORD_HASH --project-name slot-booker --env preview
-   npx wrangler pages secret put ADMIN_SESSION_SECRET --project-name slot-booker --env preview
-   ```
-
-   `wrangler pages secret put` targets the **production** environment by default, and `--env preview` targets Preview. The maintainer confirmed this on a real preview deployment, from the command's own output. The installed `npx wrangler pages secret put --help` (Wrangler 4.147.0) lists only `--project-name`, so the flag is **not in `--help`**: do not leave `--env` out, and do not rely on `--help` to find it. For production, with its own different values, use `--env production`:
-
-   ```sh
-   npx wrangler pages secret put ADMIN_PASSWORD_HASH --project-name slot-booker --env production
-   npx wrangler pages secret put ADMIN_SESSION_SECRET --project-name slot-booker --env production
-   ```
-
-   Cloudflare's [Pages bindings docs](https://developers.cloudflare.com/pages/functions/bindings/) say secrets are set per environment and must be set before the deployment that uses them. As a confirmation, not as the fix, check Settings, Variables and Secrets for the project in the dashboard: the secrets should be listed under Preview. Creating the project, then setting the secrets, then deploying is the order that worked on the maintainer's real deployment; I have not tested setting them before the project exists.
-
-If login later fails with a Cloudflare CPU-limit error, see "Known limits" in `docs/admin-auth.md`. Access would avoid checking a credential in the Worker, but only on a custom domain, so it isn't an answer for a `pages.dev` preview.
-
-## 7. Create the Pages project and deploy a preview
-
-```sh
-npx wrangler pages project create slot-booker --production-branch main
-npx wrangler pages deploy public --project-name slot-booker --branch preview
-```
-
-Any branch other than the production branch (`main`) produces a **preview** deployment. Wrangler prints a deployment URL (`https://<hash>.slot-booker.pages.dev`) and the branch alias (`https://preview.slot-booker.pages.dev`). The `functions/` directory is picked up from the current directory automatically.
-
-If the project name `slot-booker` is taken in Cloudflare's global `pages.dev` namespace, choose another name and use it in both commands (and as `name` in `account.local.json`, then run `npm run configure` again).
-
-## 8. Check the binding and the admin gate
-
-```sh
-curl -s https://preview.slot-booker.pages.dev/api/health
-curl -s https://preview.slot-booker.pages.dev/api/events/not-a-real-slug
-```
-
-The first should return `{"ok":true}`. The second should return a JSON 404 (`not_found`). A 500 there means the `DB` binding is missing from the preview deployment: check Pages project, Settings, Bindings (Preview) in the dashboard, and the `env.preview` block in step 3.
-
-Then check the landing page at the root:
-
-```sh
-curl -s -o /dev/null -w "%{http_code}\n" https://preview.slot-booker.pages.dev/
-```
-
-It should print `200`, and opening `/` in a browser should show the landing page, with the club name or "Slot booker", the logo and the upcoming events. It lists only upcoming, non-archived, listed events, each with its booking link, and nothing else. I have not run this check against a remote deployment.
-
-Then check the admin gate:
-
-```sh
-curl -s -o /dev/null -w "%{http_code}\n" https://preview.slot-booker.pages.dev/api/admin/events
-curl -sI https://preview.slot-booker.pages.dev/admin/login
-```
-
-The first should print `401` (it prints `503` if `ADMIN_AUTH` or its secrets are missing or malformed: the function logs say which, see [Troubleshooting](#troubleshooting)). The second should be `200` and show a `Content-Security-Policy` header containing `frame-ancestors 'none'`; if that header is missing in production, the login page could be framed, so tell the maintainers. Then open `/admin/login` in a browser, sign in, and create an event. Also open Settings (`/admin/settings`) and set the privacy contact (a name and an email address; the contact counts as set once it has an email): until then the booking page shows signed-in admins a warning and tells bookers nothing about who to contact. See [`docs/branding.md`](branding.md).
-
-## Troubleshooting
-
-### Admin answers 503
-
-The response does not say which setting is missing or malformed; the reason is only in the function logs. To read it:
-
-1. Start the log tail first, in its own terminal:
-
-   ```sh
-   npx wrangler pages deployment tail --project-name slot-booker --environment preview --format pretty
-   ```
-
-   Use `--environment production` for production. The flag names and choices (`--environment`, `--format pretty`) are from `npx wrangler pages deployment tail --help` on Wrangler 4.147.0. I have not run the tail against a real deployment.
-2. In another terminal, reproduce the request:
-
-   ```sh
-   PREVIEW=https://preview.slot-booker.pages.dev
-   curl -i $PREVIEW/api/admin/session
-   ```
-
-3. In the tail, read the line `Admin auth is not configured: <reason>`. The reason names the setting that is missing or malformed. The settings and their accepted forms are in the table in [`docs/admin-auth.md`](admin-auth.md#settings). Fix it (`vars` via `npm run configure` and a redeploy; secrets via `wrangler pages secret put ... --env preview` or `--env production`, step 6) and request again.
-
-## Production on a custom domain with Access
-
-Going live on a custom domain, with Cloudflare Access in front of `/admin/*` and `/api/admin/*`, is described click by click in "Access provider" in [`docs/admin-auth.md`](admin-auth.md#setting-it-up-custom-domain). Apart from that pointer a production go-live is out of scope here. Production also needs its migrations applied first (step 4, `npx wrangler d1 migrations apply slot-booker-db --remote`; check the pending list before applying) and its own `ADMIN_AUTH` variables in `account.local.json`: put them under `productionVars` (and keep `ADMIN_AUTH` for previews under `previewVars`), because `vars` goes to both production and preview. See step 5 of that runbook.
-
-## Not covered
-
-- A production go-live beyond the pointer above, and DNS or Pages custom-domain setup beyond what `docs/admin-auth.md` says.
-- Nothing is deleted automatically, ever: there is no retention timer. (Archiving, deleting and the lineup export are built: see "Archiving and deleting" and "Managing bookings" in the README.)
-
-## Before a real event
-
-- Data residency: if bookings must stay in the EU, create the databases with `--jurisdiction eu` (step 2).
-- The booking API has no rate limiting or bot protection yet. Add something like Cloudflare Turnstile before posting the link publicly.
-- The booking form shows a privacy notice. The default wording says the details are kept until an organiser deletes the event, and that nothing is deleted automatically, which is what the app does: delete or clear out old events from the admin list when you no longer need them. The default names no data controller or contact, so replace it with your own text that does (`docs/configuration.md`).
-- Admin sign-in: on `pages.dev` it is the password provider, a single shared secret with no second factor and no per-person identity (`docs/admin-auth.md`, "Known limits"). If that is not enough for your club, put the site on a custom domain and use Access (above).
-- Preview URLs are public, and the booking pages work on them like any other deployment. Treat a preview's data as test data and delete the preview events from the admin list when you have finished.
-
-## Runbook: deploy a preview (password sign-in, pages.dev)
-
-**These commands are for you to run; nothing in this repo runs them.** They need a Cloudflare account and change it. Run them in order from a clean checkout of this repo with Node 24, from the repo root. The steps are the sections above in one list; where a step says "check", the check matters. `slot-booker` is the Pages project name: if it is taken, use another and set `name` in `account.local.json` as well.
-
-1. Install and log in.
-
-   ```sh
-   npm install
    npx wrangler login
    npx wrangler whoami
    ```
 
-   If you use a `CLOUDFLARE_API_TOKEN` instead of `wrangler login`, give it D1 Edit and Pages Edit (Account level); without User Details: Read, `whoami` prints a harmless error about the user lookup (section 1).
+   `whoami` shows which account you are using. If you set `CLOUDFLARE_API_TOKEN` instead of logging in, the token needs account-level **D1 Edit** and whatever permission Cloudflare requires to deploy Workers (**unverified**: check Cloudflare's API token page). Without **User Details: Read**, `whoami` prints a harmless error about the user lookup; the maintainer's real deployment of the earlier version still deployed and ran D1 commands without it.
 
-2. Create the two D1 databases and copy each `database_id` it prints, noting which is which. If bookings must stay in the EU, use `--jurisdiction eu` instead of `--location weur` in both commands, before you run them. **When Wrangler offers to add the binding to your Wrangler config, answer No** (both times): Yes edits `wrangler.jsonc` with a binding name other than the committed `DB`. If you answered Yes by mistake, run `git checkout -- wrangler.jsonc`, then `npm run configure` again.
+3. **Create the databases.** `npm run configure` (step 4) needs **two** ids, production and preview, so create both; the free plan allows 10 databases per account.
 
    ```sh
-   npx wrangler d1 create slot-booker-db-preview --location weur
    npx wrangler d1 create slot-booker-db --location weur
+   npx wrangler d1 create slot-booker-db-preview --location weur
    ```
 
-3. Fill in `account.local.json` (git-ignored).
+   **When Wrangler offers to add the binding to your Wrangler config, answer No.** If you answer Yes it edits `wrangler.jsonc` with a binding name that is not the committed one (`DB`). If you did, undo it with `git checkout -- wrangler.jsonc`. (This prompt comes from the earlier maintainer's real run, not from Cloudflare's docs.)
+
+   `--location weur` is a placement hint (Western Europe). If bookings must stay within the EU use `--jurisdiction eu` instead (the location hint is then ignored), for both databases.
+
+   Each command prints a `database_id` (a UUID). Note which is which.
+
+4. **Put your ids in a git-ignored file and generate the config.** The committed `wrangler.jsonc` holds all-zero placeholder ids so no account details are committed. Do not edit it. Your ids go in `account.local.json` (git-ignored), and a script writes a git-ignored `wrangler.json` that Wrangler reads instead of `wrangler.jsonc`:
 
    ```sh
    cp account.local.example.json account.local.json
    ```
 
-   Edit it so it contains your two IDs and the password provider (a pages.dev-only deployment needs only `vars`; delete the `previewVars` and `productionVars` blocks of the example, and `BOOKING_CUTOFF_OFFSET_MINUTES` too if you want the default):
+   Replace its contents with this, using your two ids (the example file also shows Access settings and a cut-off setting you do not need yet):
 
    ```jsonc
    {
      "productionDatabaseId": "<database_id of slot-booker-db>",
-     "previewDatabaseId": "<database_id of slot-booker-db-preview>",
-     "vars": { "ADMIN_AUTH": "password" }
+     "previewDatabaseId": "<database_id of slot-booker-db-preview>"
    }
    ```
 
-4. Generate `wrangler.json` (git-ignored) from it. It prints the variable names it wrote, never their values.
+   Optional keys, from `scripts/configure-core.ts`:
+
+   - `name`: the Worker's name, if `slot-booker` is taken (lower-case letters, digits and hyphens).
+   - `vars`: plain-text settings (strings) written into both the production and the preview block, for example `"BOOKING_CUTOFF_OFFSET_MINUTES": "-30"`. `productionVars` and `previewVars` add settings to one block only. `ADMIN_AUTH` is already `password` in `wrangler.jsonc`, so a password-provider site needs none. See [configuration.md](configuration.md).
+   - Secrets (`ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET`) are refused here: they are Worker secrets.
+
+   Then generate the config:
 
    ```sh
    npm run configure
    ```
 
-5. Apply the migrations to the **preview** database: the first list shows every file in `migrations/` as pending, the last shows none. `apply` asks you to confirm.
+   It checks that both ids are real UUIDs, are not the placeholders and differ, writes `wrangler.json` and prints the variable names it wrote (never the values). Run it again whenever `wrangler.jsonc` or `account.local.json` changes. `npm run configure -- --clear` removes `wrangler.json` so Wrangler uses `wrangler.jsonc` again; it will not delete a `wrangler.json` it did not make.
+
+   Wrangler looks for `wrangler.json` before `wrangler.jsonc` in the same folder, which is why the generated file takes over. That order is Wrangler's behaviour, not in Cloudflare's docs (they say only that both names are supported): check it after upgrading Wrangler by looking at the bindings `npm run dev` lists.
+
+   Keep the top-level `database_name` as `slot-booker-db`: the tests and `npm run db:migrate:local` use it.
+
+5. **Deploy.** This applies the migrations to the production database (`wrangler d1 migrations apply DB --remote`) and then publishes the Worker (`wrangler deploy`):
 
    ```sh
-   npx wrangler d1 migrations list slot-booker-db-preview --remote --env preview
-   npx wrangler d1 migrations apply slot-booker-db-preview --remote --env preview
-   npx wrangler d1 migrations list slot-booker-db-preview --remote --env preview
+   npm run deploy
    ```
 
-6. Seed the preview with a sample event and bookings (`--no-bookings` for the event only). It prints the event's path, `/e/<slug>`.
+   `apply` asks for confirmation and takes a backup first. Wrangler prints the Worker's address. With `env.preview` defined and no `--env`, `wrangler deploy` may print a warning: how it behaves is **unverified**.
+
+6. **Set the setup code.** It prompts for the value, so nothing secret goes on the command line:
 
    ```sh
-   npm run seed -- --remote --env preview
+   npx wrangler secret put SETUP_CODE
    ```
 
-7. Create the Pages project.
+   This comes after the deploy so the Worker already exists. (Wrangler's source has a prompt that offers to create the Worker if it does not, but I have not run it, so I use the order that avoids needing it.) Whether the secret is live the moment the command finishes is **unverified**: if `/setup` still says it is not ready, wait a minute and reload.
+
+7. **Make your admin secret** at `/setup`, as in step 7 of the button path above.
+
+Local development uses `.dev.vars` instead of secrets: `cp .dev.vars.example .dev.vars`, set `SETUP_CODE`, `npm run db:migrate:local`, `npm run dev`. After `npm run configure`, Wrangler keys the local database file on the database id, so `npm run dev` then starts from an empty local database: run `npm run db:migrate:local` again.
+
+### Why the generated config is used, and the options that were rejected
+
+- A plain edit of `wrangler.jsonc` would put your account's ids into a committed file. The fallback is to edit it by hand and hide the change with `git update-index --skip-worktree wrangler.jsonc`; Git may then refuse to pull when that file changes upstream (not tested), which is why the script exists.
+- Wrangler's "generated configuration" redirect (`.wrangler/deploy/config.json`) cannot hold `env.preview`: Cloudflare's page says generated configuration should not include any environments ([docs](https://developers.cloudflare.com/workers/wrangler/configuration/#generated-wrangler-configuration)), and the earlier check on Wrangler 4.147.0 refused it. `d1` commands also ignored it.
+- Cloudflare's configuration page describes no environment-variable substitution inside the config file.
+
+Those three checks were made on an earlier version of the app and were not repeated for the Worker.
+
+## Custom domain and Cloudflare Access
+
+A club that wants named admins, or its own address, can add a custom domain and then Cloudflare Access.
+
+1. **Custom domain.** It needs a domain whose nameservers are managed by Cloudflare ([Cloudflare's migration notes](https://developers.cloudflare.com/workers/static-assets/migration-guides/migrate-from-pages/) say custom domains require this). Adding it to the Worker is done in the dashboard under the Worker's settings: the exact labels are **unverified**, so follow Cloudflare's custom domains page for Workers.
+2. **Access.** In the club's own copy of `wrangler.jsonc`, change the `vars` to `ADMIN_AUTH` = `access` and add `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`, commit and push so Workers Builds redeploys (or run `npm run deploy` from the command line). Create the Access application for the custom domain's hostname with the paths `/admin`, `/admin/*`, `/api/admin` and `/api/admin/*`. The full click path and the settings are in [admin-auth.md](admin-auth.md).
+3. **Config `vars` overwrite values set in the dashboard on every deploy** unless `keep_vars` is set ([Wrangler docs](https://developers.cloudflare.com/workers/wrangler/commands/workers/)). Secrets are never deleted by a deploy.
+4. **Test the sign-in.** It is **unverified** whether the `Cf-Access-Jwt-Assertion` header reaches a Worker that serves static assets: Cloudflare's docs say `ctx.access` is not available for such Workers ([Cloudflare Access for Workers](https://developers.cloudflare.com/workers/configuration/cloudflare-access/)) and do not mention the header. The app validates the header itself. If admin answers 401 after you sign in through Access, that is the thing to look at.
+
+The `workers.dev` address keeps serving the public booking pages. Access can protect `workers.dev` addresses too ([docs](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)), but the recommendation stays: use the custom domain.
+
+With Access on, `/setup` is closed (404) and the stored admin secret is unused. See [handover.md](handover.md) for switching over and for adding and removing admins.
+
+## For maintainers: the preview environment
+
+`wrangler.jsonc` has two environments:
+
+- **Production** is the top level: Worker `slot-booker`, database `slot-booker-db`. `npm run deploy` is for this one.
+- **Preview** is `env.preview`: Worker `slot-booker-preview`, database `slot-booker-db-preview`. It is a separate Worker with its own `workers.dev` address, secrets and data. `vars` and `d1_databases` are not inherited by `env.preview`, so each block spells them out.
+
+Developers keep their own ids in `account.local.json` and run `npm run configure` (see above), which fills in both blocks. The commands:
+
+```sh
+npx wrangler d1 migrations apply DB --remote --env preview
+npx wrangler deploy --env preview
+npx wrangler secret put SETUP_CODE --env preview
+npm run seed -- --remote --env preview
+```
+
+- With `--env preview`, Wrangler looks the `DB` binding up in `env.preview.d1_databases` only, so these cannot migrate production. (Checked locally on the earlier version with `--local`; the remote commands resolve it the same way but were not run for this page.)
+- `npm run seed -- --remote --env preview` inserts a sample event (and sample bookings; add `--no-bookings` for the event only) into the **preview** database only: the script refuses production. It does not apply migrations: if it fails with `no such table: events`, apply them first. Each run adds another event.
+- Wrangler's `--preview` flag for D1 is an older, different mechanism based on `preview_database_id`. This repository does not use it; do not mix it with `--env preview`.
+- `preview_urls` is `false` in `wrangler.jsonc`: Cloudflare's per-version preview URLs would serve the whole app, admin included, on extra hostnames, and use the production database by default.
+- Treat the preview's data as test data.
+
+## Updating your copy
+
+The button makes a copy. Changes to the template do **not** flow into it, and Cloudflare's docs describe no way for them to. Two ways to update:
+
+1. **Merge the template into your copy.** In your clone:
 
    ```sh
-   npx wrangler pages project create slot-booker --production-branch main
+   git remote add template <template-url>
+   git fetch template
+   git merge template/main
+   git push
    ```
 
-8. Generate the admin secret. The secret appears once on stderr: put it in your password manager now. Only the hash goes to stdout. Then make the session secret and keep it somewhere safe too, or you will have to rotate it if you lose it.
+   The migrations run on every deploy (the `deploy` script applies them), so pushing a merge that adds a migration applies it. Expect a conflict on the `database_id` lines of `wrangler.jsonc` if the button or you replaced the placeholders there: keep your own ids. That conflict is expected from how the button is documented to work; I have not seen it. Whether a push redeploys your Worker automatically is **unverified**: check in the dashboard. If it does not, run `npm run deploy` from your clone.
+2. **Deploy a fresh copy** with the button and move the data across, as in [handover.md](handover.md). More work, but it starts clean.
 
-   ```sh
-   npm run --silent generate-admin-secret
-   openssl rand -base64 48
-   ```
+Apply all migrations before running new code that needs them. For instance `0011_site_icons` adds the `site_icons` table: without it Settings, saving or removing the logo and uploading icons return errors, while public pages fall back to the default icons.
 
-9. Set the two secrets. Each command prompts for its value: paste the **hash line** from step 8 for `ADMIN_PASSWORD_HASH` (not the secret), and the `openssl` output for `ADMIN_SESSION_SECRET`. When you set up production, run step 8 again and use a **different** admin secret and a different `ADMIN_SESSION_SECRET` there: with identical values a stolen preview session cookie would also work on production, and preview code from another branch would handle the production admin secret.
+## Troubleshooting
 
-   ```sh
-   npx wrangler pages secret put ADMIN_PASSWORD_HASH --project-name slot-booker --env preview
-   npx wrangler pages secret put ADMIN_SESSION_SECRET --project-name slot-booker --env preview
-   ```
+### `/setup` says "Setup isn't ready"
 
-   Without `--env`, `wrangler pages secret put` writes to **production** (confirmed on the maintainer's real run; `--env` is not in the command's `--help`). For production use `--env production` in both commands.
+The full text is: "Setup isn't ready: set SETUP_CODE (a phrase of at least 12 characters) as a Worker secret, then reload this page." (A 503.) `SETUP_CODE` is missing or shorter than 12 characters. Set it:
 
-   Then, as a confirmation, in the dashboard open "Workers & Pages", the project, "Settings" and "Variables and Secrets", and check that both secrets are listed for the **Preview** environment.
+- Dashboard: the Worker, then **Settings**, then **Variables and Secrets**, and add a secret named `SETUP_CODE` (menu names **unverified**), or
+- Terminal, in the project folder: `npx wrangler secret put SETUP_CODE`.
 
-10. Deploy as a preview, from the repo root (`functions/` is picked up automatically). Any branch other than `main` is a preview, and it uses the `env.preview` block of `wrangler.json`.
+Reload `/setup`.
 
-    ```sh
-    npx wrangler pages deploy public --project-name slot-booker --branch preview
-    ```
+### An admin page says "Admin sign-in isn't set up."
 
-11. Check the deployment. `PREVIEW` is the branch alias Wrangler printed (`https://preview.slot-booker.pages.dev` for the default name).
+This is a 503 on `/admin/*` and `/api/admin/*`. For a new deployment it normally means no admin secret exists yet **and** `SETUP_CODE` is missing or too short, so the page cannot send you to `/setup`. Fix the setup code as above, then open `/setup`. It can also mean `ADMIN_AUTH` is unset or wrong, or one of the sign-in settings is missing or malformed. The page does not say which; the reason is in the Worker's logs.
 
-    ```sh
-    PREVIEW=https://preview.slot-booker.pages.dev
-    curl -s $PREVIEW/api/health
-    curl -s $PREVIEW/api/events/not-a-real-slug
-    curl -s -o /dev/null -w "%{http_code}\n" $PREVIEW/
-    curl -s -o /dev/null -w "%{http_code}\n" $PREVIEW/api/admin/events
-    curl -sI $PREVIEW/admin/login
-    curl -sI $PREVIEW/admin/login | grep -i "^content-security-policy"
-    ```
+Read the logs with Wrangler (the command exists in the installed Wrangler 4.147.0, but I have not run it against a real deployment):
 
-    Expected: `{"ok":true}`; a JSON 404 with code `not_found`; `200` for the root (the landing page, with the club name or "Slot booker", the logo and the upcoming, non-archived, listed events with their booking links: open `$PREVIEW/` in a browser to see it); `401`; a `200` with headers; and a `Content-Security-Policy` line that contains `frame-ancestors 'none'`. A 500 on the first two means the `DB` binding is missing from the preview (dashboard: project, "Settings", "Bindings", Preview). A `503` on the admin events request means `ADMIN_AUTH` or a secret is missing or malformed (the function logs say which: follow [Troubleshooting](#troubleshooting)). If the CSP header is missing, the login page could be framed: tell the maintainers.
+1. In one terminal: `npx wrangler tail` (add `--env preview` for the preview).
+2. In another, reload the admin page.
+3. Look for the line `Admin auth is not configured: <reason>`. The reason names the setting. The settings are in [admin-auth.md](admin-auth.md).
 
-12. In a browser, open `$PREVIEW/admin/login` and sign in with the secret from step 8 (let the password manager fill it in). Then check, using a test event (the seeded one will do):
-    - Sign-in works, and a wrong secret is refused. After "Sign out", `/admin/` sends you back to the login page.
-    - Open **Settings** (`/admin/settings`) and set the privacy contact (name and email). Check the booking page then shows it under "Privacy", and that it no longer shows the admin warning (see `docs/branding.md`).
-    - Create an event, copy its booking link, open it in a private window and book a slot.
-    - In the admin list, open the event's **Schedule**: the booking is there. Add a booking on another slot, move it, then clear it (confirm the prompt). Use **Copy lineup** and paste it somewhere.
-    - **Edit** the event: change the name, and check the preview of removed bookings appears when you shorten the schedule (cancel instead of saving if you don't want to lose the test bookings).
-    - **Archive** the event, check its public link shows it closed, **Unarchive** it, then **Delete…** it with its name typed in. Repeat for the seeded event if you don't want it kept.
+The Worker's logs may also be in the dashboard: **unverified**.
 
-Not verified: `wrangler pages deploy` itself (it needs a login and has no dry run; its use of the `env.preview` block was read from the Wrangler source, see "Why this works" in section 3), the landing page at `/` on a deployed preview, and whether a real login fits the free plan's 10 ms of CPU on Workers (only local timings exist, `docs/admin-auth.md`). The 302 and 503 answers from the admin middleware may not carry the `_headers` security headers in production either; only the static pages were checked. The runbook's order (create the Pages project in step 7, set the secrets in step 9, deploy in step 10) is the order that worked on the maintainer's real preview deployment; I have not tried any other order.
+### `/setup` shows "Setup has already been completed. Sign in instead."
+
+An admin has already signed in, so `/setup` is closed (404). Sign in at `/admin/login`. If the secret is lost, use [If the admin secret is lost](handover.md#if-the-admin-secret-is-lost).
+
+### "That setup code isn't right." or "Too many attempts"
+
+Check the code you chose. After 5 wrong attempts in 15 minutes the page says "Too many attempts. Try again in N minutes." Wait that long. The code is trimmed of spaces at both ends, but spaces inside it count.
+
+### Admin sign-in says "Too many attempts"
+
+The admin sign-in allows 5 attempts per client per 15 minutes. Wait, or use the secret from your password manager. Everyone on the same network address shares the count.
+
+### Visitors get a 429 error
+
+The Free plan's daily request limit for the Worker (100,000 a day) has been passed. Booking pages and the API answer 429 until the day resets (00:00 UTC), while static files keep working. See the numbers in the README. A club with a few dozen bookers should not reach it; an event link shared widely, or a bot, might.
+
+### The button's build failed
+
+Open the build log on the Worker's page in the dashboard (**unverified** where). A migration step that fails stops the deploy, so the Worker is not updated with code that needs a missing table. Fix the cause and retry. `npm run db:migrations:apply` can be run on its own from a terminal.
+
+### Admin shows an error saving Settings or a logo
+
+The database probably lacks a migration. Run `npm run db:migrations:apply` (or `npm run deploy`), logged in to the club's account.
+
+### Local development: `/setup` 404s
+
+Check `.dev.vars` has `SETUP_CODE` of 12 or more characters and that neither `ADMIN_PASSWORD_HASH` nor `ADMIN_SESSION_SECRET` is set there (setting either turns `/setup` off). Also check `ADMIN_AUTH` is `password`.
+
+## Before a real event
+
+- **Data location.** The button creates the database for you: whether it offers a location or jurisdiction choice is **unverified**. If bookings must stay in the EU, use the command-line path with `--jurisdiction eu`.
+- **The booking API has no rate limiting or bot protection.** Only the admin sign-in and `/setup` count attempts. Add something like Cloudflare Turnstile before posting the link publicly.
+- **Privacy notice.** The booking form shows one. The default says details are kept until an organiser deletes the event, and nothing is deleted automatically, which is what the app does: delete or clear out old events from the admin list when you no longer need them. The default names no data controller or contact, so set the privacy contact on the Settings page and, if you can, replace the notice with your own text ([configuration.md](configuration.md)).
+- **Admin sign-in.** The default is a single shared secret with no second factor and no per-person identity ([admin-auth.md](admin-auth.md), "Known limits"). If that is not enough for your club, put the site on a custom domain and use Access (above).
+- **Keep these safe.** Your Cloudflare login, the `SETUP_CODE` and the admin secret: see [handover.md](handover.md).
