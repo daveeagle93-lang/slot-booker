@@ -222,7 +222,7 @@ form .actions .button { margin: 0; }
 input[type="file"] { padding: 0.5rem 0.75rem; }
 
 .presets-group { margin: 0 0 1rem; }
-/* 8.5rem gives two columns at 320 px (about 288 px of content) and more as the page widens, with no breakpoint. */
+/* Columns are at least 8.5rem wide: one column at 320 px (measured), two from about 360 px, more as the page widens, with no breakpoint. */
 .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr)); gap: var(--gap); margin-top: 0.25rem; }
 .preset {
   display: flex;
