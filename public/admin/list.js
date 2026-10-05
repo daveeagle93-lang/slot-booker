@@ -148,6 +148,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     show(
       h("header", { class: "admin-bar" },
         h("p", { class: "signed-in" }, "Signed in as ", h("strong", {}, session.identity)),
+        h("a", { class: "button", href: "/admin/settings" }, "Settings"),
         signOut),
       signOutError,
       h("h1", {}, "Upcoming events"),

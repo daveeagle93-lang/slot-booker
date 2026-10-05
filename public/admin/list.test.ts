@@ -60,6 +60,14 @@ describe("list page", () => {
     expect(open.getAttribute("href")).toBe("/e/abc123");
   });
 
+  it("links to the settings page from the header, before Sign out", async () => {
+    await start([]);
+    const bar = [...$(".admin-bar").children];
+    const settings = bar.find((n) => n.textContent === "Settings") as HTMLAnchorElement;
+    expect(settings.getAttribute("href")).toBe("/admin/settings");
+    expect(bar.indexOf(settings)).toBeLessThan(bar.indexOf(buttonNamed("Sign out")));
+  });
+
   it("gives each card a Schedule link to the schedule page, right after Edit, with the slug escaped", async () => {
     await start([EVENT, { ...EVENT, slug: "a b&c", path: "/e/abc" }]);
     const links = [...document.querySelectorAll<HTMLAnchorElement>(".event-card a")].filter((a) => a.textContent === "Schedule");
