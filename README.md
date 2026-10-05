@@ -16,7 +16,21 @@ npm run dev                # serves on http://localhost:8788
 npm test                   # also: npm run typecheck
 ```
 
-Open the URL that `seed` prints. Each run adds a new event (nothing is wiped); pass `-- --no-bookings` to skip the sample bookings. The public booking page is at `/e/<slug>` (static files in `public/`, no build step); the raw event data is at `/api/events/<slug>`. To seed the remote preview database instead, see `docs/deploying.md` (`npm run seed -- --remote --env preview`).
+Open the URL that `seed` prints. Each run adds a new event (nothing is wiped); pass `-- --no-bookings` to skip the sample bookings. The landing page at `/` lists the upcoming events with their booking links. The public booking page is at `/e/<slug>` (static files in `public/`, no build step); the raw event data is at `/api/events/<slug>`. To seed the remote preview database instead, see `docs/deploying.md` (`npm run seed -- --remote --env preview`).
+
+## Landing page, club settings, logo and theme
+
+The page at `/` shows the club's name and logo and lists the upcoming, non-archived events (at most 50, soonest first) with a link to each booking page. This means the booking links of upcoming events can now be found by anyone who opens `/`, where before only people given a link knew them; archiving an event removes it from the list (its link still works, showing it closed).
+
+**First run: sign in, open Settings (the button on the admin list, `/admin/settings`) and set the privacy contact.** Until a contact with an email address is set, the booking page tells bookers nothing about who to contact, and it shows a signed-in admin a warning saying so.
+
+On the Settings page an admin can set, without redeploying:
+
+- **Club details**: the club name (page header, browser tab title, the calendar entry's description, the lineup text and the new-event WhatsApp message), a privacy contact (shown in the booking form's Privacy section) and an optional `https://` website (a footer link).
+- **Logo**: a PNG, JPEG or WebP, resized in the browser to fit 512 px and under 200 KiB; the server checks the real file type, size and structure, and refuses SVG. It is stored in D1, shown in the page header, and used as the browser tab icon.
+- **Colours**: a preset or two custom colours, with a live light and dark preview. Text colours and dark mode are worked out automatically, and colours that would make text hard to read (WCAG AA contrast) are refused by the server as well as the form.
+
+Settings routes are admin-only and CSRF-protected like the rest of `/api/admin/*`; changes are not logged. The fields, validation rules, what is public, and what has not been verified are in [`docs/branding.md`](docs/branding.md).
 
 ## Editing an event
 

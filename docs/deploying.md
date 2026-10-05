@@ -192,7 +192,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://preview.slot-booker.pages.dev/a
 curl -sI https://preview.slot-booker.pages.dev/admin/login
 ```
 
-The first should print `401` (it prints `503` if `ADMIN_AUTH` or its secrets are missing or malformed: the function logs say which, see [Troubleshooting](#troubleshooting)). The second should be `200` and show a `Content-Security-Policy` header containing `frame-ancestors 'none'`; if that header is missing in production, the login page could be framed, so tell the maintainers. Then open `/admin/login` in a browser, sign in, and create an event.
+The first should print `401` (it prints `503` if `ADMIN_AUTH` or its secrets are missing or malformed: the function logs say which, see [Troubleshooting](#troubleshooting)). The second should be `200` and show a `Content-Security-Policy` header containing `frame-ancestors 'none'`; if that header is missing in production, the login page could be framed, so tell the maintainers. Then open `/admin/login` in a browser, sign in, and create an event. Also open Settings (`/admin/settings`) and set the privacy contact (a name and an email address; the contact counts as set once it has an email): until then the booking page shows signed-in admins a warning and tells bookers nothing about who to contact. See [`docs/branding.md`](branding.md).
 
 ## Troubleshooting
 
@@ -336,6 +336,7 @@ Going live on a custom domain, with Cloudflare Access in front of `/admin/*` and
 
 12. In a browser, open `$PREVIEW/admin/login` and sign in with the secret from step 8 (let the password manager fill it in). Then check, using a test event (the seeded one will do):
     - Sign-in works, and a wrong secret is refused. After "Sign out", `/admin/` sends you back to the login page.
+    - Open **Settings** (`/admin/settings`) and set the privacy contact (name and email). Check the booking page then shows it under "Privacy", and that it no longer shows the admin warning (see `docs/branding.md`).
     - Create an event, copy its booking link, open it in a private window and book a slot.
     - In the admin list, open the event's **Schedule**: the booking is there. Add a booking on another slot, move it, then clear it (confirm the prompt). Use **Copy lineup** and paste it somewhere.
     - **Edit** the event: change the name, and check the preview of removed bookings appears when you shorten the schedule (cancel instead of saving if you don't want to lose the test bookings).

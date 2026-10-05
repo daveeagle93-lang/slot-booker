@@ -15,9 +15,9 @@ The default privacy notice is:
 
 The third sentence covers **Copy lineup**, which puts the bookers' names into text that organisers paste into group chats. The last sentence describes what the app really does. Organisers can delete one event, or clear out several past events at once, from the admin list (see "Archiving and deleting" in the README), which removes its bookings too; nothing is ever deleted automatically. If your club promises something different, such as deleting everything within a set time, change the text and make sure the club keeps that promise by hand.
 
-The default names no data controller and gives no contact. Clubs should add their own (UK GDPR transparency: who is responsible for the data and how to reach them) by setting `PRIVACY_NOTICE`.
+The default notice itself names no data controller and gives no contact. If an admin has set a privacy contact on the Settings page (`/admin/settings`, see [`docs/branding.md`](branding.md)), the booking form appends a line under the notice, whichever notice is in use: "Questions about your details, or want them deleted? Contact <name>, <email>." The contact counts as set once it has an email address. So the statement that the booking page names no contact is only true until a contact is set; it still names no data controller by name unless the club writes that into the notice. Clubs should set the contact and add who is responsible for the data (UK GDPR transparency: who is responsible for the data and how to reach them), by setting `PRIVACY_NOTICE`. Until a contact is set, the booking page shows a signed-in admin (and nobody else) a warning with a link to Settings.
 
-A club that sets its own `PRIVACY_NOTICE` is unaffected by the default, but should add a sentence saying the running order may be shared with names if its organisers use Copy lineup.
+A club that sets its own `PRIVACY_NOTICE` is unaffected by the default, but should add a sentence saying the running order may be shared with names if its organisers use Copy lineup. The Settings page's privacy contact is appended under a custom notice too, so a custom notice that already names a contact will show two.
 
 ### Upgrading
 
