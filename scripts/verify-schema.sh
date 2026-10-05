@@ -120,6 +120,45 @@ expect_fail "duplicate event idempotency key" "$EVI ('Keyed B', '2026-12-19T09:0
 expect_ok "different event idempotency keys coexist" "$EVI ('Keyed B', '2026-12-19T09:00:00Z', '2026-12-19T16:00:00Z', 15, 'AB1 2CD', 'slug-k-bbbbbbbbbbbbbb', 'evkey-bbbbbbbbbbbbbbbb')"
 expect_ok "two NULL-key events coexist alongside keyed ones" "$EVI ('Unkeyed A', '2027-01-09T09:00:00Z', '2027-01-09T16:00:00Z', 15, 'AB1 2CD', 'slug-n-aaaaaaaaaaaaaa', NULL), ('Unkeyed B', '2027-01-16T09:00:00Z', '2027-01-16T16:00:00Z', 15, 'AB1 2CD', 'slug-n-bbbbbbbbbbbbbb', NULL)"
 
+# Site settings (0009): a singleton row inserted by the migration; theme colours NULL or lower-case #rrggbb.
+expect_count "the migration inserted the settings row" "SELECT count(*) AS n FROM site_settings WHERE id = 1 AND club_name = '' AND website_url = '' AND theme_primary IS NULL AND theme_accent IS NULL" 1
+expect_fail "a second settings row" "INSERT INTO site_settings (id) VALUES (2)" "CHECK constraint failed"
+expect_fail "settings id 1 twice" "INSERT INTO site_settings (id) VALUES (1)" "UNIQUE constraint failed"
+expect_fail "NULL club name" "UPDATE site_settings SET club_name = NULL" "NOT NULL constraint failed"
+expect_ok "theme colours set" "UPDATE site_settings SET theme_primary = '#0a1b2c', theme_accent = '#ffffff'"
+expect_ok "theme colours back to NULL" "UPDATE site_settings SET theme_primary = NULL, theme_accent = NULL"
+expect_fail "upper-case theme colour" "UPDATE site_settings SET theme_primary = '#0A1B2C'" "CHECK constraint failed"
+expect_fail "short theme colour" "UPDATE site_settings SET theme_accent = '#fff'" "CHECK constraint failed"
+expect_fail "theme colour with a seventh digit" "UPDATE site_settings SET theme_accent = '#0a1b2c0'" "CHECK constraint failed"
+expect_fail "theme colour without the #" "UPDATE site_settings SET theme_primary = '0a1b2c'" "CHECK constraint failed"
+expect_fail "settings timestamp in the wrong shape" "UPDATE site_settings SET updated_at = '2026-10-05 12:00'" "CHECK constraint failed"
+
+# Site logo (0009): singleton, allow-listed type, BLOB of 1 to 204800 bytes, sides 1 to 512, 64 lower-case hex digest.
+LG="INSERT INTO site_logo (id, content_type, bytes, width, height, sha256) VALUES"
+SHA=$(printf 'a%.0s' $(seq 64))
+expect_count "no logo to begin with" "SELECT count(*) AS n FROM site_logo" 0
+expect_ok "a png logo" "$LG (1, 'image/png', x'010203', 10, 10, '$SHA')"
+expect_fail "a second logo row" "$LG (1, 'image/png', x'010203', 10, 10, '$SHA')" "UNIQUE constraint failed"
+expect_fail "logo id 2" "$LG (2, 'image/png', x'010203', 10, 10, '$SHA')" "CHECK constraint failed"
+expect_ok "delete the logo" "DELETE FROM site_logo"
+for ct in image/jpeg image/webp; do
+  expect_ok "a $ct logo" "$LG (1, '$ct', x'010203', 10, 10, '$SHA')"
+  expect_ok "delete the $ct logo" "DELETE FROM site_logo"
+done
+for ct in image/svg+xml image/gif text/html IMAGE/PNG; do
+  expect_fail "logo content type $ct" "$LG (1, '$ct', x'010203', 10, 10, '$SHA')" "CHECK constraint failed"
+done
+expect_fail "empty logo bytes" "$LG (1, 'image/png', x'', 10, 10, '$SHA')" "CHECK constraint failed"
+expect_fail "logo bytes as text" "$LG (1, 'image/png', 'abc', 10, 10, '$SHA')" "CHECK constraint failed"
+expect_fail "logo of 204801 bytes" "$LG (1, 'image/png', zeroblob(204801), 10, 10, '$SHA')" "CHECK constraint failed"
+expect_ok "logo of 204800 bytes" "$LG (1, 'image/png', zeroblob(204800), 512, 512, '$SHA')"
+expect_ok "delete the large logo" "DELETE FROM site_logo"
+expect_fail "logo 513 wide" "$LG (1, 'image/png', x'010203', 513, 10, '$SHA')" "CHECK constraint failed"
+expect_fail "logo 0 tall" "$LG (1, 'image/png', x'010203', 10, 0, '$SHA')" "CHECK constraint failed"
+expect_fail "upper-case logo digest" "$LG (1, 'image/png', x'010203', 10, 10, '$(printf 'A%.0s' $(seq 64))')" "CHECK constraint failed"
+expect_fail "short logo digest" "$LG (1, 'image/png', x'010203', 10, 10, 'abc')" "CHECK constraint failed"
+expect_fail "NULL logo bytes" "$LG (1, 'image/png', NULL, 10, 10, '$SHA')" "NOT NULL constraint failed"
+
 expect_fail "trailing junk after timestamp" "$BK $(row 1 '2026-03-14T10:00:00Zx' 'Bo' 'Ann Lee')" "CHECK constraint failed"
 expect_fail "bad event timestamp format" "$EV ('Bad', '2026-03-14 09:00', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
 expect_fail "event end == start" "$EV ('Bad', '2026-03-14T09:00:00Z', '2026-03-14T09:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
@@ -131,7 +170,7 @@ expect_count "cascade: breaks removed" "SELECT count(*) AS n FROM breaks WHERE e
 expect_count "cascade: bookings removed" "SELECT count(*) AS n FROM bookings WHERE event_id = 1" 0
 expect_count "other event's booking kept" "SELECT count(*) AS n FROM bookings WHERE event_id = 2" 1
 
-# Backfill: a database holding rows from before 0003 / 0004 gets random slugs and tokens (0005 and 0008 leave keys NULL, 0008 leaves break labels empty).
+# Backfill: a database holding rows from before 0003 / 0004 gets random slugs and tokens (0005 and 0008 leave keys NULL, 0008 leaves break labels empty, 0009 adds the settings row).
 OLD=$(mktemp -d)
 trap 'rm -rf "$STATE" "$OLD"' EXIT
 old() { npx wrangler d1 execute "$DB" --local --persist-to "$OLD" "$@" 2>&1; }
@@ -143,7 +182,8 @@ old --file migrations/0001_init.sql >/dev/null && old --file migrations/0002_ide
   && old --file migrations/0005_booking_idempotency_key.sql >/dev/null \
   && old --command "INSERT INTO breaks (event_id, start_utc, end_utc) VALUES (1, '2026-03-14T12:00:00Z', '2026-03-14T13:00:00Z')" >/dev/null \
   && old --file migrations/0006_login_attempts.sql >/dev/null && old --file migrations/0007_login_attempts_index.sql >/dev/null \
-  && old --file migrations/0008_break_labels_event_idempotency.sql >/dev/null || { echo "FAIL: backfill setup"; FAILS=$((FAILS + 1)); }
+  && old --file migrations/0008_break_labels_event_idempotency.sql >/dev/null \
+  && old --file migrations/0009_site_settings.sql >/dev/null || { echo "FAIL: backfill setup"; FAILS=$((FAILS + 1)); }
 got=$(old --command "SELECT count(*) AS n FROM events WHERE slug GLOB '[0-9a-f]*' AND length(slug) = 32" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
 if [ "$got" = "1" ]; then echo "PASS (count=1): pre-existing event backfilled with a 32-hex slug"
 else echo "FAIL (backfill): expected 1, got '$got'"; FAILS=$((FAILS + 1)); fi
@@ -162,6 +202,9 @@ else echo "FAIL (break label on old rows): expected 1, got '$got'"; FAILS=$((FAI
 got=$(old --command "SELECT count(*) AS n FROM events WHERE idempotency_key IS NULL" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
 if [ "$got" = "1" ]; then echo "PASS (count=1): pre-existing event survived 0008 with no idempotency key"
 else echo "FAIL (event key on old rows): expected 1, got '$got'"; FAILS=$((FAILS + 1)); fi
+got=$(old --command "SELECT count(*) AS n FROM site_settings WHERE id = 1" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+if [ "$got" = "1" ]; then echo "PASS (count=1): 0009 added the settings row to a database with earlier data"
+else echo "FAIL (settings row on old database): expected 1, got '$got'"; FAILS=$((FAILS + 1)); fi
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS check(s) FAILED"; exit 1; fi
 echo "All schema checks passed"
