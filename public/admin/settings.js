@@ -1,6 +1,7 @@
 import { brandPage, DEFAULT_CLUB, isLogoUrl, loadSettings } from "../branding.js";
 import { checkTheme, DEFAULT_THEME, normaliseHex, PAGE_COLOURS, PRESETS, themeTokens } from "../theme.js";
 import { createApi, makeH } from "./api.js";
+import { updateIcons } from "./icon-image.js";
 import { browserImage, bytesToBase64, LogoError, prepareLogo } from "./logo-image.js";
 
 const OFFLINE = "We couldn't reach the server. Check your connection and try again.";
@@ -182,8 +183,74 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
     return s;
   }
 
+  // ---- App icons ----
+  const ICON_RETRY = "app icons couldn't be updated. They'll be tried again next time you open this page.";
+
+  /**
+   * Keeps the app icons (browser tab, home screen, manifest) drawn from the current logo on the current main colour.
+   * It has no form: it runs after a logo upload, after a colour save that changed the main colour, and when the page
+   * loads and the stored icons are missing or out of date. A failure is reported on its own status line and never
+   * undoes or blocks the save that triggered it: until the icons are redrawn the server serves the default ones.
+   */
+  function iconsSection(initial) {
+    const status = h("p", { class: "form-status", id: "icon-status", role: "status", "aria-live": "polite" });
+    const state = { logo: initial.logo, blob: null, primary: initial.primary };
+    let latest = 0; // each update takes the next number; an older one that finds it isn't latest stops quietly
+
+    async function logoBlob(logo) {
+      if (state.blob) return state.blob;
+      if (!isLogoUrl(logo.url)) throw new Error("The logo's address isn't one of ours");
+      const res = await fetch(logo.url);
+      if (!res.ok) throw new Error(`Logo request failed (${res.status})`);
+      return res.blob();
+    }
+
+    /** `because` starts the sentence if it fails: what already succeeded, so the message is true whatever triggered this. */
+    async function update(because) {
+      const mine = ++latest;
+      const { logo, primary } = state;
+      if (!logo) {
+        status.textContent = "";
+        return;
+      }
+      status.textContent = "Updating app icons…";
+      try {
+        await updateIcons({
+          logo: await logoBlob(logo), background: primary, logoSha256: logo.sha256, image,
+          isCurrent: () => mine === latest,
+          put: async (size, body) => (await api.request("PUT", `${SETTINGS_URL}/icons/${size}`, body)).status === 200,
+        });
+        if (mine === latest) status.textContent = "App icons updated.";
+      } catch {
+        if (mine === latest) status.textContent = `${because} ${ICON_RETRY}`;
+      }
+    }
+
+    return {
+      status,
+      /** A new logo (with its decoded-ready bytes, so it needn't be fetched back) or none. */
+      logoChanged(logo, blob = null) {
+        state.logo = logo;
+        state.blob = blob;
+        if (logo) return update("The logo was saved, but the");
+        latest++; // the server dropped the icons with the logo; stop anything still drawing
+        status.textContent = "";
+      },
+      /** The main colour after a save or reset. Only a different colour needs new icons. */
+      primaryChanged(primary) {
+        if (primary === state.primary) return;
+        state.primary = primary;
+        if (state.logo) return update("The colours were saved, but the");
+      },
+      /** The page has just loaded: redraw if there is a logo and the stored icons are missing or were drawn from something else. */
+      heal(stored) {
+        if (state.logo && (!stored || stored.background !== state.primary || stored.logoSha256 !== state.logo.sha256)) return update("The");
+      },
+    };
+  }
+
   // ---- Logo ----
-  function logoSection(initial) {
+  function logoSection(initial, icons) {
     const s = makeSection("logo", "Logo");
     let logo = initial;
     let candidate = null; // the processed picture waiting for "Use this logo"
@@ -266,7 +333,10 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
           clearCandidate();
           renderCurrent();
           s.after = fileInput;
-          return s.ok("Logo saved.");
+          s.ok("Logo saved.");
+          // Not awaited: the icons are drawn in the background and have their own status line.
+          icons.logoChanged(logo, new Blob([sending.bytes], { type: sending.contentType }));
+          return;
         }
         if (res.status === 413) return s.fail("Not saved. The server says that picture is too large.");
         s.fail(`Not saved. ${messageOf(res.data)}`);
@@ -291,6 +361,7 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
             closeConfirm();
             renderCurrent();
             s.after = fileInput;
+            icons.logoChanged(null);
             return s.ok("Logo removed.");
           }
           s.fail(`Not removed. ${messageOf(res.data)}`);
@@ -317,7 +388,7 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
   }
 
   // ---- Colours ----
-  function themeSection(initial) {
+  function themeSection(initial, icons) {
     const s = makeSection("theme", "Colours");
     const start = {
       primary: normaliseHex(initial?.primary) ?? DEFAULT_THEME.primary,
@@ -461,7 +532,10 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
         if (res.status === 401) return;
         if (res.status === 200) {
           restyle();
-          return s.ok("Colours saved.");
+          s.ok("Colours saved.");
+          const saved = normaliseHex(res.data?.theme?.primary);
+          if (saved) icons.primaryChanged(saved);
+          return;
         }
         if (res.status === 400 && res.data?.fields) {
           showErrors(res.data.fields);
@@ -481,7 +555,10 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
           accent.input.value = DEFAULT_THEME.accent;
           update();
           restyle();
-          return s.ok("Colours reset to the default.");
+          s.ok("Colours reset to the default.");
+          const reset = normaliseHex(res.data?.theme?.primary);
+          if (reset) icons.primaryChanged(reset);
+          return;
         }
         s.fail(`Not reset. ${messageOf(res.data)}`);
       });
@@ -506,13 +583,15 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
   }
 
   function render(data) {
-    const theme = themeSection(data.theme);
+    const icons = iconsSection({ logo: data.logo ?? null, primary: normaliseHex(data.theme?.primary) ?? DEFAULT_THEME.primary });
+    const theme = themeSection(data.theme, icons);
     const details = detailsSection(data, theme.setClubName);
-    const logo = logoSection(data.logo ?? null);
+    const logo = logoSection(data.logo ?? null, icons);
     show(
       h("a", { class: "back", href: "/admin/" }, "Back to events"),
       h("h1", {}, "Settings"),
-      details.form, logo.form, theme.form);
+      details.form, logo.form, icons.status, theme.form);
+    icons.heal(data.icons ?? null);
   }
 
   return load();

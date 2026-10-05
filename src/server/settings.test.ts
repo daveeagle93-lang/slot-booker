@@ -3,8 +3,8 @@ import { FORMAT_CODE_POINTS, hex, ORDINARY_NAMES } from "../test/format-chars";
 import { makePng } from "../test/images";
 import { createTestEnv, type TestEnv } from "../test/db";
 import {
-  decodeBase64, deleteLogo, loadAdminSettings, loadLogo, loadLogoInfo, loadPublicSettings, loadSettings, loadTheme, MAX_LOGO_BASE64,
-  parseSettingsInput, parseThemeInput, resetTheme, saveLogo, saveSettings, saveTheme,
+  decodeBase64, deleteLogo, loadAdminSettings, loadIcon, loadIconInfo, loadLogo, loadLogoInfo, loadPublicSettings, loadSettings, loadTheme,
+  MAX_LOGO_BASE64, parseSettingsInput, parseThemeInput, resetTheme, saveIcon, saveLogo, saveSettings, saveTheme,
 } from "./settings";
 import { DEFAULT_THEME } from "../../public/theme.js";
 
@@ -13,6 +13,7 @@ beforeAll(async () => { t = await createTestEnv(); });
 afterAll(() => t.dispose());
 beforeEach(async () => {
   await t.env.DB.prepare("DELETE FROM site_logo").run();
+  await t.env.DB.prepare("DELETE FROM site_icons").run();
   await saveSettings(t.env.DB, { clubName: "", privacyContact: { name: "", email: "" }, website: "" });
 });
 
@@ -259,6 +260,114 @@ describe("the logo in D1", () => {
   });
 });
 
+describe("the icons in D1", () => {
+  const BG = "#0b5cad";
+  const png = (size: number) => makePng(size, size);
+  const storeLogo = async (w = 4) => (await saveLogo(t.env.DB, makePng(w, w), { type: "image/png", width: w, height: w })).sha256;
+  const storeIcons = async (logoSha256: string, background = BG) => {
+    for (const size of [32, 180, 512] as const) expect(await saveIcon(t.env.DB, size, png(size), { background, logoSha256 })).toMatch(/^[0-9a-f]{64}$/);
+  };
+  const iconCount = async () => (await t.env.DB.prepare("SELECT COUNT(*) AS n FROM site_icons").first<{ n: number }>())!.n;
+
+  it("round-trips byte for byte, with the digest as lower-case hex", async () => {
+    const sha = await storeLogo();
+    const data = Uint8Array.of(...Array.from({ length: 256 }, (_, i) => i), 0, 255);
+    expect(await saveIcon(t.env.DB, 32, data, { background: BG, logoSha256: sha })).toMatch(/^[0-9a-f]{64}$/);
+    const { createHash } = await import("node:crypto");
+    const loaded = await loadIcon(t.env.DB, 32);
+    expect(loaded!.info.sha256).toBe(await saveIcon(t.env.DB, 32, data, { background: BG, logoSha256: sha }));
+    expect(Buffer.from(loaded!.data).equals(Buffer.from(data))).toBe(true);
+    expect(loaded!.info).toEqual({ sha256: createHash("sha256").update(data).digest("hex"), bytes: data.length });
+    expect(await loadIconInfo(t.env.DB, 32)).toEqual(loaded!.info);
+    expect(await loadIcon(t.env.DB, 180)).toBeNull();
+    expect(await loadIconInfo(t.env.DB, 512)).toBeNull();
+  });
+
+  it("replaces a size in place with one statement", async () => {
+    const sha = await storeLogo();
+    await saveIcon(t.env.DB, 180, png(180), { background: BG, logoSha256: sha });
+    const before = (await loadIconInfo(t.env.DB, 180))!.sha256;
+    await saveIcon(t.env.DB, 180, makePng(180, 180, false), { background: "#112233", logoSha256: sha });
+    expect(await iconCount()).toBe(1);
+    expect((await loadIconInfo(t.env.DB, 180))!.sha256).not.toBe(before);
+    expect(await t.env.DB.prepare("SELECT background, logo_sha256, width, height, content_type FROM site_icons").first())
+      .toEqual({ background: "#112233", logo_sha256: sha, width: 180, height: 180, content_type: "image/png" });
+  });
+
+  it("stores nothing, and says so, when there is no logo or the logo is not the one the icon was made from", async () => {
+    expect(await saveIcon(t.env.DB, 32, png(32), { background: BG, logoSha256: "a".repeat(64) })).toBeNull();
+    const sha = await storeLogo();
+    expect(await saveIcon(t.env.DB, 32, png(32), { background: BG, logoSha256: "b".repeat(64) })).toBeNull();
+    expect(await iconCount()).toBe(0);
+    expect(await saveIcon(t.env.DB, 32, png(32), { background: BG, logoSha256: sha })).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("is removed, all three sizes, in the same batch as a logo save or delete", async () => {
+    await storeIcons(await storeLogo());
+    expect(await iconCount()).toBe(3);
+    const batches: unknown[][] = [];
+    const spy = {
+      prepare: (sql: string) => t.env.DB.prepare(sql),
+      batch: (statements: D1PreparedStatement[]) => { batches.push(statements); return t.env.DB.batch(statements); },
+    } as unknown as D1Database;
+    await saveLogo(spy as D1Database, makePng(5, 5), { type: "image/png", width: 5, height: 5 });
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(2);
+    expect(await iconCount()).toBe(0);
+
+    await storeIcons((await loadLogoInfo(t.env.DB))!.sha256);
+    await deleteLogo(spy as D1Database);
+    expect(batches).toHaveLength(2);
+    expect(await iconCount()).toBe(0);
+    expect(await loadLogoInfo(t.env.DB)).toBeNull();
+  });
+
+  it("is kept when a logo save fails, because the icons are removed only together with the change", async () => {
+    await storeIcons(await storeLogo());
+    await expect(saveLogo(t.env.DB, new Uint8Array(0), { type: "image/png", width: 1, height: 1 })).rejects.toThrow();
+    expect(await iconCount()).toBe(3);
+    expect(await loadLogoInfo(t.env.DB)).not.toBeNull();
+  });
+
+  it("deleting a logo that isn't there still clears stray icons", async () => {
+    await t.env.DB.prepare("DELETE FROM site_logo").run();
+    await t.env.DB.prepare("INSERT INTO site_icons (size, content_type, bytes, width, height, sha256, background, logo_sha256) VALUES (32, 'image/png', x'01', 32, 32, ?, '#0b5cad', ?)")
+      .bind("a".repeat(64), "b".repeat(64)).run();
+    await deleteLogo(t.env.DB);
+    expect(await iconCount()).toBe(0);
+  });
+
+  describe("in the admin settings", () => {
+    it("are null with none stored, and with fewer than three sizes", async () => {
+      const sha = await storeLogo();
+      expect((await loadAdminSettings(t.env.DB)).icons).toBeNull();
+      await saveIcon(t.env.DB, 32, png(32), { background: BG, logoSha256: sha });
+      await saveIcon(t.env.DB, 180, png(180), { background: BG, logoSha256: sha });
+      expect((await loadAdminSettings(t.env.DB)).icons).toBeNull();
+    });
+
+    it("are the background and logo digest once all three sizes are stored, never the bytes", async () => {
+      const sha = await storeLogo();
+      await storeIcons(sha, "#1b6b3a");
+      const admin = await loadAdminSettings(t.env.DB);
+      expect(admin.icons).toEqual({ background: "#1b6b3a", logoSha256: sha });
+      expect(JSON.stringify(admin)).not.toMatch(/bytes"\s*:\s*\[/);
+    });
+
+    it("are null when the sizes were made on different backgrounds or from different logos (a half-redrawn set)", async () => {
+      const sha = await storeLogo();
+      await storeIcons(sha);
+      await saveIcon(t.env.DB, 512, png(512), { background: "#112233", logoSha256: sha });
+      expect((await loadAdminSettings(t.env.DB)).icons).toBeNull();
+    });
+
+    it("do not appear in the public settings", async () => {
+      await storeIcons(await storeLogo());
+      expect(Object.keys(await loadPublicSettings(t.env.DB)).sort()).toEqual(["clubName", "logo", "privacyContact", "website"]);
+    });
+  });
+});
+
 describe("loadPublicSettings and loadAdminSettings", () => {
   it("public: nulls for everything unset", async () => {
     expect(await loadPublicSettings(t.env.DB)).toEqual({ clubName: null, website: null, privacyContact: null, logo: null });
@@ -277,8 +386,8 @@ describe("loadPublicSettings and loadAdminSettings", () => {
     const url = `/api/logo?v=${info.sha256.slice(0, 16)}`;
     expect(await loadPublicSettings(t.env.DB)).toEqual({ ...ok, logo: { url, width: 10, height: 20 } });
     expect(await loadAdminSettings(t.env.DB)).toEqual({
-      ...ok, logo: { url, width: 10, height: 20, contentType: "image/png", bytes: makePng(10, 20).length },
-      theme: { ...DEFAULT_THEME, isDefault: true },
+      ...ok, logo: { url, width: 10, height: 20, contentType: "image/png", bytes: makePng(10, 20).length, sha256: info.sha256 },
+      theme: { ...DEFAULT_THEME, isDefault: true }, icons: null,
     });
   });
 

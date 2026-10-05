@@ -47,7 +47,7 @@ export function browserImage(window) {
   };
 }
 
-async function decode(file, { createImageBitmap, loadImage }) {
+export async function decode(file, { createImageBitmap, loadImage }) {
   if (createImageBitmap) {
     try {
       const bitmap = await createImageBitmap(file);

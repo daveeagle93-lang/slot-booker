@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { AppEnv } from "../../../../src/server/env";
-import { saveLogo } from "../../../../src/server/settings";
+import { saveIcon, saveLogo } from "../../../../src/server/settings";
 import { createTestEnv, type TestEnv } from "../../../../src/test/db";
 import { makePng } from "../../../../src/test/images";
 import { onRequestGet, onRequestPut } from "./index";
@@ -12,6 +12,7 @@ beforeAll(async () => { t = await createTestEnv(); });
 afterAll(() => t.dispose());
 beforeEach(async () => {
   await t.env.DB.prepare("DELETE FROM site_logo").run();
+  await t.env.DB.prepare("DELETE FROM site_icons").run();
   await t.env.DB.prepare("UPDATE site_settings SET club_name = '', privacy_contact_name = '', privacy_contact_email = '', website_url = '', theme_primary = NULL, theme_accent = NULL").run();
 });
 
@@ -36,7 +37,7 @@ describe("GET /api/admin/settings", () => {
     const res = await call(onRequestGet);
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await res.json()).toEqual({ clubName: "", privacyContact: { name: "", email: "" }, website: "", logo: null, theme: DEFAULT_THEME_INFO });
+    expect(await res.json()).toEqual({ clubName: "", privacyContact: { name: "", email: "" }, website: "", logo: null, theme: DEFAULT_THEME_INFO, icons: null });
   });
 
   it("returns the settings and the logo's details", async () => {
@@ -44,9 +45,19 @@ describe("GET /api/admin/settings", () => {
     const png = makePng(40, 30);
     const info = await saveLogo(t.env.DB, png, { type: "image/png", width: 40, height: 30 });
     expect(await (await call(onRequestGet)).json()).toEqual({
-      ...good, logo: { url: `/api/logo?v=${info.sha256.slice(0, 16)}`, width: 40, height: 30, contentType: "image/png", bytes: png.length },
-      theme: DEFAULT_THEME_INFO,
+      ...good, logo: { url: `/api/logo?v=${info.sha256.slice(0, 16)}`, width: 40, height: 30, contentType: "image/png", bytes: png.length, sha256: info.sha256 },
+      theme: DEFAULT_THEME_INFO, icons: null,
     });
+  });
+
+  it("returns what the stored icons were drawn from once all three sizes are stored, and never their bytes", async () => {
+    const info = await saveLogo(t.env.DB, makePng(40, 30), { type: "image/png", width: 40, height: 30 });
+    for (const size of [32, 180] as const) await saveIcon(t.env.DB, size, makePng(size, size), { background: "#0b5cad", logoSha256: info.sha256 });
+    expect(((await (await call(onRequestGet)).json()) as { icons: unknown }).icons).toBeNull();
+    await saveIcon(t.env.DB, 512, makePng(512, 512), { background: "#0b5cad", logoSha256: info.sha256 });
+    const text = await (await call(onRequestGet)).text();
+    expect((JSON.parse(text) as { icons: unknown }).icons).toEqual({ background: "#0b5cad", logoSha256: info.sha256 });
+    expect(text.length).toBeLessThan(1000);
   });
 
   it("returns the saved theme, and the default again once it is reset", async () => {
@@ -75,19 +86,19 @@ describe("PUT /api/admin/settings", () => {
     const res = await put(good);
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await res.json()).toEqual({ ...good, logo: null, theme: DEFAULT_THEME_INFO });
-    expect(await (await call(onRequestGet)).json()).toEqual({ ...good, logo: null, theme: DEFAULT_THEME_INFO });
+    expect(await res.json()).toEqual({ ...good, logo: null, theme: DEFAULT_THEME_INFO, icons: null });
+    expect(await (await call(onRequestGet)).json()).toEqual({ ...good, logo: null, theme: DEFAULT_THEME_INFO, icons: null });
   });
 
   it("stores trimmed text and the normalised website", async () => {
     const res = await put({ clubName: "  Padded  ", privacyContact: { name: " ", email: " a@b.co " }, website: "HTTPS://Example.org" });
-    expect(await res.json()).toEqual({ clubName: "Padded", privacyContact: { name: "", email: "a@b.co" }, website: "https://example.org/", logo: null, theme: DEFAULT_THEME_INFO });
+    expect(await res.json()).toEqual({ clubName: "Padded", privacyContact: { name: "", email: "a@b.co" }, website: "https://example.org/", logo: null, theme: DEFAULT_THEME_INFO, icons: null });
   });
 
   it("clears everything when sent empty strings (a full replacement)", async () => {
     await put(good);
     const res = await put({ clubName: "", privacyContact: { name: "", email: "" }, website: "" });
-    expect(await res.json()).toEqual({ clubName: "", privacyContact: { name: "", email: "" }, website: "", logo: null, theme: DEFAULT_THEME_INFO });
+    expect(await res.json()).toEqual({ clubName: "", privacyContact: { name: "", email: "" }, website: "", logo: null, theme: DEFAULT_THEME_INFO, icons: null });
   });
 
   it("leaves the logo and the theme alone", async () => {

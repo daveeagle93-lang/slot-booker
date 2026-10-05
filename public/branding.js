@@ -88,6 +88,10 @@ export function applyBranding(document, settings, { pageTitle: page, home }) {
 
   document.title = pageTitle(page, s.clubName);
 
+  // The pages' own icon links are PNGs from /api/icon (the club's icon, or the bundled default). An SVG link is
+  // added only once it is known there is no logo: browsers prefer an SVG icon, so a static one would hide a club's own.
+  if (s.loaded && !s.logo) document.head.append(el(document, "link", { rel: "icon", type: "image/svg+xml", href: "/icons/default.svg" }));
+
   const site = s.website ? safeWebsite(s.website) : null;
   if (site) {
     document.body.append(el(document, "footer", { class: "site-footer" },

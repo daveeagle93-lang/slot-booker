@@ -139,32 +139,91 @@ export async function loadLogo(db: D1Database): Promise<{ info: LogoInfo; data: 
 
 export const hex = (bytes: ArrayBuffer): string => [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
 
+/** The icons are made from the logo, so every change to the logo drops them in the same batch; the browser redraws them. */
+const DELETE_ICONS_SQL = "DELETE FROM site_icons";
+
 /** Stores the logo in place of any earlier one. The caller has already run the bytes through inspectImage. */
 export async function saveLogo(db: D1Database, data: Uint8Array, image: { type: ImageType; width: number; height: number }): Promise<LogoInfo> {
   const sha256 = hex(await crypto.subtle.digest("SHA-256", data));
-  await db
-    .prepare(
-      `INSERT INTO site_logo (id, content_type, bytes, width, height, sha256) VALUES (1, ?1, ?2, ?3, ?4, ?5)
-       ON CONFLICT (id) DO UPDATE SET content_type = excluded.content_type, bytes = excluded.bytes, width = excluded.width,
-         height = excluded.height, sha256 = excluded.sha256, updated_at = ${NOW_SQL}`,
-    )
-    .bind(image.type, data, image.width, image.height, sha256)
-    .run();
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO site_logo (id, content_type, bytes, width, height, sha256) VALUES (1, ?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (id) DO UPDATE SET content_type = excluded.content_type, bytes = excluded.bytes, width = excluded.width,
+           height = excluded.height, sha256 = excluded.sha256, updated_at = ${NOW_SQL}`,
+      )
+      .bind(image.type, data, image.width, image.height, sha256),
+    db.prepare(DELETE_ICONS_SQL),
+  ]);
   return { contentType: image.type, width: image.width, height: image.height, bytes: data.byteLength, sha256 };
 }
 
-/** Removes the logo. Removing one that isn't there is fine. */
+/** Removes the logo, and the icons made from it. Removing one that isn't there is fine. */
 export async function deleteLogo(db: D1Database): Promise<void> {
-  await db.prepare("DELETE FROM site_logo WHERE id = 1").run();
+  await db.batch([db.prepare("DELETE FROM site_logo WHERE id = 1"), db.prepare(DELETE_ICONS_SQL)]);
 }
 
 /** The `?v=` that changes whenever the logo does, so a long cache lifetime is safe. */
 export const logoVersion = (sha256: string): string => sha256.slice(0, 16);
 export const logoUrl = (info: LogoInfo): string => `/api/logo?v=${logoVersion(info.sha256)}`;
 
-export interface AdminLogo { url: string; width: number; height: number; contentType: ImageType; bytes: number }
+export const ICON_SIZES = [32, 180, 512] as const;
+export type IconSize = (typeof ICON_SIZES)[number];
+/** Per-size caps on the PNG: a 32 px icon has no business being larger than 16 KiB. The table allows up to 200 KiB for any size. */
+export const MAX_ICON_BYTES: Record<IconSize, number> = { 32: 16 * 1024, 180: 96 * 1024, 512: 200 * 1024 };
+
+/** "32", "180" or "512" exactly (no sign, no leading zeros, no whitespace), else null. */
+export const parseIconSize = (text: string): IconSize | null => ICON_SIZES.find((size) => String(size) === text) ?? null;
+
+export interface IconInfo { sha256: string; bytes: number }
+
+/** What a stored icon is, without reading its bytes. */
+export async function loadIconInfo(db: D1Database, size: IconSize): Promise<IconInfo | null> {
+  return db.prepare("SELECT sha256, length(bytes) AS bytes FROM site_icons WHERE size = ?1").bind(size).first<IconInfo>();
+}
+
+/** A stored icon with its bytes (see loadLogo for how D1 hands a BLOB back). */
+export async function loadIcon(db: D1Database, size: IconSize): Promise<{ info: IconInfo; data: Uint8Array } | null> {
+  const row = await db
+    .prepare("SELECT sha256, length(bytes) AS size, bytes FROM site_icons WHERE size = ?1")
+    .bind(size)
+    .first<{ sha256: string; size: number; bytes: ArrayBuffer | number[] }>();
+  if (!row) return null;
+  return { info: { sha256: row.sha256, bytes: row.size }, data: row.bytes instanceof ArrayBuffer ? new Uint8Array(row.bytes) : Uint8Array.from(row.bytes) };
+}
+
+/**
+ * Stores one icon, in place of any earlier one for that size, only if the logo it was drawn from is still the stored
+ * logo (one statement, so a logo change between a check and the write can't leave an icon from the old logo).
+ * Returns the icon's SHA-256, or null when nothing was stored because that logo is gone. The caller has already checked the PNG.
+ */
+export async function saveIcon(db: D1Database, size: IconSize, data: Uint8Array, from: { background: string; logoSha256: string }): Promise<string | null> {
+  const sha256 = hex(await crypto.subtle.digest("SHA-256", data));
+  const result = await db
+    .prepare(
+      `INSERT INTO site_icons (size, content_type, bytes, width, height, sha256, background, logo_sha256)
+       SELECT ?1, 'image/png', ?2, ?1, ?1, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM site_logo WHERE id = 1 AND sha256 = ?5)
+       ON CONFLICT (size) DO UPDATE SET bytes = excluded.bytes, sha256 = excluded.sha256, background = excluded.background,
+         logo_sha256 = excluded.logo_sha256, updated_at = ${NOW_SQL}`,
+    )
+    .bind(size, data, sha256, from.background, from.logoSha256)
+    .run();
+  return result.meta.changes > 0 ? sha256 : null;
+}
+
+/** What the stored icons were drawn from, or null unless all three sizes are there and agree. Never the bytes. */
+export async function loadIconsStatus(db: D1Database): Promise<{ background: string; logoSha256: string } | null> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS n, MIN(background) AS b1, MAX(background) AS b2, MIN(logo_sha256) AS l1, MAX(logo_sha256) AS l2 FROM site_icons")
+    .first<{ n: number; b1: string | null; b2: string | null; l1: string | null; l2: string | null }>();
+  if (!row || row.n !== ICON_SIZES.length || row.b1 !== row.b2 || row.l1 !== row.l2 || row.b1 === null || row.l1 === null) return null;
+  return { background: row.b1, logoSha256: row.l1 };
+}
+
+/** `sha256` is only for the admin page: it must send it back with each icon so the server can tell which logo the icon was drawn from. */
+export interface AdminLogo { url: string; width: number; height: number; contentType: ImageType; bytes: number; sha256: string }
 export const adminLogo = (info: LogoInfo): AdminLogo => ({
-  url: logoUrl(info), width: info.width, height: info.height, contentType: info.contentType, bytes: info.bytes,
+  url: logoUrl(info), width: info.width, height: info.height, contentType: info.contentType, bytes: info.bytes, sha256: info.sha256,
 });
 
 export interface ThemeInfo { primary: string; accent: string; isDefault: boolean }
@@ -236,9 +295,11 @@ export function parseThemeInput(raw: Record<string, unknown>):
 }
 
 /** Everything the settings form shows. */
-export async function loadAdminSettings(db: D1Database): Promise<SiteSettings & { logo: AdminLogo | null; theme: ThemeInfo }> {
-  const [settings, logo, theme] = await Promise.all([loadSettings(db), loadLogoInfo(db), loadTheme(db)]);
-  return { ...settings, logo: logo ? adminLogo(logo) : null, theme };
+export async function loadAdminSettings(
+  db: D1Database,
+): Promise<SiteSettings & { logo: AdminLogo | null; theme: ThemeInfo; icons: { background: string; logoSha256: string } | null }> {
+  const [settings, logo, theme, icons] = await Promise.all([loadSettings(db), loadLogoInfo(db), loadTheme(db), loadIconsStatus(db)]);
+  return { ...settings, logo: logo ? adminLogo(logo) : null, theme, icons };
 }
 
 export interface PublicSettings {

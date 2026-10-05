@@ -8,7 +8,10 @@ import {
 } from "../../../../src/server/auth/test-harness";
 import { createTestEnv, type TestEnv } from "../../../../src/test/db";
 import { makePng, toBase64 } from "../../../../src/test/images";
+import { saveLogo } from "../../../../src/server/settings";
+import { createHash } from "node:crypto";
 import * as index from "./index";
+import * as icons from "./icons/[size]";
 import * as logo from "./logo";
 import * as theme from "./theme";
 
@@ -17,6 +20,8 @@ beforeAll(async () => { t = await createTestEnv(); });
 afterAll(async () => { await t.dispose(); });
 
 const GOOD_THEME = { primary: "#1b6b3a", accent: "#a1235f" };
+const LOGO = makePng(8, 8);
+const GOOD_ICON = { data: toBase64(makePng(32, 32)), background: "#0b5cad", logoSha256: createHash("sha256").update(LOGO).digest("hex") };
 const GOOD_SETTINGS = { clubName: "Example Dog Club", privacyContact: { name: "Pat", email: "pat@example.org" }, website: "https://example.org/" };
 
 interface Route {
@@ -28,6 +33,10 @@ interface Route {
   /** The exported handler's name. */
   handler: string;
   body?: unknown;
+  /** Route parameters, as Pages would extract them from the file name. */
+  params?: Record<string, string>;
+  /** What the database needs to hold for a signed-in request to this route to succeed. */
+  prepare?: () => Promise<unknown>;
 }
 
 // Every route under functions/api/admin/settings/. The test further down fails if a file or an exported handler is missing here.
@@ -38,13 +47,17 @@ const ROUTES: Route[] = [
   { file: "logo.ts", module: logo, path: "/api/admin/settings/logo", method: "DELETE", handler: "onRequestDelete" },
   { file: "theme.ts", module: theme, path: "/api/admin/settings/theme", method: "PUT", handler: "onRequestPut", body: GOOD_THEME },
   { file: "theme.ts", module: theme, path: "/api/admin/settings/theme", method: "DELETE", handler: "onRequestDelete" },
+  {
+    file: "icons/[size].ts", module: icons, path: "/api/admin/settings/icons/32", method: "PUT", handler: "onRequestPut",
+    params: { size: "32" }, body: GOOD_ICON, prepare: () => saveLogo(t.env.DB, LOGO, { type: "image/png", width: 8, height: 8 }),
+  },
 ];
 
 /** Puts the real handlers behind the real middleware, as Pages routes them. */
 const routes = (context: { request: Request }): Response | Promise<Response> | undefined => {
   const { pathname } = new URL(context.request.url);
   const route = ROUTES.find((r) => r.path === pathname && r.method === context.request.method);
-  return route ? (route.module[route.handler] as (c: unknown) => Response | Promise<Response>)(context) : undefined;
+  return route ? (route.module[route.handler] as (c: unknown) => Response | Promise<Response>)({ ...context, params: route.params ?? {} }) : undefined;
 };
 
 interface Provider {
@@ -88,6 +101,7 @@ const csrfOf = async (p: Provider, auth: Record<string, string>): Promise<string
 const stateOf = async () => ({
   settings: await t.env.DB.prepare("SELECT club_name, website_url, theme_primary, theme_accent, updated_at FROM site_settings").first(),
   logos: (await t.env.DB.prepare("SELECT COUNT(*) AS n FROM site_logo").first<{ n: number }>())!.n,
+  icons: (await t.env.DB.prepare("SELECT COUNT(*) AS n FROM site_icons").first<{ n: number }>())!.n,
 });
 
 describe("settings routes are admin-only and CSRF-protected", () => {
@@ -110,6 +124,7 @@ describe("settings routes are admin-only and CSRF-protected", () => {
 
     it.each(ROUTES.map((r) => [`${r.method} ${r.path}`, r] as const))("%s: a signed-in admin succeeds", async (_label, r) => {
       const auth = await p.auth();
+      await r.prepare?.();
       const res = await send(r, r.method === "GET" ? auth : writeHeaders(await csrfOf(p, auth), auth));
       expect(res.status).toBe(200);
       expect(res.headers.get("cache-control")).toBe("no-store");
@@ -155,15 +170,17 @@ describe("settings routes are admin-only and CSRF-protected", () => {
 
       const auth = await p.auth();
       const headers = writeHeaders(await csrfOf(p, auth), auth);
-      const [, putSettings, putLogo, deleteLogo, putTheme, deleteTheme] = ROUTES;
+      const [, putSettings, putLogo, deleteLogo, putTheme, deleteTheme, putIcon] = ROUTES;
       expect((await send(putSettings, headers)).status).toBe(200);
       expect((await send(putLogo, headers)).status).toBe(200);
       expect((await send(putTheme, headers)).status).toBe(200);
       expect((await stateOf())).toMatchObject({ settings: { club_name: "Example Dog Club", theme_primary: "#1b6b3a", theme_accent: "#a1235f" }, logos: 1 });
-      expect((await send(deleteLogo, headers)).status).toBe(200);
-      expect((await stateOf()).logos).toBe(0);
       expect((await send(deleteTheme, headers)).status).toBe(200);
       expect((await stateOf())).toMatchObject({ settings: { theme_primary: null, theme_accent: null } });
+      expect((await send(putIcon, headers)).status).toBe(200);
+      expect((await stateOf())).toMatchObject({ logos: 1, icons: 1 });
+      expect((await send(deleteLogo, headers)).status).toBe(200);
+      expect((await stateOf())).toMatchObject({ logos: 0, icons: 0 });
     });
   });
 
@@ -175,7 +192,7 @@ describe("settings routes are admin-only and CSRF-protected", () => {
           request: new Request(`${ORIGIN}${r.path}`, {
             method: r.method, headers: { "Content-Type": "application/json" }, body: r.method === "GET" ? undefined : JSON.stringify(r.body ?? {}),
           }),
-          env: t.env, data,
+          env: t.env, data, params: r.params ?? {},
         }));
         expect(res.status, JSON.stringify(data)).toBe(401);
         expect(res.headers.get("cache-control")).toBe("no-store");
@@ -187,7 +204,8 @@ describe("settings routes are admin-only and CSRF-protected", () => {
   describe("the list above is complete", () => {
     it("names every file under functions/api/admin/settings/", () => {
       const dir = dirname(fileURLToPath(import.meta.url));
-      const files = readdirSync(dir).filter((f) => !f.endsWith(".test.ts")).sort();
+      const files = readdirSync(dir, { recursive: true, encoding: "utf8" }).map((f) => f.replaceAll("\\", "/"))
+        .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).sort();
       expect(files).toEqual([...new Set(ROUTES.map((r) => r.file))].sort());
     });
 

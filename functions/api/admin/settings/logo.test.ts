@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { AppEnv } from "../../../../src/server/env";
-import { saveLogo } from "../../../../src/server/settings";
+import { saveIcon, saveLogo } from "../../../../src/server/settings";
 import { createTestEnv, type TestEnv } from "../../../../src/test/db";
 import {
   makeJpeg, makePng, PNG_SIGNATURE, pngOfSize, toBase64, webpExtended, webpLossless, webpLossy, withRiffSize, withTrailing,
@@ -46,7 +46,7 @@ describe("PUT /api/admin/settings/logo: accepted images", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
     const sha = createHash("sha256").update(bytes).digest("hex");
-    expect(await res.json()).toEqual({ logo: { url: `/api/logo?v=${sha.slice(0, 16)}`, width, height, contentType, bytes: bytes.length } });
+    expect(await res.json()).toEqual({ logo: { url: `/api/logo?v=${sha.slice(0, 16)}`, width, height, contentType, bytes: bytes.length, sha256: sha } });
     expect(await storedSha()).toBe(sha);
   });
 
@@ -108,6 +108,33 @@ describe("PUT /api/admin/settings/logo: accepted images", () => {
     const svg = await send(text("<svg xmlns='http://www.w3.org/2000/svg'/>"), { contentType: "image/png", type: "image/png", filename: "logo.png" });
     expect(svg.status).toBe(422);
     expect(await rowCount()).toBe(0);
+  });
+});
+
+describe("the app icons follow the logo", () => {
+  const iconCount = async () => (await t.env.DB.prepare("SELECT COUNT(*) AS n FROM site_icons").first<{ n: number }>())!.n;
+  const withIcons = async () => {
+    const sha = (await saveLogo(t.env.DB, makePng(4, 4), { type: "image/png", width: 4, height: 4 })).sha256;
+    for (const size of [32, 180, 512] as const) await saveIcon(t.env.DB, size, makePng(size, size), { background: "#0b5cad", logoSha256: sha });
+    expect(await iconCount()).toBe(3);
+  };
+
+  it("replacing the logo removes the icons made from the old one", async () => {
+    await withIcons();
+    expect((await send(makePng(9, 9))).status).toBe(200);
+    expect(await iconCount()).toBe(0);
+  });
+
+  it("deleting the logo removes the icons", async () => {
+    await withIcons();
+    expect((await onRequestDelete({ env: t.env as AppEnv, data: ADMIN } as never)).status).toBe(200);
+    expect(await iconCount()).toBe(0);
+  });
+
+  it("a refused upload leaves the icons alone", async () => {
+    await withIcons();
+    expect((await send(withTrailing(makePng(4, 4), 0))).status).toBe(422);
+    expect(await iconCount()).toBe(3);
   });
 });
 
