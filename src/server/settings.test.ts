@@ -273,6 +273,24 @@ describe("the theme in D1", () => {
     }
   });
 
+  it("saves and resets even when the singleton row is missing, instead of reporting a save that changed nothing", async () => {
+    const rows = async () => (await t.env.DB.prepare("SELECT count(*) AS n FROM site_settings").first<{ n: number }>())!.n;
+    try {
+      await t.env.DB.prepare("DELETE FROM site_settings").run();
+      await saveTheme(t.env.DB, { primary: "#1b6b3a", accent: "#a1235f" });
+      expect(await rows()).toBe(1);
+      expect(await loadTheme(t.env.DB)).toEqual({ primary: "#1b6b3a", accent: "#a1235f", isDefault: false });
+
+      await t.env.DB.prepare("DELETE FROM site_settings").run();
+      await resetTheme(t.env.DB);
+      expect(await rows()).toBe(1);
+      expect(await loadTheme(t.env.DB)).toEqual(DEFAULT);
+    } finally {
+      // Put the migration's row back for the other tests.
+      await t.env.DB.prepare("INSERT OR IGNORE INTO site_settings (id) VALUES (1)").run();
+    }
+  });
+
   it("saves normalised colours and loads them back", async () => {
     await saveTheme(t.env.DB, { primary: " #1B6B3A ", accent: "#a1235f" });
     expect(await row()).toMatchObject({ theme_primary: "#1b6b3a", theme_accent: "#a1235f" });

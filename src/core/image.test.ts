@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  makeJpeg, makePng, PNG_SIGNATURE, pngChunk, pngOfSize, webpExtended, webpLossless, webpLossy, withRiffSize, withTrailing,
+  jpegWithAfterSoi, jpegWithTwoFrames, makeApng, makeJpeg, makePng, PNG_SIGNATURE, pngChunk, pngOfSize, webpAnimated, webpAnimChunksOnly,
+  webpAnimFlagOnly, webpExtended, webpLossless, webpLosslessAlpha, webpLossy, webpLossyAlpha, webpLossyThenAnmf, webpWithMetadata,
+  withRiffSize, withTrailing,
 } from "../test/images";
 import { inspectImage, MAX_IMAGE_BYTES } from "./image";
 
@@ -24,6 +26,18 @@ describe("inspectImage: accepted images", () => {
     expect(inspectImage(webpLossy(100, 50))).toEqual({ ok: true, type: "image/webp", width: 100, height: 50 });
     expect(inspectImage(webpLossless(256, 129))).toEqual({ ok: true, type: "image/webp", width: 256, height: 129 });
     expect(inspectImage(webpExtended(512, 7))).toEqual({ ok: true, type: "image/webp", width: 512, height: 7 });
+  });
+
+  it("accepts the still WebP layouts browsers write: lossy, lossless, and extended with alpha or metadata but no animation", () => {
+    for (const make of [webpLossy, webpLossless, webpLossyAlpha, webpLosslessAlpha, webpWithMetadata]) {
+      expect(inspectImage(make(40, 30)), make.name).toEqual({ ok: true, type: "image/webp", width: 40, height: 30 });
+    }
+  });
+
+  it("accepts the standalone JPEG markers TEM and RSTn between segments", () => {
+    for (const marker of [0x01, 0xd0, 0xd3, 0xd7]) {
+      expect(reason(jpegWithAfterSoi(8, 8, Uint8Array.of(0xff, marker))), marker.toString(16)).toBe("ok");
+    }
   });
 
   it("accepts 1x1 and 512x512, the limits of the allowed range", () => {
@@ -137,6 +151,23 @@ describe("inspectImage: nothing can ride along", () => {
     const png = makePng(4, 4);
     expect(reason(Uint8Array.of(...png, ...pngChunk("IEND", new Uint8Array(0))))).toBe("corrupt");
     expect(reason(png.subarray(0, png.length - 12))).toBe("corrupt");
+  });
+});
+
+describe("inspectImage: only still images", () => {
+  it("rejects an animated PNG (acTL)", () => {
+    expect(reason(makeApng(8, 8))).toBe("corrupt");
+  });
+
+  it("rejects an animated WebP: the VP8X animation flag, or any ANIM or ANMF chunk", () => {
+    for (const make of [webpAnimated, webpAnimFlagOnly, webpAnimChunksOnly, webpLossyThenAnmf]) {
+      expect(reason(make(8, 8)), make.name).toBe("corrupt");
+    }
+  });
+
+  it("rejects a JPEG with a second SOI or a second frame header", () => {
+    expect(reason(jpegWithAfterSoi(8, 8, Uint8Array.of(0xff, 0xd8)))).toBe("corrupt");
+    expect(reason(jpegWithTwoFrames(8, 8))).toBe("corrupt");
   });
 });
 

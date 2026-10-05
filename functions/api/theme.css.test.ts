@@ -23,9 +23,9 @@ const SHAPE = new RegExp(
 );
 
 const DEFAULT_CSS =
-  ":root{--primary:#0b5cad;--on-primary:#ffffff;--accent:#0b5cad}@media (prefers-color-scheme:dark){:root{--primary:#1563b0;--on-primary:#ffffff;--accent:#4f8ac4}}\n";
+  ":root{--primary:#0b5cad;--on-primary:#ffffff;--accent:#0b5cad}@media (prefers-color-scheme:dark){:root{--primary:#236cb5;--on-primary:#ffffff;--accent:#4f8ac4}}\n";
 const GREEN_CSS =
-  ":root{--primary:#1b6b3a;--on-primary:#ffffff;--accent:#a1235f}@media (prefers-color-scheme:dark){:root{--primary:#206e3e;--on-primary:#ffffff;--accent:#c16e95}}\n";
+  ":root{--primary:#1b6b3a;--on-primary:#ffffff;--accent:#a1235f}@media (prefers-color-scheme:dark){:root{--primary:#2d774a;--on-primary:#ffffff;--accent:#c16e95}}\n";
 
 describe("GET /api/theme.css", () => {
   it("serves exactly the default colours when no theme is set", async () => {
@@ -50,7 +50,7 @@ describe("GET /api/theme.css", () => {
     expect(res.headers.get("content-type")).toBe("text/css; charset=utf-8");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("x-robots-tag")).toBe("noindex");
-    expect(res.headers.get("cache-control")).toBe("no-cache");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=60, stale-while-revalidate=300");
   });
 
   it("has a strong ETag that is the SHA-256 of the body", async () => {
@@ -87,7 +87,7 @@ describe("GET /api/theme.css", () => {
         expect(res.status, header).toBe(304);
         expect(await res.text()).toBe("");
         expect(res.headers.get("etag")).toBe(etag);
-        expect(res.headers.get("cache-control")).toBe("no-cache");
+        expect(res.headers.get("cache-control")).toBe("public, max-age=60, stale-while-revalidate=300");
         expect(res.headers.get("x-content-type-options")).toBe("nosniff");
       }
     });
@@ -131,7 +131,7 @@ describe("GET /api/theme.css", () => {
       const res = await request();
       expect(res.status).toBe(200);
       expect(await res.text()).toBe(DEFAULT_CSS);
-      expect(res.headers.get("cache-control")).toBe("no-cache");
+      expect(res.headers.get("cache-control")).toBe("public, max-age=60, stale-while-revalidate=300");
     });
 
     it("falls back to the default when the CHECK was bypassed with CSS", async () => {

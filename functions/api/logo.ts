@@ -27,15 +27,22 @@ export const onRequest: PagesFunction<AppEnv> = async ({ request, env }) => {
     return errorResponse(405, "method_not_allowed", "Method not allowed.", {}, { ...noStore, Allow: "GET, HEAD" });
   }
   const condition = request.headers.get("If-None-Match");
-  if (condition !== null) {
-    // A revalidation is answered from the row's metadata, without reading the image.
+  // No logo is cached briefly too: pages ask on every load, and a new upload is picked up within minutes.
+  const notFound = () => errorResponse(404, "not_found", "There is no logo.", {}, { "Cache-Control": "public, max-age=300" });
+  const typed = (info: { sha256: string; contentType: string; bytes: number }): Headers => {
+    const headers = headersFor(request, info.sha256);
+    headers.set("Content-Type", info.contentType);
+    headers.set("Content-Length", String(info.bytes));
+    return headers;
+  };
+  if (condition !== null || request.method === "HEAD") {
+    // A revalidation or a HEAD is answered from the row's metadata, without reading the image.
     const info = await loadLogoInfo(env.DB);
-    if (info && matches(condition, `"${info.sha256}"`)) return new Response(null, { status: 304, headers: headersFor(request, info.sha256) });
+    if (!info) return notFound();
+    if (condition !== null && matches(condition, `"${info.sha256}"`)) return new Response(null, { status: 304, headers: headersFor(request, info.sha256) });
+    if (request.method === "HEAD") return new Response(null, { headers: typed(info) });
   }
   const logo = await loadLogo(env.DB);
-  if (!logo) return errorResponse(404, "not_found", "There is no logo.", {}, { "Cache-Control": "no-cache" });
-  const headers = headersFor(request, logo.info.sha256);
-  headers.set("Content-Type", logo.info.contentType);
-  headers.set("Content-Length", String(logo.data.byteLength));
-  return new Response(request.method === "HEAD" ? null : logo.data, { headers });
+  if (!logo) return notFound();
+  return new Response(logo.data, { headers: typed(logo.info) });
 };

@@ -81,3 +81,24 @@ describe("GET /api/events", () => {
     expect(events[49].name).toBe("E49");
   });
 });
+
+describe("GET /api/events when the database fails", () => {
+  it("answers a clean JSON 500, logs only the message, and is never cached", async () => {
+    const broken = { DB: { prepare: () => { throw new Error("D1 is down: SELECT secret FROM x"); } } };
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await Promise.resolve(
+        onRequestGet({ request: new Request("http://localhost/api/events"), env: broken } as unknown as Parameters<typeof onRequestGet>[0]),
+      );
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: { code: "internal_error", message: "Something went wrong. Please try again." } });
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(res.headers.get("x-robots-tag")).toBe("noindex");
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log.mock.calls[0].every((a) => typeof a === "string")).toBe(true);
+    } finally {
+      log.mockRestore();
+    }
+  });
+});

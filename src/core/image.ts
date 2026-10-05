@@ -28,7 +28,7 @@ function sniff(b: Uint8Array): ImageType | null {
   return null;
 }
 
-/** IHDR must be the first chunk, and IEND must end exactly at the end of the buffer. */
+/** IHDR must be the first chunk, IEND must end exactly at the end of the buffer, and there is no acTL (animated PNG). */
 function pngSize(b: Uint8Array): Size {
   const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
   let size: Size = null;
@@ -42,12 +42,15 @@ function pngSize(b: Uint8Array): Size {
       size = { width: view.getUint32(pos + 8), height: view.getUint32(pos + 12) };
     } else if (startsWith(b, pos + 4, "IEND")) {
       return length === 0 && pos + 12 === b.length ? size : null;
-    }
+    } else if (startsWith(b, pos + 4, "acTL")) return null;
     pos += 12 + length;
   }
 }
 
-/** Walks the markers to the first SOFn, then on to the EOI, which must be the last two bytes. */
+/**
+ * Walks the markers to the one SOFn, then on to the EOI, which must be the last two bytes. A second SOI or SOFn
+ * (a second picture inside the file) is refused; the only markers without a length are TEM and RSTn.
+ */
 function jpegSize(b: Uint8Array): Size {
   const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
   let size: Size = null;
@@ -59,13 +62,14 @@ function jpegSize(b: Uint8Array): Size {
     if (marker === undefined || marker === 0x00) return null;
     pos += 2;
     if (marker === 0xd9) return size !== null && pos === b.length ? size : null;
-    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) continue; // standalone: no length
+    if (marker === 0xd8) return null; // a second SOI
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue; // standalone: no length
     if (pos + 2 > b.length) return null;
     const length = view.getUint16(pos);
     if (length < 2 || pos + length > b.length) return null;
     const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
-    if (isSof && size === null) {
-      if (length < 8) return null;
+    if (isSof) {
+      if (size !== null || length < 8) return null;
       size = { width: view.getUint16(pos + 5), height: view.getUint16(pos + 3) };
     }
     pos += length;
@@ -82,7 +86,10 @@ function jpegSize(b: Uint8Array): Size {
   }
 }
 
-/** The RIFF size field must equal the length minus 8 and the chunks must fill the file exactly. */
+/**
+ * The RIFF size field must equal the length minus 8 and the chunks must fill the file exactly. A still image
+ * only: the animation flag in VP8X, and any ANIM or ANMF chunk, are refused.
+ */
 function webpSize(b: Uint8Array): Size {
   const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
   if (b.length < 20 || view.getUint32(4, true) !== b.length - 8) return null;
@@ -93,6 +100,7 @@ function webpSize(b: Uint8Array): Size {
     const length = view.getUint32(pos + 4, true);
     const data = pos + 8;
     if (length > b.length - data) return null;
+    if (startsWith(b, pos, "ANIM") || startsWith(b, pos, "ANMF")) return null;
     if (size === null) {
       if (startsWith(b, pos, "VP8 ")) {
         if (length < 10 || !startsWith(b, data + 3, [0x9d, 0x01, 0x2a])) return null;
@@ -102,7 +110,7 @@ function webpSize(b: Uint8Array): Size {
         const bits = view.getUint32(data + 1, true);
         size = { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
       } else if (startsWith(b, pos, "VP8X")) {
-        if (length < 10) return null;
+        if (length < 10 || (b[data] & 0x02) !== 0) return null; // bit 1 of the flags is "animation"
         size = {
           width: (b[data + 4] | (b[data + 5] << 8) | (b[data + 6] << 16)) + 1,
           height: (b[data + 7] | (b[data + 8] << 8) | (b[data + 9] << 16)) + 1,

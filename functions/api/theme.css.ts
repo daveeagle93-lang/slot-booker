@@ -30,7 +30,8 @@ export const onRequest: PagesFunction<AppEnv> = async ({ request, env }) => {
   }
   const etag = `"${hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(css)))}"`;
   const h = headers();
-  h.set("Cache-Control", "no-cache");
+  // A minute is the longest a saved colour change can lag. The admin page adds ?v= after saving, so it sees its own change at once.
+  h.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
   h.set("ETag", etag);
   const condition = request.headers.get("If-None-Match");
   if (condition !== null && matches(condition, etag)) return new Response(null, { status: 304, headers: h });

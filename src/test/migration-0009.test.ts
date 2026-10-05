@@ -34,6 +34,29 @@ describe("0009 site_settings", () => {
     }
   });
 
+  it.each([
+    ["club_name", 320], ["privacy_contact_name", 400], ["privacy_contact_email", 254], ["website_url", 300],
+  ])("%s holds at most %i characters", async (column, max) => {
+    // 'https://' first, so the website column is tested on its length alone.
+    const text = (n: number) => (column === "website_url" ? "https://" + "x".repeat(n - 8) : "x".repeat(n));
+    await setting(column, text(max));
+    await expect(setting(column, text(max + 1))).rejects.toThrow(/CHECK constraint failed/);
+    // Characters, not bytes: 3-byte and 4-byte characters at the limit are fine.
+    if (column !== "website_url") {
+      await setting(column, "€".repeat(max));
+      await setting(column, "😀".repeat(max));
+    }
+    await setting(column, "");
+  });
+
+  it("website_url is empty or starts with lower-case https://", async () => {
+    for (const ok of ["", "https://example.org/", "https://x"]) await setting("website_url", ok);
+    for (const bad of ["http://example.org", "HTTPS://example.org", "javascript:alert(1)", "//example.org", "example.org", " https://example.org", "ftp://x", "https:/x", "data:text/html,x"]) {
+      await expect(setting("website_url", bad), bad).rejects.toThrow(/CHECK constraint failed/);
+    }
+    await setting("website_url", "");
+  });
+
   it.each(["theme_primary", "theme_accent"])("%s accepts NULL and lower-case #rrggbb only", async (column) => {
     for (const ok of ["#0a1b2c", "#000000", "#ffffff", null]) await setting(column, ok);
     for (const bad of ["#0A1B2C", "#fff", "#0a1b2", "#0a1b2c0", "0a1b2c", "#0a1b2g", "red", "", " #0a1b2c", "#0a1b2c ", "#0a1b2c\n", "rgb(1,2,3)", "#0a1b2cff"]) {

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppEnv } from "../../src/server/env";
 import { saveLogo, saveSettings } from "../../src/server/settings";
 import { createTestEnv, type TestEnv } from "../../src/test/db";
@@ -49,5 +49,24 @@ describe("GET /api/settings", () => {
   it("treats a contact name without an email as no contact, and empty text as null", async () => {
     await t.env.DB.prepare("UPDATE site_settings SET privacy_contact_name = 'Pat'").run();
     expect(((await (await get()).json()) as { privacyContact: unknown }).privacyContact).toBeNull();
+  });
+});
+
+describe("GET /api/settings when the database fails", () => {
+  it("answers a clean JSON 500, logs only the message, and is never cached", async () => {
+    const broken = { DB: { prepare: () => { throw new Error("D1 is down: SELECT secret FROM x"); } } };
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await Promise.resolve(onRequestGet({ request: new Request("http://localhost/api/settings"), env: broken } as never));
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: { code: "internal_error", message: "Something went wrong. Please try again." } });
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(res.headers.get("x-robots-tag")).toBe("noindex");
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log.mock.calls[0].every((a) => typeof a === "string")).toBe(true);
+    } finally {
+      log.mockRestore();
+    }
   });
 });

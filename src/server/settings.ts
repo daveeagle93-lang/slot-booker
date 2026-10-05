@@ -192,15 +192,24 @@ export async function saveTheme(db: D1Database, theme: { primary: string; accent
   const primary = normaliseHex(theme.primary);
   const accent = normaliseHex(theme.accent);
   if (!primary || !accent) throw new RangeError("primary and accent must be hex colours");
+  // An upsert, like saveSettings: a plain UPDATE of a missing row changes nothing and would still report a save.
   await db
-    .prepare(`UPDATE site_settings SET theme_primary = ?1, theme_accent = ?2, updated_at = ${NOW_SQL} WHERE id = 1`)
+    .prepare(
+      `INSERT INTO site_settings (id, theme_primary, theme_accent) VALUES (1, ?1, ?2)
+       ON CONFLICT (id) DO UPDATE SET theme_primary = excluded.theme_primary, theme_accent = excluded.theme_accent, updated_at = ${NOW_SQL}`,
+    )
     .bind(primary, accent)
     .run();
 }
 
 /** Back to the default theme. Resetting one that is already default is fine. */
 export async function resetTheme(db: D1Database): Promise<void> {
-  await db.prepare(`UPDATE site_settings SET theme_primary = NULL, theme_accent = NULL, updated_at = ${NOW_SQL} WHERE id = 1`).run();
+  await db
+    .prepare(
+      `INSERT INTO site_settings (id) VALUES (1)
+       ON CONFLICT (id) DO UPDATE SET theme_primary = NULL, theme_accent = NULL, updated_at = ${NOW_SQL}`,
+    )
+    .run();
 }
 
 export interface ContrastFailure { id: string; label: string; mode: "light" | "dark"; ratio: number; min: number }

@@ -97,14 +97,32 @@ describe("GET /api/logo", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-length")).toBe(String(data.length));
     expect(res.headers.get("etag")).toBe(`"${info.sha256}"`);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=300");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
     expect(await res.text()).toBe("");
+    // Same headers as the GET, so a HEAD tells a client exactly what a GET would.
+    const get = await request();
+    expect([...res.headers.entries()].sort()).toEqual([...get.headers.entries()].sort());
   });
 
-  it("answers 404 JSON, not cached for long, when there is no logo", async () => {
+  it("answers HEAD from the metadata row, without reading the image bytes", async () => {
+    await saveLogo(t.env.DB, makePng(4, 4), { type: "image/png", width: 4, height: 4 });
+    const sql: string[] = [];
+    const spy = { DB: { prepare: (q: string) => { sql.push(q); return t.env.DB.prepare(q); } } };
+    const res = await Promise.resolve(onRequest({ request: new Request("http://localhost/api/logo", { method: "HEAD" }), env: spy } as never));
+    expect(res.status).toBe(200);
+    expect(sql.length).toBeGreaterThan(0);
+    // length(bytes) is fine; selecting the column itself is not.
+    for (const q of sql) expect(q.replace(/length\(bytes\)/g, "")).not.toMatch(/\bbytes\b/);
+  });
+
+  it("answers 404 JSON, cached for five minutes, when there is no logo", async () => {
     for (const init of [{}, { headers: { "If-None-Match": "*" } }, { method: "HEAD" }]) {
       const res = await request("?v=abc", init);
       expect(res.status).toBe(404);
-      expect(res.headers.get("cache-control")).toBe("no-cache");
+      expect(res.headers.get("cache-control")).toBe("public, max-age=300");
       expect(res.headers.get("x-content-type-options")).toBe("nosniff");
       if (init.method !== "HEAD") expect(await res.json()).toMatchObject({ error: { code: "not_found" } });
     }

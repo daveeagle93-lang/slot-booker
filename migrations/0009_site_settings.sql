@@ -6,10 +6,12 @@
 --
 -- site_settings: empty text means "not set". The migration inserts the row, so a read
 -- always finds one. The application limits lengths and checks the formats (src/server/
--- settings.ts); the CHECKs here are the backstop for the fixed shapes. The theme colours
--- are NULL for the default theme, otherwise lower-case #rrggbb (split into the "#" and
--- the six digits because D1 limits GLOB patterns to 50 bytes; a GLOB matches the whole
--- string, so a seventh digit is refused).
+-- settings.ts); the CHECKs here are the backstop: generous length caps (the application
+-- allows 80, 100, 254 and 200 characters and counts code points, which SQLite's length()
+-- counts too, so the caps leave headroom) and the https:// start of a website address.
+-- The theme colours are NULL for the default theme, otherwise lower-case #rrggbb (split
+-- into the "#" and the six digits because D1 limits GLOB patterns to 50 bytes; a GLOB
+-- matches the whole string, so a seventh digit is refused).
 --
 -- site_logo: no row means no logo. content_type is an allow-list (never SVG, which can
 -- carry script), the size cap is 200 KiB and each side is 1 to 512 pixels. The
@@ -18,10 +20,10 @@
 
 CREATE TABLE site_settings (
   id                    INTEGER PRIMARY KEY CHECK (id = 1),
-  club_name             TEXT NOT NULL DEFAULT '',
-  privacy_contact_name  TEXT NOT NULL DEFAULT '',
-  privacy_contact_email TEXT NOT NULL DEFAULT '',
-  website_url           TEXT NOT NULL DEFAULT '',
+  club_name             TEXT NOT NULL DEFAULT '' CHECK (length(club_name) <= 320),
+  privacy_contact_name  TEXT NOT NULL DEFAULT '' CHECK (length(privacy_contact_name) <= 400),
+  privacy_contact_email TEXT NOT NULL DEFAULT '' CHECK (length(privacy_contact_email) <= 254),
+  website_url           TEXT NOT NULL DEFAULT '' CHECK (length(website_url) <= 300 AND (website_url = '' OR website_url GLOB 'https://*')),
   theme_primary         TEXT CHECK (theme_primary IS NULL OR (substr(theme_primary, 1, 1) = '#' AND substr(theme_primary, 2) GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]')),
   theme_accent          TEXT CHECK (theme_accent IS NULL OR (substr(theme_accent, 1, 1) = '#' AND substr(theme_accent, 2) GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),

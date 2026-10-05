@@ -57,11 +57,53 @@ export const webpLossy = (width: number, height: number): Uint8Array =>
 export const webpLossless = (width: number, height: number): Uint8Array =>
   riff(riffChunk("VP8L", concat(Uint8Array.of(0x2f), u32le((width - 1) | ((height - 1) << 14)), new Uint8Array(3))));
 
+const vp8x = (width: number, height: number, flags: number): Uint8Array =>
+  riffChunk("VP8X", concat(Uint8Array.of(flags, 0, 0, 0), u32le(width - 1).subarray(0, 3), u32le(height - 1).subarray(0, 3)));
+const vp8lChunk = (width: number, height: number): Uint8Array =>
+  riffChunk("VP8L", concat(Uint8Array.of(0x2f), u32le((width - 1) | ((height - 1) << 14)), new Uint8Array(3)));
+const vp8Chunk = (width: number, height: number): Uint8Array =>
+  riffChunk("VP8 ", concat(Uint8Array.of(0x10, 0, 0, 0x9d, 0x01, 0x2a), u16le(width), u16le(height), new Uint8Array(4)));
+
 export const webpExtended = (width: number, height: number): Uint8Array =>
-  riff(
-    riffChunk("VP8X", concat(Uint8Array.of(0, 0, 0, 0), u32le(width - 1).subarray(0, 3), u32le(height - 1).subarray(0, 3))),
-    riffChunk("VP8L", concat(Uint8Array.of(0x2f), u32le((width - 1) | ((height - 1) << 14)), new Uint8Array(3))),
-  );
+  riff(vp8x(width, height, 0), vp8lChunk(width, height));
+
+// What browsers' canvas.toBlob("image/webp") really writes when there is transparency or metadata: still images
+// that use the extended layout. Flags: 0x20 ICC profile, 0x10 alpha, 0x08 EXIF, 0x04 XMP, 0x02 animation.
+export const webpLossyAlpha = (width: number, height: number): Uint8Array =>
+  riff(vp8x(width, height, 0x10), riffChunk("ALPH", Uint8Array.of(0, 1, 2)), vp8Chunk(width, height));
+export const webpLosslessAlpha = (width: number, height: number): Uint8Array =>
+  riff(vp8x(width, height, 0x10), vp8lChunk(width, height));
+export const webpWithMetadata = (width: number, height: number): Uint8Array =>
+  riff(vp8x(width, height, 0x38), riffChunk("ICCP", new Uint8Array(5)), vp8Chunk(width, height), riffChunk("EXIF", new Uint8Array(3)), riffChunk("XMP ", new Uint8Array(4)));
+
+/** An animated WebP: the animation flag, ANIM, and an ANMF frame. */
+export const webpAnimated = (width: number, height: number): Uint8Array =>
+  riff(vp8x(width, height, 0x12), riffChunk("ANIM", new Uint8Array(6)), riffChunk("ANMF", concat(new Uint8Array(16), vp8Chunk(width, height))));
+/** The same file with the animation flag cleared: ANIM and ANMF chunks still make it animated. */
+export const webpAnimChunksOnly = (width: number, height: number): Uint8Array =>
+  riff(vp8x(width, height, 0x10), riffChunk("ANIM", new Uint8Array(6)), vp8Chunk(width, height));
+/** An ANMF chunk after an ordinary first chunk (no VP8X at all). */
+export const webpLossyThenAnmf = (width: number, height: number): Uint8Array =>
+  riff(vp8Chunk(width, height), riffChunk("ANMF", new Uint8Array(16)));
+/** The animation flag set on a VP8X that has no animation chunks. */
+export const webpAnimFlagOnly = (width: number, height: number): Uint8Array =>
+  riff(vp8x(width, height, 0x02), vp8lChunk(width, height));
+
+/** An animated PNG: a still PNG with an acTL chunk after IHDR. */
+export function makeApng(width: number, height: number): Uint8Array {
+  const png = makePng(width, height);
+  const ihdrEnd = PNG_SIGNATURE.length + 12 + 13;
+  return concat(png.subarray(0, ihdrEnd), pngChunk("acTL", concat(u32be(2), u32be(0))), png.subarray(ihdrEnd));
+}
+
+/** A JPEG with `extra` bytes inserted straight after the SOI, to give the marker walk something odd to refuse or skip. */
+export const jpegWithAfterSoi = (width: number, height: number, extra: Uint8Array, sofMarker = 0xc0): Uint8Array => {
+  const jpeg = makeJpeg(width, height, sofMarker);
+  return concat(jpeg.subarray(0, 2), extra, jpeg.subarray(2));
+};
+/** A JPEG with a second frame header (SOF0) in front of the usual one. */
+export const jpegWithTwoFrames = (width: number, height: number): Uint8Array =>
+  jpegWithAfterSoi(width, height, segment(0xc0, concat(Uint8Array.of(8), u16be(height), u16be(width), Uint8Array.of(1, 1, 0x11, 0))));
 
 /** The same fixture with its RIFF size field set to `size`. */
 export function withRiffSize(webp: Uint8Array, size: number): Uint8Array {
