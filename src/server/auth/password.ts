@@ -22,8 +22,8 @@ export interface PasswordAuth extends AdminAuth {
   confirmSignIn(): Promise<boolean>;
 }
 
-/** Credentials that came from D1, which is what confirmSignIn needs to mark them. */
-export interface StoredSource { db: D1Database; secretHash: string }
+/** Credentials that came from D1, which is what confirmSignIn needs to mark them. `firstLoginAt` is as loaded: once set, nothing more is to be recorded. */
+export interface StoredSource { db: D1Database; secretHash: string; firstLoginAt: string | null }
 
 /** Env mode: either variable set (even if unusable) means the settings are the operator's, and D1 credentials are ignored. */
 export const envCredentialsSet = (env: { ADMIN_PASSWORD_HASH?: string; ADMIN_SESSION_SECRET?: string }): boolean =>
@@ -55,7 +55,8 @@ export function createPasswordAuth({ hash, sessionSecret }: PasswordConfig, deps
     },
     clearCookie: clearedSessionCookie,
     clientKey: (ip) => clientKey(ip, sessionSecret),
-    confirmSignIn: async () => !stored || markFirstSignIn(stored.db, stored.secretHash, new Date(now()).toISOString()),
+    // Already marked when loaded: setup cannot replace the row any more, and the hash verified is the hash loaded, so there is nothing to write.
+    confirmSignIn: async () => !stored || stored.firstLoginAt !== null || markFirstSignIn(stored.db, stored.secretHash, new Date(now()).toISOString()),
     async authenticate(request) {
       try {
         const sid = await readSession(sessionSecret, request.headers.get("Cookie"), now());

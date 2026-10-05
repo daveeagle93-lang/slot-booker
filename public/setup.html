@@ -16,7 +16,7 @@
   <body>
     <main id="app" class="login" data-autostart>
       <h1>Set up admin sign-in</h1>
-      <form id="setup-form" method="post">
+      <form id="setup-form" method="post" novalidate>
         <p>Enter the setup code you chose when you deployed this site. You will then be shown your admin secret.</p>
         <div class="field">
           <label for="code">Setup code</label>
@@ -26,14 +26,15 @@
         <button type="submit" class="button primary">Continue</button>
       </form>
       <section id="secret-step" class="message" hidden>
-        <h2>Your admin secret</h2>
+        <h2 id="secret-heading" tabindex="-1">Your admin secret</h2>
         <p><strong>This is your admin secret. Save it in your password manager now: it is shown only this once.</strong></p>
         <p id="secret" class="secret"></p>
         <button type="button" id="copy" class="button">Copy</button>
         <p id="copy-status" class="copy-status" role="status"></p>
         <p>If you run setup again before you first sign in, this secret is replaced.</p>
         <label class="check" for="saved"><input id="saved" type="checkbox" />I've saved it</label>
-        <a id="sign-in" class="button primary" aria-disabled="true">Go to sign in</a>
+        <button type="button" id="sign-in" class="button primary" aria-describedby="sign-in-hint" disabled>Go to sign in</button>
+        <p id="sign-in-hint" class="hint">Tick the box first.</p>
       </section>
       <noscript><p class="message">This page needs JavaScript to set up the admin sign-in.</p></noscript>
     </main>

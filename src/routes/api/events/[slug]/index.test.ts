@@ -17,7 +17,7 @@ afterAll(async () => {
   await t.dispose();
 });
 
-/** `vars` stands in for the Pages variables (BOOKING_CUTOFF_OFFSET_MINUTES, PRIVACY_NOTICE). */
+/** `vars` stands in for the Worker variables (BOOKING_CUTOFF_OFFSET_MINUTES, PRIVACY_NOTICE). */
 const get = (slug: string, vars: Partial<AppEnv> = {}): Promise<Response> =>
   Promise.resolve(
     onRequestGet({

@@ -45,7 +45,7 @@ const PLACEHOLDER = /^0{8}-0{4}-0{4}-0{4}-0{11}[0-9a-f]$/i;
 const KEYS = new Set(["productionDatabaseId", "previewDatabaseId", "name", "vars", "productionVars", "previewVars"]);
 const VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // Secrets must go to Worker secrets or .dev.vars: a var is stored and uploaded in plain text.
-const SECRET_VARS = new Set(["ADMIN_PASSWORD_HASH", "ADMIN_SESSION_SECRET"]);
+const SECRET_VARS = new Set(["ADMIN_PASSWORD_HASH", "ADMIN_SESSION_SECRET", "SETUP_CODE"]);
 
 function parseVars(key: string, value: unknown, errors: string[]): Record<string, string> {
   const vars: Record<string, string> = {};

@@ -2,7 +2,7 @@ import type { AuthDeps } from "../../server/auth";
 import { saveCredentials } from "../../server/auth/credentials";
 import { base64urlEncode, generateAdminSecret, hashAdminSecret, trimAdminSecret } from "../../server/auth/crypto";
 import { hasSameOrigin } from "../../server/auth/csrf";
-import { clearAttempts, countAttempt, setupClientKey } from "../../server/auth/ratelimit";
+import { clearAttempts, countAttempt, SETUP_GLOBAL_KEY, SETUP_GLOBAL_LIMIT, setupClientKey } from "../../server/auth/ratelimit";
 import { noStore, payloadTooLarge, readJsonObject } from "../../server/bookings";
 import type { RouteHandler } from "../../server/env";
 import { errorResponse, json } from "../../server/http";
@@ -18,7 +18,8 @@ const notFound = (): Response => errorResponse(404, "not_found", "Not found.", {
 /**
  * POST /api/setup: the first-run step of the password provider. Public, so it guards itself: nothing happens unless
  * setupState says "open" (a closed setup is the same 404 as any unknown path), the request is same-origin JSON, and the
- * client is within its attempt limit, which is counted before the code is compared (own keyspace, keyed with the code).
+ * client is within its attempt limit, and so are all clients together (a fixed key, 30 per 15 minutes), both counted before
+ * the code is compared (own keyspace, the per-client key keyed with the code).
  * A right code makes the admin secret, stores its hash with a new session secret in one guarded statement, and returns
  * the secret in this response only: it is never stored or logged.
  */
@@ -44,10 +45,13 @@ export const createSetupHandler = (deps: AuthDeps = {}): RouteHandler => async (
   const key = await setupClientKey(request.headers.get("CF-Connecting-IP"), expected);
   const now = (deps.now ?? Date.now)();
   try {
-    const attempt = await countAttempt(env.DB, key, Math.floor(now / 1000));
-    if (!attempt.allowed) {
+    const nowSeconds = Math.floor(now / 1000);
+    // The visitor's own limit first, then the cap across everyone (so a visitor already refused adds nothing to it).
+    const attempt = await countAttempt(env.DB, key, nowSeconds);
+    const overall = attempt.allowed ? await countAttempt(env.DB, SETUP_GLOBAL_KEY, nowSeconds, SETUP_GLOBAL_LIMIT) : attempt;
+    if (!overall.allowed) {
       return errorResponse(429, "too_many_attempts", "Too many attempts. Try again later.", {}, {
-        ...noStore, "Retry-After": String(attempt.retryAfterSeconds),
+        ...noStore, "Retry-After": String(overall.retryAfterSeconds),
       });
     }
     if (!(await setupCodeMatches(code, expected))) {

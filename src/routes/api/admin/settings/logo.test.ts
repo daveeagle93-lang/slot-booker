@@ -260,7 +260,7 @@ describe("PUT /api/admin/settings/logo: the request", () => {
     expect(pulls).toBe(0);
   });
 
-  it("refuses with 401 unless the middleware set an admin identity, storing nothing and reading nothing", async () => {
+  it("refuses with 401 unless the guard set an admin identity, storing nothing and reading nothing", async () => {
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       let pulls = 0;
       const stream = unreadable(() => pulls++);
@@ -285,7 +285,7 @@ describe("DELETE /api/admin/settings/logo", () => {
     }
   });
 
-  it("refuses with 401 unless the middleware set an admin identity, deleting nothing", async () => {
+  it("refuses with 401 unless the guard set an admin identity, deleting nothing", async () => {
     await send(makePng(4, 4));
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       const res = await del(data);

@@ -133,6 +133,26 @@ describe("adminAuthFor with credentials in D1", () => {
     expect(row).toEqual({ first_login_at: new Date(NOW_MS).toISOString() });
   });
 
+  it("confirms without a single D1 statement once the loaded credentials are already marked (setup can no longer replace them), and still marks unmarked ones", async () => {
+    const statements: string[] = [];
+    const spyDb = { prepare: (sql: string) => { statements.push(sql); return t.env.DB.prepare(sql); }, batch: (s: D1PreparedStatement[]) => t.env.DB.batch(s) } as unknown as D1Database;
+    const passwordAuth = async () => {
+      const r = await adminAuthFor(env({ DB: spyDb, ADMIN_AUTH: "password" }), { now: () => NOW_MS });
+      if (!("auth" in r) || r.auth.kind !== "password") throw new Error("expected the password provider");
+      statements.length = 0; // what loading the credentials cost is not the question
+      return r.auth;
+    };
+    await saveCredentials(t.env.DB, { secretHash: hash, sessionSecret: H_SECRET, createdAt: "2026-10-05T10:00:00.000Z" });
+    const first = await passwordAuth();
+    expect(await first.confirmSignIn()).toBe(true);
+    expect(statements.length).toBeGreaterThan(0); // the first sign-in does write
+    const later = await passwordAuth(); // loaded after the mark
+    expect(await later.confirmSignIn()).toBe(true);
+    expect(await later.confirmSignIn()).toBe(true);
+    expect(statements).toEqual([]);
+    expect(await t.env.DB.prepare("SELECT first_login_at FROM admin_credentials WHERE id = 1").first()).toEqual({ first_login_at: new Date(NOW_MS).toISOString() });
+  });
+
   it("refuses to confirm a sign-in verified against a secret that setup has since replaced, and marks nothing", async () => {
     await saveCredentials(t.env.DB, { secretHash: hash, sessionSecret: H_SECRET, createdAt: "2026-10-05T10:00:00.000Z" });
     const d1 = await adminAuthFor(env({ DB: t.env.DB, ADMIN_AUTH: "password" }));

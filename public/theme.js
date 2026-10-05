@@ -1,5 +1,5 @@
 // @ts-check
-// Pure theme-colour helpers: no DOM, no network. The admin settings preview (browser) and the Pages Functions
+// Pure theme-colour helpers: no DOM, no network. The admin settings preview (browser) and the Worker
 // (validation at save time, and the generated stylesheet) both import this file, so they cannot disagree.
 //
 // Colours arrive from an admin form and end up in a served stylesheet, so the only accepted input is a hex colour

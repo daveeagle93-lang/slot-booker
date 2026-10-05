@@ -1,4 +1,4 @@
-/** Readers for the non-secret Pages variables in AppEnv (src/server/env.ts). Pure: each takes the raw string. */
+/** Readers for the non-secret Worker variables in AppEnv (src/server/env.ts). Pure: each takes the raw string. */
 
 export const DEFAULT_PRIVACY_NOTICE =
   "We store your name, your dog's name and the slot you choose so the club can run the event. "

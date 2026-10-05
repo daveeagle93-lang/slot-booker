@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { accessEnv, d1Env, NOW, ORIGIN, passwordEnv, SETUP_CODE, TEST_PASSWORD, writeHeaders } from "../server/auth/test-harness";
 import type { AppEnv } from "../server/env";
 import { createTestEnv, type TestEnv } from "../test/db";
-import { publicAssets } from "../test/assets";
+import { pageAssets, publicAssets } from "../test/assets";
 import { createWorker } from "../worker";
 import { SECURITY_HEADERS } from "./headers";
 import { createRoutes } from "./routes";
@@ -290,7 +290,7 @@ describe("routing", () => {
   it("passes the original request to ASSETS for any unmatched GET or HEAD (/ is the rewritten landing page: open-graph.test.ts), and answers other methods with JSON", async () => {
     const { seen, fetcher } = recordingAssets();
     const env = { DB: t.env.DB, ASSETS: fetcher } as AppEnv;
-    for (const path of ["/style.css", "/lib.js", "/e/", "/e/a/b", "/nothing"]) {
+    for (const path of ["/style.css", "/lib.js", "/e/", "/e", "/nothing"]) {
       const request = new Request(`${ORIGIN}${path}`);
       const res = await worker.fetch(request, env);
       expect(res.status, path).toBe(200);
@@ -311,6 +311,68 @@ describe("routing", () => {
     expect(seen[0].headers.get("accept-language")).toBe("en-GB");
     await send(env, "/e/summer-show", { method: "HEAD" });
     expect(seen[1].method).toBe("HEAD");
+  });
+
+  describe("every other path under /e/ is the event page with generic tags (everything under /e/ always was)", () => {
+    const eventPageEnv = () => { const assets = pageAssets(); return { assets, env: { DB: t.env.DB, ASSETS: assets } as AppEnv }; };
+    const unknownSlugPage = async () => (await send(eventPageEnv().env, "/e/never-existed0000000")).text();
+
+    it("serves /e/x/, /e/a/b, /e/a/b/c, /e// and /e/x// as that page, byte for byte the page of an unknown slug, from the /event asset", async () => {
+      const expected = await unknownSlugPage();
+      expect(expected).toContain("<title>");
+      for (const path of ["/e/x/", "/e/a/b", "/e/a/b/c", "/e//", "/e/x//", "/e/never-existed0000000/extra", "/e/a%2Fb"]) {
+        const { assets, env } = eventPageEnv();
+        const res = await send(env, `${path}?utm=1`);
+        expect(res.status, path).toBe(200);
+        expect(res.headers.get("content-type"), path).toBe("text/html; charset=utf-8");
+        expect(await res.text(), path).toBe(expected);
+        expect(assets.requests.map((r) => new URL(r.url).pathname), path).toEqual(["/event"]);
+        expect(hasSecurityHeaders(res), path).toBe(true);
+      }
+    });
+
+    it("answers HEAD with the headers and no body, and every other method with the JSON 404", async () => {
+      const { env } = eventPageEnv();
+      const head = await send(env, "/e/a/b", { method: "HEAD" });
+      expect(head.status).toBe(200);
+      expect(await head.text()).toBe("");
+      for (const method of ["POST", "PUT", "DELETE"]) {
+        const res = await send(env, "/e/a/b", { method });
+        expect(res.status, method).toBe(404);
+        expect(await res.json(), method).toMatchObject({ error: { code: "not_found" } });
+      }
+    });
+
+    it("does not treat /e/ (nothing after it) or /e as an event path: they go to the static files as the original request", async () => {
+      for (const path of ["/e/", "/e"]) {
+        const { seen, fetcher } = recordingAssets();
+        const request = new Request(`${ORIGIN}${path}`);
+        const res = await worker.fetch(request, { DB: noDb, ASSETS: fetcher } as AppEnv);
+        expect(res.status, path).toBe(200);
+        expect(await res.text(), path).toBe(`asset:${path}`);
+        expect(seen, path).toEqual([request]);
+      }
+    });
+
+    it("does not let an encoded or dotted variant reach the admin pages or API", async () => {
+      const env = await passwordEnv(t.env.DB);
+      const { assets } = eventPageEnv();
+      const withAssets = { ...env, ASSETS: assets };
+      // Encoded slashes and dots stay under /e/ and are only ever the generic event page.
+      for (const path of ["/e/..%2Fadmin%2Findex.html", "/e/%2e%2e%2fadmin/", "/e/a/..%2f..%2fadmin/settings", "/e/%2e%2e%2f%2e%2e%2fapi%2fadmin%2fsession"]) {
+        const res = await send(withAssets, path);
+        expect(res.status, path).toBe(200);
+        expect(await res.text(), path).not.toContain("admin");
+      }
+      expect(new Set(assets.requests.map((r) => new URL(r.url).pathname))).toEqual(new Set(["/event"]));
+      // The URL parser resolves real dot segments first, so these are /admin paths and meet the guard.
+      for (const path of ["/e/%2e%2e/admin/index.html", "/e/../admin/settings", "/e/a/../../admin/"]) {
+        const res = await send(withAssets, path);
+        expect(res.status, path).toBe(302);
+        expect(res.headers.get("location"), path).toBe("/admin/login");
+      }
+      expect((await send(withAssets, "/e/%2e%2e/api/admin/session")).status).toBe(401);
+    });
   });
 
   it("hands a route its decoded params", async () => {
@@ -345,6 +407,85 @@ describe("response headers", () => {
   });
 });
 
+describe("plain http is refused outside loopback", () => {
+  const env = () => ({ DB: t.env.DB, ASSETS: publicAssets() }) as AppEnv;
+  const sendUrl = (url: string, init: RequestInit = {}) => worker.fetch(new Request(url, init), env());
+
+  it("redirects GET and HEAD to the same URL over https with 308, keeping path, query and port", async () => {
+    for (const method of ["GET", "HEAD"]) {
+      const res = await sendUrl("http://club.example/e/some-slug?a=1&b=%20x", { method });
+      expect(res.status, method).toBe(308);
+      expect(res.headers.get("location"), method).toBe("https://club.example/e/some-slug?a=1&b=%20x");
+    }
+    expect((await sendUrl("http://club.example:8080/admin/")).headers.get("location")).toBe("https://club.example:8080/admin/");
+    expect((await sendUrl("http://club.example/")).headers.get("location")).toBe("https://club.example/");
+    expect((await sendUrl("http://club.example.workers.dev/api/health")).status).toBe(308);
+  });
+
+  it("refuses every other method with 403 https_required (JSON, no-store), without reaching the database or the files", async () => {
+    const guarded = { DB: noDb, ASSETS: { fetch: async () => { throw new Error("assets used"); } } } as unknown as AppEnv;
+    for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+      const res = await worker.fetch(new Request("http://club.example/api/setup", { method, headers: { Origin: "http://club.example" }, body: method === "POST" || method === "PUT" || method === "PATCH" ? "{}" : undefined }), guarded);
+      expect(res.status, method).toBe(403);
+      expect(res.headers.get("content-type"), method).toContain("application/json");
+      expect(res.headers.get("cache-control"), method).toBe("no-store");
+      expect(await res.json(), method).toMatchObject({ error: { code: "https_required" } });
+      expect(hasSecurityHeaders(res), method).toBe(true);
+    }
+  });
+
+  it("lets https through", async () => {
+    expect((await sendUrl("https://club.example/api/health")).status).toBe(200);
+    expect((await sendUrl("https://club.example/api/health", { method: "POST" })).status).toBe(405);
+  });
+
+  it("leaves loopback alone, whatever the method: localhost, *.localhost, 127.0.0.1 and [::1], with or without a port", async () => {
+    for (const origin of ["http://localhost", "http://localhost:8787", "http://club.localhost:8787", "http://127.0.0.1:8787", "http://[::1]:8787"]) {
+      const get = await sendUrl(`${origin}/api/health`);
+      expect(get.status, origin).toBe(200);
+      expect(get.headers.get("location"), origin).toBeNull();
+      expect((await sendUrl(`${origin}/api/health`, { method: "POST" })).status, origin).toBe(405); // routed, not refused as http
+      expect((await sendUrl(`${origin}/lib.js`)).status, origin).toBe(200);
+    }
+  });
+
+  it("leaves IP-literal hosts alone too (phone testing over the LAN): any dotted-quad IPv4 and any bracketed IPv6, with or without a port", async () => {
+    for (const origin of ["http://192.168.1.20:8787", "http://10.0.0.5", "http://172.16.0.1:8787", "http://127.0.0.2:8787", "http://[fe80::1]:8787", "http://[2001:db8::1]:8787", "http://[::ffff:192.168.1.20]:8787"]) {
+      const get = await sendUrl(`${origin}/api/health`);
+      expect(get.status, origin).toBe(200);
+      expect(get.headers.get("location"), origin).toBeNull();
+      expect((await sendUrl(`${origin}/api/health`, { method: "POST" })).status, origin).toBe(405);
+    }
+  });
+
+  it("does not take a look-alike host for loopback or an IP address", async () => {
+    // (The URL parser already turns "1.2.3" into 1.2.0.3 and rejects "256.1.1.1", so neither reaches the Worker as a name.)
+    for (const host of ["notlocalhost", "localhost.example", "localhost.example.com", "127.0.0.1.example", "127.0.0.1.evil.test", "192.168.1.20.example.com", "1.2.3.example", "club.example"]) {
+      expect((await sendUrl(`http://${host}/api/health`)).status, host).toBe(308);
+    }
+  });
+
+  it("sends Strict-Transport-Security (a year, nothing more) on every kind of response: JSON, a file, a redirect, a 404, a 500", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const redirecting = { DB: t.env.DB, ASSETS: { fetch: async () => Response.redirect(`${ORIGIN}/event`, 307) } } as unknown as AppEnv;
+      const responses = [
+        await send(env(), "/api/health"),
+        await send(env(), "/lib.js"),
+        await send(redirecting, "/lib.js"),
+        await sendUrl("http://club.example/lib.js"),
+        await sendUrl("http://club.example/api/setup", { method: "POST", body: "{}" }),
+        await send(env(), "/api/nothing"),
+        await send({ DB: t.env.DB } as AppEnv, "/"), // no ASSETS binding: 500
+      ];
+      expect(responses.map((r) => r.status)).toEqual([200, 200, 307, 308, 403, 404, 500]);
+      for (const res of responses) expect(res.headers.get("strict-transport-security"), String(res.status)).toBe("max-age=31536000");
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
+
 describe("failures", () => {
   it("answers an unexpected error with a plain 500 that says nothing about it, and logs it", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -360,6 +501,28 @@ describe("failures", () => {
       const res2 = await send({ DB: t.env.DB, ASSETS: throwing } as AppEnv, "/style.css");
       expect(res2.status).toBe(500);
       expect(await res2.text()).not.toContain("SECRET");
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
+
+describe("what the catch-all logs", () => {
+  it("is the error's message only: not the error object, whose cause or properties can carry SQL and bound values", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const failing = Object.assign(new Error("D1_ERROR: boom"), { cause: { sql: "INSERT INTO bookings VALUES (?)", params: ["jane@example.com"] } });
+      const env = { DB: t.env.DB, ASSETS: { fetch: async () => { throw failing; } } } as unknown as AppEnv;
+      expect((await send(env, "/style.css")).status).toBe(500);
+      expect(log).toHaveBeenCalledTimes(1);
+      const args = log.mock.calls[0];
+      expect(args.every((a) => typeof a === "string")).toBe(true);
+      expect(args.join(" ")).toContain("D1_ERROR: boom");
+      expect(args.join(" ")).not.toMatch(/jane@example\.com|INSERT INTO/);
+      log.mockClear();
+      const odd = { fetch: async () => { throw "a string, not an Error"; } } as unknown as Fetcher;
+      expect((await send({ DB: t.env.DB, ASSETS: odd } as AppEnv, "/style.css")).status).toBe(500);
+      expect(log.mock.calls[0]).toEqual(["Unhandled error:", "unknown error"]);
     } finally {
       log.mockRestore();
     }

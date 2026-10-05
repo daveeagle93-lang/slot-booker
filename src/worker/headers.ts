@@ -4,6 +4,7 @@
  * same set is applied here. src/worker/headers.test.ts fails if this and the `/*` block of public/_headers differ.
  */
 export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
+  "Strict-Transport-Security": "max-age=31536000",
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
   "X-Robots-Tag": "noindex",

@@ -63,7 +63,7 @@ describe("POST /api/admin/events/preview", () => {
     });
   });
 
-  it("refuses with 401 unless the middleware set an admin identity", async () => {
+  it("refuses with 401 unless the guard set an admin identity", async () => {
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       const res = await post(draft(), { data });
       expect(res.status).toBe(401);

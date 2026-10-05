@@ -1,16 +1,14 @@
 import { noStore } from "../server/bookings";
 import type { AppEnv, RouteHandler } from "../server/env";
+import { plain } from "../server/http";
 import { setupState } from "../server/setup";
-import { plain } from "./guards";
 import { serveWithTags } from "./open-graph";
 
-const assets = (env: AppEnv): Fetcher => {
+/** The static files (the ASSETS binding), or an error if the Worker is deployed without it. */
+export const assets = (env: AppEnv): Fetcher => {
   if (!env.ASSETS) throw new Error("The ASSETS binding is missing (wrangler.jsonc assets.binding).");
   return env.ASSETS;
 };
-
-/** A static file from public/, as the request names it. Passes the original request on so the asset service's own redirects (with their relative Location) survive. */
-export const serveAsset: RouteHandler = ({ request, env }) => assets(env).fetch(request);
 
 /** "/": the landing page (public/index.html) with the club's title and link-preview tags written in. See open-graph.ts. */
 export const serveLandingPage: RouteHandler = ({ request, env }) => serveWithTags(assets(env), env.DB, request, "/", null);
@@ -18,10 +16,24 @@ export const serveLandingPage: RouteHandler = ({ request, env }) => serveWithTag
 /**
  * /e/<slug>: the event page, with the event's title and link-preview tags written in (generic ones for an unknown, invalid or
  * archived slug). It is one file (public/event.html) for every slug, which reads the slug from the address.
- * public/_redirects says the same, but Cloudflare does not apply it to requests the Worker handles, so it is done here.
  */
 export const serveEventPage: RouteHandler<"slug"> = ({ request, env, params }) =>
   serveWithTags(assets(env), env.DB, request, "/event", String(params.slug));
+
+/**
+ * Any other path under /e/ that no route matched (/e/x/, /e/a/b, ...): the event page too, as it always
+ * was for everything under /e/. The page's script shows "not found" for these. The tags are the generic ones, by
+ * the same code path as an unknown slug (so the bodies are identical), except for `/e/<slug>/` with one trailing slash,
+ * which is that slug's page. The caller leaves out /e/ itself, which is not an event path.
+ */
+export const serveEventFallbackPage: RouteHandler = ({ request, env }) => {
+  const trailing = /^\/e\/([^/]+)\/$/.exec(new URL(request.url).pathname);
+  let slug = ""; // not a valid slug: the generic tags
+  try {
+    if (trailing) slug = decodeURIComponent(trailing[1]);
+  } catch { /* malformed percent-encoding: generic */ }
+  return serveWithTags(assets(env), env.DB, request, "/event", slug);
+};
 
 /**
  * /setup: the first-run page (public/setup.html), only while setup is open (src/server/setup.ts). Fetched by its clean

@@ -116,6 +116,7 @@ describe("parseAccount", () => {
     expect(errorsOf({ ...good, vars: ["x"] })).toContain("vars");
     expect(errorsOf({ ...good, vars: { ADMIN_PASSWORD_HASH: "x" } })).toContain("secret");
     expect(errorsOf({ ...good, vars: { ADMIN_SESSION_SECRET: "x" } })).toContain("secret");
+    expect(errorsOf({ ...good, vars: { SETUP_CODE: "x" } })).toContain("SETUP_CODE is a secret");
   });
 
   it("accepts productionVars and previewVars alongside vars, each kept apart", () => {
@@ -133,6 +134,7 @@ describe("parseAccount", () => {
       expect(errorsOf({ ...good, [key]: null }), key).toContain(`${key} must be an object`);
       expect(errorsOf({ ...good, [key]: { ADMIN_PASSWORD_HASH: "x" } }), key).toContain(`${key}: ADMIN_PASSWORD_HASH is a secret`);
       expect(errorsOf({ ...good, [key]: { ADMIN_SESSION_SECRET: "x" } }), key).toContain(`${key}: ADMIN_SESSION_SECRET is a secret`);
+      expect(errorsOf({ ...good, [key]: { SETUP_CODE: "x" } }), key).toContain(`${key}: SETUP_CODE is a secret`);
     }
   });
 

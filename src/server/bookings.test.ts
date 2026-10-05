@@ -90,6 +90,28 @@ describe("validateBookingInput: names", () => {
     }
   });
 
+  const PRIVATE_USE_MESSAGE = (label: string) => `The ${label} can't contain private-use or blank-looking characters. Try plain text.`;
+
+  it.each([
+    ["private use, BMP start U+E000", "\uE000"],
+    ["private use, BMP end U+F8FF", "\uF8FF"],
+    ["private use, plane 15 U+F0000", "\u{F0000}"],
+    ["private use, plane 16 U+10FFFD", "\u{10FFFD}"],
+    ["braille blank U+2800", "\u2800"],
+  ])("refuses %s beside a real letter, inside, at the start and at the end of a dog's and a handler's name", (_what, ch) => {
+    expect(/^[\p{Co}\u2800]$/u.test(ch)).toBe(true);
+    for (const make of [(n: string) => `${n}${ch}${n}`, (n: string) => `${ch}${n}`, (n: string) => `${n}${ch}`]) {
+      expect(fieldsOf({ dogName: make("Rex"), handlerName: make("Sam") }), JSON.stringify(make("Rex")))
+        .toEqual({ dogName: PRIVATE_USE_MESSAGE("dog's name"), handlerName: PRIVATE_USE_MESSAGE("handler's name") });
+    }
+  });
+
+  it("does not refuse unassigned code points (Cn): a character a newer runtime has assigned (a new emoji) must not break names", () => {
+    const unassigned = "\uFFFF"; // a noncharacter: category Cn, never to be assigned
+    expect(/^\p{Cn}$/u.test(unassigned)).toBe(true);
+    expect(input({ dogName: `Rex${unassigned}`, handlerName: `${unassigned}Sam` })).toMatchObject({ dogName: `Rex${unassigned}`, handlerName: `${unassigned}Sam` });
+  });
+
   it("still says Enter the name for an empty or all-whitespace name", () => {
     expect(fieldsOf({ dogName: "   " })?.dogName).toBe("Enter the dog's name.");
     expect(fieldsOf({ handlerName: "" })?.handlerName).toBe("Enter the handler's name.");

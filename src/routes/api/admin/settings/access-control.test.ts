@@ -184,7 +184,7 @@ describe("settings routes are admin-only and CSRF-protected", () => {
     });
   });
 
-  describe("handlers called directly, with no admin set by the middleware", () => {
+  describe("handlers called directly, with no admin set by the guard", () => {
     it.each(ROUTES.map((r) => [`${r.method} ${r.path}`, r] as const))("%s answers 401 and changes nothing", async (_label, r) => {
       const before = await stateOf();
       for (const data of [undefined, {}, { admin: null }, { admin: { identity: "" } }, { admin: { csrfBinding: "x" } }]) {

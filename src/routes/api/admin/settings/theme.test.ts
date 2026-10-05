@@ -128,7 +128,7 @@ describe("PUT /api/admin/settings/theme", () => {
     expect(await stored()).toEqual(NOTHING);
   });
 
-  it("refuses with 401 unless the middleware set an admin identity, storing nothing", async () => {
+  it("refuses with 401 unless the guard set an admin identity, storing nothing", async () => {
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       const res = await put(GREEN, { data });
       expect(res.status).toBe(401);
@@ -153,7 +153,7 @@ describe("DELETE /api/admin/settings/theme", () => {
     expect(body.theme).toEqual(DEFAULT);
   });
 
-  it("refuses with 401 unless the middleware set an admin identity, changing nothing", async () => {
+  it("refuses with 401 unless the guard set an admin identity, changing nothing", async () => {
     await put(GREEN);
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       const res = await del({ data });

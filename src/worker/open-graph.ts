@@ -52,23 +52,23 @@ function genericEventTags(settings: PublicSettings | null, origin: string): Tags
   return { ...landingTags(settings, origin), title: pageTitle("Book a slot", settings?.clubName ?? null) };
 }
 
-function eventTags(event: ReturnType<typeof eventSummary>, settings: PublicSettings, origin: string, pathname: string): Tags {
+function eventTags(event: ReturnType<typeof eventSummary>, settings: PublicSettings, origin: string): Tags {
   const club = settings.clubName;
   return {
     title: pageTitle(event.name, club),
     ogTitle: `${event.name} · ${formatLondonDate(event.startUtc)}`,
     description: [club, event.venuePostcode, formatPounds(event.costPence)].filter(Boolean).join(" · "),
     siteName: club,
-    url: `${origin}${pathname}`,
+    url: `${origin}/e/${event.slug}`, // the stored slug, not the request path: an encoded spelling is not echoed
   };
 }
 
 /** The tags for a page. Never throws: if the database can't be read the generic tags are used and only the message is logged (an error object can carry SQL and bound values). */
-export async function loadTags(db: D1Database | undefined, slug: string | null, origin: string, pathname: string): Promise<Tags> {
+export async function loadTags(db: D1Database | undefined, slug: string | null, origin: string): Promise<Tags> {
   try {
     const [event, settings] = await Promise.all([slug === null ? null : loadEventBySlug(db!, slug), loadPublicSettings(db!)]);
     if (slug === null) return landingTags(settings, origin);
-    if (event && !event.archived) return eventTags(eventSummary(event), settings, origin, pathname);
+    if (event && !event.archived) return eventTags(eventSummary(event), settings, origin);
     return genericEventTags(settings, origin);
   } catch (e) {
     console.error("Open Graph tags unavailable, using the generic ones:", e instanceof Error ? e.message : "unknown error");
@@ -107,7 +107,7 @@ export function injectTags(html: string, tags: Tags, origin: string): string | n
  * request gets the headers only, without reading the database. An asset answer that is not a 200 is passed on as it is.
  */
 export async function serveWithTags(fetcher: Fetcher, db: D1Database | undefined, request: Request, assetPath: string, slug: string | null): Promise<Response> {
-  const { origin, pathname } = new URL(request.url);
+  const { origin } = new URL(request.url);
   const headers = new Headers();
   for (const name of ["Accept", "Accept-Language"]) {
     const value = request.headers.get(name);
@@ -116,7 +116,7 @@ export async function serveWithTags(fetcher: Fetcher, db: D1Database | undefined
   const head = request.method === "HEAD";
   const [asset, tags] = await Promise.all([
     fetcher.fetch(new Request(new URL(assetPath, request.url), { method: head ? "HEAD" : "GET", headers })),
-    head ? null : loadTags(db, slug, origin, pathname),
+    head ? null : loadTags(db, slug, origin),
   ]);
   if (!asset.ok) return asset;
   const responseHeaders = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" };

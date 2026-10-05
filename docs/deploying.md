@@ -52,7 +52,7 @@ What to know about `/setup`:
 - If you open an admin page before doing this, it sends you to `/setup` (once `SETUP_CODE` is in place).
 - Running `/setup` again before the first sign-in **replaces** the secret: the old one stops working.
 - After the first successful sign-in it is closed for good (404).
-- The setup code is limited to 5 wrong attempts per 15 minutes per visitor, compared in constant time, and the page accepts same-origin requests only.
+- The setup code is limited to 5 attempts per 15 minutes per visitor (every attempt counts), compared in constant time, and the page accepts same-origin requests only.
 - Only a hash of the secret is stored (table `admin_credentials`). If you lose the secret, see [If the admin secret is lost](handover.md#if-the-admin-secret-is-lost).
 
 ## Check that it works
@@ -245,7 +245,7 @@ An admin has already signed in, so `/setup` is closed (404). Sign in at `/admin/
 
 ### "That setup code isn't right." or "Too many attempts"
 
-Check the code you chose. After 5 wrong attempts in 15 minutes the page says "Too many attempts. Try again in N minutes." Wait that long. The code is trimmed of spaces at both ends, but spaces inside it count.
+Check the code you chose. After 5 attempts in 15 minutes the page says "Too many attempts. Try again in N minutes." Wait that long. The code is trimmed of spaces at both ends, but spaces inside it count.
 
 ### Admin sign-in says "Too many attempts"
 

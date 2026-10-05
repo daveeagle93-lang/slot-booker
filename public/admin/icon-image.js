@@ -1,6 +1,6 @@
 // Draws the app icons (browser tab, home screen, manifest) from the club's logo, in the browser: each is a square
 // PNG filled with the theme's main colour with the logo scaled to fit inside a margin. The server checks every PNG
-// again and is the real gate; this is only where the pixels come from (Functions can't draw).
+// again and is the real gate; this is only where the pixels come from (the Worker can't draw).
 //
 // Like logo-image.js, the browser pieces (decoder, canvas) are passed in so tests can drive this without a browser.
 

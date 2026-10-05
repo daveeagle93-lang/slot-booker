@@ -297,7 +297,7 @@ describe("PUT /api/admin/settings/icons/[size]: the request", () => {
     expect(pulls).toBe(0);
   });
 
-  it("refuses with 401 unless the middleware set an admin identity, reading and storing nothing", async () => {
+  it("refuses with 401 unless the guard set an admin identity, reading and storing nothing", async () => {
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       let pulls = 0;
       const res = await put(32, undefined, { body: unreadable(() => pulls++), duplex: true, data });

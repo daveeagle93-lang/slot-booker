@@ -165,7 +165,7 @@ Two colours: **main** (buttons, selected slots, the header band) and **accent** 
 
 ## Not verified
 
-- **Remote D1.** All of this was run against local D1 under `wrangler pages dev` (the earlier Pages build) and in the tests, not against a remote database. I have not verified how remote D1 returns a BLOB (the code accepts an array of numbers or an `ArrayBuffer`), that a 200 KiB BLOB fits its row and parameter limits, or that the migration's `GLOB` CHECKs apply as written (D1 limits `GLOB` patterns to 50 bytes, which is why the colour pattern is split in two).
+- **Remote D1.** All of this was run against local D1 (measured locally with an earlier build) and in the tests, not against a remote database. I have not verified how remote D1 returns a BLOB (the code accepts an array of numbers or an `ArrayBuffer`), that a 200 KiB BLOB fits its row and parameter limits, or that the migration's `GLOB` CHECKs apply as written (D1 limits `GLOB` patterns to 50 bytes, which is why the colour pattern is split in two).
 - **CPU on Workers Free.** Reading the logo (a BLOB up to 200 KiB converted from D1's result) and the upload path (base64 decode, structure walk, SHA-256, insert) have not been timed on real Workers, and local workerd does not enforce the 10 ms CPU limit. `GET /api/logo` is the likeliest to matter, because every first view of a page that doesn't have the logo cached reads it.
 - **Cloudflare Access.** The admin-only banner probe under Access (above) was reasoned from the code and its tests, not seen against a real Access application.
 - **Request volume.** The extra Worker requests per page view have not been measured against the Free plan allowance.

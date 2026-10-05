@@ -76,6 +76,11 @@ export async function setupClientKey(ip: string | null, setupCode: string): Prom
   return hmacHex(setupCode, `slot-booker-setup-ratelimit-v1:${rateLimitBucket(ip)}`);
 }
 
+/** The one key every /setup attempt is also counted under, whoever sent it: not derived from SETUP_CODE and holding no personal data. */
+export const SETUP_GLOBAL_KEY = "slot-booker-setup-global-v1";
+/** Attempts across all visitors per window: a cap on guessing by an attacker who rotates addresses (the per-visitor limit is 5). */
+export const SETUP_GLOBAL_LIMIT = { max: 30, windowSeconds: 15 * 60 };
+
 async function hmacHex(secret: string, message: string): Promise<string> {
   const key = await crypto.subtle.importKey("raw", utf8(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const mac = await crypto.subtle.sign("HMAC", key, utf8(message));
@@ -85,10 +90,10 @@ async function hmacHex(secret: string, message: string): Promise<string> {
 /**
  * Counts one login attempt and says whether it may go on to the password check. The count happens
  * first, in one upsert, so parallel guesses cannot slip past the limit. A new window starts when an attempt
- * arrives 900 s or more after the window began. The same batch runs PURGE_SQL.
+ * arrives `windowSeconds` (900 unless given) or more after the window began; `max` defaults to 5. The same batch runs PURGE_SQL.
  */
 export async function countAttempt(
-  db: D1Database, key: string, nowSeconds: number,
+  db: D1Database, key: string, nowSeconds: number, { max = MAX_ATTEMPTS, windowSeconds = WINDOW_SECONDS } = {},
 ): Promise<{ allowed: true } | { allowed: false; retryAfterSeconds: number }> {
   const [, upsert] = await db.batch([
     db.prepare(PURGE_SQL).bind(nowSeconds - KEEP_SECONDS - WINDOW_SECONDS),
@@ -99,11 +104,11 @@ export async function countAttempt(
          attempts = CASE WHEN ?2 - window_start >= ?3 THEN 1 ELSE attempts + 1 END,
          window_start = CASE WHEN ?2 - window_start >= ?3 THEN ?2 ELSE window_start END
        RETURNING attempts, window_start`,
-    ).bind(key, nowSeconds, WINDOW_SECONDS),
+    ).bind(key, nowSeconds, windowSeconds),
   ]);
   const row = upsert.results[0] as { attempts: number; window_start: number };
-  if (row.attempts <= MAX_ATTEMPTS) return { allowed: true };
-  return { allowed: false, retryAfterSeconds: Math.max(1, row.window_start + WINDOW_SECONDS - nowSeconds) };
+  if (row.attempts <= max) return { allowed: true };
+  return { allowed: false, retryAfterSeconds: Math.max(1, row.window_start + windowSeconds - nowSeconds) };
 }
 
 export async function clearAttempts(db: D1Database, key: string): Promise<void> {

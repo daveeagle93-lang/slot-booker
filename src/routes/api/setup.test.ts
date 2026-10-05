@@ -33,7 +33,10 @@ const post = (code: unknown, over: { env?: AppEnv; ip?: string; headers?: Record
   return handler({ request, env: over.env ?? env, params: {}, data: {} });
 };
 const rowOf = async () => loadCredentials(t.env.DB);
-const attempts = async () => (await t.env.DB.prepare("SELECT key, attempts FROM login_attempts").all<{ key: string; attempts: number }>()).results;
+const GLOBAL_KEY = "slot-booker-setup-global-v1";
+const allAttempts = async () => (await t.env.DB.prepare("SELECT key, attempts FROM login_attempts").all<{ key: string; attempts: number }>()).results;
+/** The per-visitor rows only: the one global row (GLOBAL_KEY) has its own tests. */
+const attempts = async () => (await allAttempts()).filter((r) => r.key !== GLOBAL_KEY);
 const secretOf = async (res: Response) => ((await res.json()) as { secret: string }).secret;
 
 describe("POST /api/setup: the right code", () => {
@@ -204,10 +207,64 @@ describe("POST /api/setup: rate limit", () => {
   });
 });
 
+describe("POST /api/setup: the global attempt cap", () => {
+  const globalRow = async () => (await allAttempts()).find((r) => r.key === GLOBAL_KEY);
+
+  it("refuses the 31st attempt in 15 minutes from any number of different clients with 429, even with the right code, with no comparison and no write", async () => {
+    for (let i = 0; i < 30; i++) expect((await post(`wrong-code-${i}`)).status, `attempt ${i + 1}`).toBe(401);
+    digest.mockClear();
+    const res = await post(SETUP_CODE);
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toBe("900");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await res.json()).toMatchObject({ error: { code: "too_many_attempts" } });
+    expect(digest).not.toHaveBeenCalled();
+    expect(await rowOf()).toBeNull();
+    expect((await post("another-wrong")).status).toBe(429);
+  });
+
+  it("reports the time left, and opens a new window 900 s after the first attempt", async () => {
+    for (let i = 0; i < 31; i++) await post("wrong-code-here");
+    clock.ms = NOW + 600_000;
+    expect((await post(SETUP_CODE)).headers.get("retry-after")).toBe("300");
+    clock.ms = NOW + 900_000;
+    expect((await post(SETUP_CODE)).status).toBe(200);
+  });
+
+  it("counts under one constant key that is not derived from the setup code and holds no personal data", async () => {
+    await post("wrong-code-here");
+    await post("wrong-code-here", { env: d1Env(t.env.DB, { SETUP_CODE: "a different setup code entirely" }) });
+    expect(await globalRow()).toEqual({ key: GLOBAL_KEY, attempts: 2 });
+  });
+
+  it("is counted after the per-visitor limit: a client already over its own limit adds nothing to it", async () => {
+    const ip = newIp();
+    for (let i = 0; i < 5; i++) await post("wrong-code-here", { ip });
+    expect((await globalRow())!.attempts).toBe(5);
+    for (let i = 0; i < 3; i++) expect((await post("wrong-code-here", { ip })).status).toBe(429);
+    expect((await globalRow())!.attempts).toBe(5);
+  });
+
+  it("still limits one client to five attempts, as before", async () => {
+    const ip = newIp();
+    for (let i = 0; i < 5; i++) expect((await post("wrong-code-here", { ip })).status).toBe(401);
+    expect((await post(SETUP_CODE, { ip })).status).toBe(429);
+  });
+
+  it("is not cleared by a correct setup, which clears only that client's own key", async () => {
+    const ip = newIp();
+    await post("wrong-code-here", { ip });
+    await post("wrong-code-here");
+    expect((await post(SETUP_CODE, { ip })).status).toBe(200);
+    expect((await attempts()).map((r) => r.key)).not.toContain(await setupClientKey(ip, SETUP_CODE));
+    expect(await globalRow()).toEqual({ key: GLOBAL_KEY, attempts: 3 });
+  });
+});
+
 describe("POST /api/setup: when it is not open", () => {
   const notFound = { error: { code: "not_found" } };
   const untouched = async () => {
-    expect(await attempts()).toEqual([]);
+    expect(await allAttempts()).toEqual([]); // neither the client's key nor the global one
   };
 
   it("answers 404 after the first sign-in, writes nothing, and cannot replace the credentials (even with the right code)", async () => {

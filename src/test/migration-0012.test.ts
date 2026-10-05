@@ -89,20 +89,28 @@ describe("0012 strip default-ignorable code points from identity keys", () => {
     expect(await keysOf(id)).toEqual([{ dog: "Rex", handler: "Sam️ Jones", dk: "rex", hk: "sam jones" }]);
   });
 
-  it("does not abort when stripping would make two bookings of one event collide, and leaves both rows as they were", async () => {
+  it("does not abort when stripping would make two bookings of one event collide: one of each colliding pair is stripped, the other keeps its old key", async () => {
     const { id } = await insertEvent(t.env.DB);
+    const rex = "Rex\uFE0F";
+    const fidoA = "Fido\uFE0F";
+    const fidoB = "Fido\u3164";
     await t.env.DB.batch([
       row(id, "Rex", "Sam", "rex", "sam"),
-      row(id, "Rex️", "Sam", oldKey("Rex️"), "sam"),
-      row(id, "Fido️", "Ann", oldKey("Fido️"), "ann"),
-      row(id, "Fidoㅤ", "Ann", oldKey("Fidoㅤ"), "ann"),
+      row(id, rex, "Sam", oldKey(rex), "sam"),
+      row(id, fidoA, "Ann", oldKey(fidoA), "ann"),
+      row(id, fidoB, "Ann", oldKey(fidoB), "ann"),
     ]);
-    await runMigration();
+    await runMigration(); // does not throw
     const after = await keysOf(id);
-    expect(after).toHaveLength(4);
-    // "rex" and "rex️": the second keeps its old key. "fido️" is stripped first, so "fidoᅠ" keeps its old key.
-    expect(after.map((r) => r.dk)).toEqual(["rex", oldKey("Rex️"), "fido", oldKey("Fidoㅤ")]);
-    expect(after.map((r) => r.dk)).toContain("rex️");
+    expect(after).toHaveLength(4); // nothing deleted
+    expect(after.map((r) => r.dog)).toEqual(["Rex", rex, fidoA, fidoB]); // display names untouched
+    // The first is already stripped, so the second cannot be (it would be a duplicate) and keeps its old key.
+    expect(after.slice(0, 2).map((r) => r.dk)).toEqual(["rex", oldKey(rex)]);
+    // Both of the second pair would become "fido": which one is updated first depends on SQLite's scan order, so only the shape is pinned.
+    const pair = after.slice(2).map((r) => r.dk);
+    expect(pair.filter((k) => k === "fido")).toHaveLength(1);
+    expect(pair.filter((k) => k === oldKey(fidoA) || k === oldKey(fidoB))).toHaveLength(1);
+    expect(new Set(after.map((r) => r.dk)).size).toBe(after.length); // and no two keys are equal
   });
 
   it("still processes the rows around a colliding one", async () => {

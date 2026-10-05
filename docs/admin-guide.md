@@ -36,7 +36,7 @@ A new site has no admin secret yet. Whoever deployed it chose a setup code, a ph
 
 Until your first successful sign-in, the setup page stays open, and running it again makes a new secret and the old one stops working. After your first sign-in the setup page goes for good, and opening it shows "Not found." You can't make another secret from it.
 
-A wrong code gives "That setup code isn't right." After a few wrong tries you see "Too many attempts. Try again in" some minutes. If the page says "Setup isn't ready", the setup code hasn't been set or is too short, so ask whoever deployed the site. If you lose the secret, see "Lost the admin secret" below.
+A wrong code gives "That setup code isn't right." After a few tries you see "Too many attempts. Try again in" some minutes. If the page says "Setup isn't ready", the setup code hasn't been set or is too short, so ask whoever deployed the site. If you lose the secret, see "Lost the admin secret" below.
 
 ### The password screen
 
@@ -47,7 +47,7 @@ You will see a page called "Admin sign-in".
 3. Type or paste your admin secret.
 4. Tap "Sign in".
 
-You land on the events page. A wrong secret gives "That admin secret isn't right." Too many wrong tries in a row gives "Too many attempts. Try again in" some minutes. Wait, then try again.
+You land on the events page. A wrong secret gives "That admin secret isn't right." Too many tries in a row gives "Too many attempts. Try again in" some minutes. Wait, then try again.
 
 The admin secret is long and random. Keep it in a password manager and paste it. Spaces before or after it are ignored.
 

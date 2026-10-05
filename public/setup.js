@@ -13,7 +13,7 @@ function rateLimitMessage(retryAfter) {
 // Same trimming as trimAdminSecret in src/server/auth/crypto.ts (this page cannot import from src/, nor from the
 // guarded /admin/login.js); setup.test.ts checks it agrees with the sign-in page's copy. Whitespace plus the invisible
 // characters String.prototype.trim leaves in.
-const INVISIBLE = "​‌‍⁠᠎­";
+const INVISIBLE = "\u200B\u200C\u200D\u2060\u180E\u00AD";
 const isIgnorable = (char) => char.trim() === "" || INVISIBLE.includes(char);
 
 /** Drops whitespace and invisible characters from both ends only. */
@@ -29,17 +29,19 @@ export function trimAdminSecret(input) {
  * Wires the first-run page. Step 1 asks for the setup code; step 2 shows the admin secret the server made, once. The
  * secret is only ever put into the page when the response arrives: not in the address, in storage, or anywhere else.
  */
-export function init({ document, fetch, navigator }) {
+export function init({ document, fetch, navigator, navigate = (url) => document.location.assign(url) }) {
   const form = document.getElementById("setup-form");
   const field = document.getElementById("code");
   const error = document.getElementById("setup-error");
   const button = form.querySelector("button");
   const step2 = document.getElementById("secret-step");
+  const heading = document.getElementById("secret-heading");
   const secretBlock = document.getElementById("secret");
   const copy = document.getElementById("copy");
   const copyStatus = document.getElementById("copy-status");
   const saved = document.getElementById("saved");
   const signIn = document.getElementById("sign-in");
+  const signInHint = document.getElementById("sign-in-hint");
   let submitting = false;
 
   async function submit(event) {
@@ -54,6 +56,7 @@ export function init({ document, fetch, navigator }) {
     button.disabled = true;
     error.textContent = "";
     let message = GENERIC_ERROR;
+    let closed = false;
     try {
       const res = await fetch("/api/setup", {
         method: "POST",
@@ -68,15 +71,21 @@ export function init({ document, fetch, navigator }) {
         form.hidden = true;
         secretBlock.textContent = body.secret;
         step2.hidden = false;
-        copy.focus();
+        heading.focus(); // so a screen reader reads the "shown only this once" warning before the secret
         return;
       }
       if (res.status === 429) message = rateLimitMessage(res.headers.get("Retry-After"));
-      else if (res.status === 404) message = "Setup has already been completed. Sign in instead.";
+      else if (res.status === 404) { message = "Setup has already been completed."; closed = true; }
       else if (typeof body?.error?.message === "string") message = body.error.message;
     } catch { /* offline or blocked: the generic message */ }
     if (message !== GENERIC_ERROR) field.value = "";
     error.textContent = message;
+    if (closed) {
+      const link = document.createElement("a");
+      link.href = SIGN_IN;
+      link.textContent = "Sign in instead.";
+      error.append(" ", link);
+    }
     submitting = false;
     button.disabled = false;
     field.focus();
@@ -92,16 +101,12 @@ export function init({ document, fetch, navigator }) {
     }
   });
 
-  // A link cannot be disabled, so it has no address until the box is ticked.
+  // Disabled until the box is ticked, so the secret is not left behind by an early click.
   saved.addEventListener("change", () => {
-    if (saved.checked) {
-      signIn.setAttribute("href", SIGN_IN);
-      signIn.removeAttribute("aria-disabled");
-    } else {
-      signIn.removeAttribute("href");
-      signIn.setAttribute("aria-disabled", "true");
-    }
+    signIn.disabled = !saved.checked;
+    signInHint.hidden = saved.checked;
   });
+  signIn.addEventListener("click", () => navigate(SIGN_IN));
 }
 
 // Browser entry only: the page opts in with data-autostart, so importing this module (tests) does nothing.

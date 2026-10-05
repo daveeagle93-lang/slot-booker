@@ -107,6 +107,19 @@ describe("the event page", () => {
     expect(p.ogUrl).toBe("http://localhost:8787/e/where-am-i0000000000");
   });
 
+  it("builds og:url from the stored slug, not the request path: a percent-encoded spelling is not echoed", async () => {
+    await insertEvent(t.env.DB, { slug: "encoded-url0000000000", name: "Encoded Url" });
+    for (const path of ["/e/encoded%2Durl0000000000", "/e/%65ncoded-url0000000000?x=%2F", "/e/encoded-url0000000000/"]) {
+      const { res, html } = await page(path, "Club");
+      expect(res.status, path).toBe(200);
+      const p = parse(html);
+      expect(p.ogTitle, path).toMatch(/^Encoded Url · /);
+      expect(p.ogUrl, path).toBe(`${ORIGIN}/e/encoded-url0000000000`);
+      expect(html, path).not.toContain("%2D");
+      expect(html, path).not.toContain("%65");
+    }
+  });
+
   it("keeps everything else in the static page, and replaces its title rather than adding one", async () => {
     const { slug } = await insertEvent(t.env.DB, { slug: "keep-rest00000000000" });
     const { html } = await page(`/e/${slug}`, "Club");
@@ -273,6 +286,31 @@ describe("unknown, invalid and archived events", () => {
     expect(p.ogImage).toBe(`${ORIGIN}/api/icon/512`);
     expect(p.ogUrl).toBe(`${ORIGIN}/`);
     for (const s of ["ARCHIVED-EVENT-NAME", "ARCHIVED-DETAILS", "AR1 1AR", "was-archived", "never-existed"]) expect(bodies[0]).not.toContain(s);
+  });
+
+  it("get that same page for the other paths under /e/ too (/e/x/, /e/a/b, /e//), and /e/<archived slug>/ is generic as well", async () => {
+    await insertEvent(t.env.DB, { slug: "archived-slash000000", name: "ARCHIVED-SLASH-NAME", archived: true });
+    await setClub("Example Dog Club");
+    const expected = await (await get("/e/never-existed0000000")).text();
+    for (const path of ["/e/x/", "/e/a/b", "/e/a/b/c/", "/e//", "/e/archived-slash000000/", "/e/bad%zz/", "/e/%E0%A4%A/", "/e/never-existed0000000/more"]) {
+      const res = await get(path);
+      expect(res.status, path).toBe(200);
+      expect(await res.text(), path).toBe(expected);
+    }
+  });
+
+  it("gives /e/<slug>/ (one trailing slash) that event's tags", async () => {
+    await insertEvent(t.env.DB, { slug: "slash-event00000000", name: "Slash Event", venuePostcode: "SL1 1SL" });
+    await setClub("Example Dog Club");
+    const plain = parse(await (await get("/e/slash-event00000000")).text());
+    const slashed = await get("/e/slash-event00000000/");
+    expect(slashed.status).toBe(200);
+    const p = parse(await slashed.text());
+    expect(p.ogTitle).toMatch(/^Slash Event · /);
+    expect(p.ogUrl).toBe(`${ORIGIN}/e/slash-event00000000`);
+    expect(p.title).toBe(plain.title);
+    expect(p.ogDescription).toBe(plain.ogDescription);
+    expect((await get("/e/slash-event00000000/", { method: "HEAD" })).status).toBe(200);
   });
 
   it("have the plain default title when no club name is set", async () => {

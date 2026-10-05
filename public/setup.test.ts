@@ -13,7 +13,7 @@ type Call = { url: string; init?: RequestInit };
 type Clipboard = { writeText: (text: string) => Promise<void> };
 
 /** Loads the real setup.html body, then starts the page with a scripted fetch. */
-async function start(handler: (call: Call) => Response | Promise<Response> = () => reply(200, { secret: SECRET }), clipboard?: Clipboard) {
+async function start(handler: (call: Call) => Response | Promise<Response> = () => reply(200, { secret: SECRET }), clipboard?: Clipboard, navigate: (url: string) => void = () => {}) {
   const html = readFileSync("public/setup.html", "utf8");
   document.body.innerHTML = html.slice(html.indexOf("<body>") + 6, html.indexOf("</body>")).replace(/<script[\s\S]*?<\/script>/g, "");
   const calls: Call[] = [];
@@ -21,7 +21,7 @@ async function start(handler: (call: Call) => Response | Promise<Response> = () 
     calls.push({ url, init });
     return handler({ url, init });
   });
-  init({ document, fetch: fetch as unknown as typeof globalThis.fetch, navigator: { clipboard } });
+  init({ document, fetch: fetch as unknown as typeof globalThis.fetch, navigator: { clipboard }, navigate });
   return { calls };
 }
 
@@ -30,7 +30,8 @@ const code = () => $("#code") as HTMLInputElement;
 const button = () => $("#setup-form button") as HTMLButtonElement;
 const error = () => $("#setup-error");
 const saved = () => $("#saved") as HTMLInputElement;
-const link = () => $("#sign-in") as HTMLAnchorElement;
+const signIn = () => $("#sign-in") as HTMLButtonElement;
+const hint = () => $("#sign-in-hint");
 const submit = async (value: string) => {
   code().value = value;
   $("#setup-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
@@ -54,6 +55,17 @@ describe("setup page markup", () => {
     expect(html).not.toMatch(/<script(?![^>]*\bsrc=)/i);
     expect(html).not.toMatch(/<style|style=|\son[a-z]+=/i);
     expect(html).not.toMatch(/action=/);
+  });
+  it("has no novalidate-less form: the page shows its own 'Enter the setup code.' rather than the browser's bubble", () => {
+    expect(html).toMatch(/<form[^>]*id="setup-form"[^>]*\bnovalidate\b/);
+    expect(html).toMatch(/<input[^>]*id="code"[^>]*\brequired\b/);
+  });
+  it("has the secret step's heading focusable by script, and a real disabled button (not a link without an address) for going on to sign in", () => {
+    expect(html).toMatch(/<h2[^>]*id="secret-heading"[^>]*tabindex="-1"[^>]*>Your admin secret<\/h2>/);
+    expect(html).toMatch(/<button[^>]*type="button"[^>]*id="sign-in"[^>]*\bdisabled\b[^>]*>Go to sign in<\/button>|<button[^>]*id="sign-in"[^>]*type="button"[^>]*\bdisabled\b[^>]*>Go to sign in<\/button>/);
+    expect(html).toContain('aria-describedby="sign-in-hint"');
+    expect(html).toMatch(/id="sign-in-hint"[^>]*>Tick the box first\.<\/p>/);
+    expect(html).not.toMatch(/<a[^>]*id="sign-in"/);
   });
   it("shares the theme, styles and icons of the other pages", () => {
     expect(html).toContain('<link rel="stylesheet" href="/style.css" />');
@@ -80,7 +92,7 @@ describe("setup page, step 1", () => {
     expect($("#setup-form").hidden).toBe(false);
     expect($("#secret-step").hidden).toBe(true);
     expect($("#secret").textContent).toBe("");
-    expect(link().getAttribute("href")).toBeNull();
+    expect(signIn().disabled).toBe(true);
   });
 
   it("asks for a code when the field is empty or only whitespace, without a request", async () => {
@@ -134,7 +146,11 @@ describe("setup page, step 1", () => {
   it("explains a closed setup, shows the server's message for other refusals, and a generic one for a network failure", async () => {
     await start(() => reply(404, { error: { code: "not_found", message: "Not found." } }));
     await submit("club-setup-phrase");
-    expect(error().textContent).toContain("Setup has already been completed");
+    expect(error().textContent).toBe("Setup has already been completed. Sign in instead.");
+    const signInLink = error().querySelector("a")!;
+    expect(signInLink.getAttribute("href")).toBe("/admin/login");
+    expect(signInLink.textContent).toBe("Sign in instead.");
+    expect(error().querySelectorAll("a")).toHaveLength(1);
     await start(() => reply(503, { error: { code: "setup_not_ready", message: "Setup isn't ready: set SETUP_CODE to a phrase of at least 12 characters." } }));
     await submit("club-setup-phrase");
     expect(error().textContent).toBe("Setup isn't ready: set SETUP_CODE to a phrase of at least 12 characters.");
@@ -183,21 +199,41 @@ describe("setup page, step 2", () => {
     setItem.mockRestore();
   });
 
-  it("enables the sign-in link only while 'I've saved it' is ticked", async () => {
+  it("enables the sign-in button, and hides the hint, only while 'I've saved it' is ticked", async () => {
     await start();
     await submitOk();
     expect(saved().checked).toBe(false);
-    expect(link().getAttribute("href")).toBeNull();
-    expect(link().getAttribute("aria-disabled")).toBe("true");
+    expect(signIn().disabled).toBe(true);
+    expect(hint().hidden).toBe(false);
+    expect(hint().textContent).toBe("Tick the box first.");
     saved().checked = true;
     saved().dispatchEvent(new Event("change", { bubbles: true }));
-    expect(link().getAttribute("href")).toBe("/admin/login");
-    expect(link().getAttribute("aria-disabled")).toBeNull();
-    expect(link().textContent).toBe("Go to sign in");
+    expect(signIn().disabled).toBe(false);
+    expect(hint().hidden).toBe(true);
+    expect(signIn().textContent).toBe("Go to sign in");
     saved().checked = false;
     saved().dispatchEvent(new Event("change", { bubbles: true }));
-    expect(link().getAttribute("href")).toBeNull();
-    expect(link().getAttribute("aria-disabled")).toBe("true");
+    expect(signIn().disabled).toBe(true);
+    expect(hint().hidden).toBe(false);
+  });
+
+  it("goes to /admin/login when the enabled button is pressed, and nowhere while it is disabled", async () => {
+    const navigate = vi.fn();
+    await start(undefined, undefined, navigate);
+    await submitOk();
+    signIn().click();
+    expect(navigate).not.toHaveBeenCalled();
+    saved().checked = true;
+    saved().dispatchEvent(new Event("change", { bubbles: true }));
+    signIn().click();
+    expect(navigate).toHaveBeenCalledExactlyOnceWith("/admin/login");
+  });
+
+  it("moves focus to the secret step's heading, so the 'shown only this once' warning is read first", async () => {
+    await start();
+    await submitOk();
+    expect(document.activeElement).toBe($("#secret-heading"));
+    expect($("#secret-heading").tagName).toBe("H2");
   });
 
   it("copies the secret with the clipboard API and says so", async () => {
@@ -218,6 +254,19 @@ describe("setup page, step 2", () => {
     await submitOk();
     ($("#copy") as HTMLButtonElement).click();
     await vi.waitFor(() => expect($("#copy-status").textContent).toContain("Select the secret above and copy it yourself"));
+  });
+});
+
+describe("setup page source", () => {
+  it("writes the invisible characters as \\u escapes, like crypto.ts and the sign-in page, not as literal characters", () => {
+    const js = readFileSync("public/setup.js", "utf8");
+    expect(js).toContain('const INVISIBLE = "\\u200B\\u200C\\u200D\\u2060\\u180E\\u00AD";');
+    expect(js).not.toMatch(/[\u200B-\u200F\u2060\u180E\u00AD\uFEFF]/);
+  });
+
+  it("puts a gap between the copy status line and the note under it (the generic .message p rule would remove it)", () => {
+    const css = readFileSync("public/style.css", "utf8");
+    expect(css).toMatch(/\.login \.message \.copy-status \{[^}]*margin: 0\.5rem 0 1rem;/);
   });
 });
 

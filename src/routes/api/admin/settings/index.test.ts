@@ -72,7 +72,7 @@ describe("GET /api/admin/settings", () => {
     expect(((await (await call(onRequestGet)).json()) as { theme: unknown }).theme).toEqual(DEFAULT_THEME_INFO);
   });
 
-  it("refuses with 401 unless the middleware set an admin identity", async () => {
+  it("refuses with 401 unless the guard set an admin identity", async () => {
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       const res = await call(onRequestGet, { data });
       expect(res.status).toBe(401);
@@ -156,7 +156,7 @@ describe("PUT /api/admin/settings", () => {
     expect(await stored()).toMatchObject({ club_name: "" });
   });
 
-  it("refuses with 401 unless the middleware set an admin identity, saving nothing", async () => {
+  it("refuses with 401 unless the guard set an admin identity, saving nothing", async () => {
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       const res = await put(good, { data });
       expect(res.status).toBe(401);

@@ -29,7 +29,7 @@ async function defaultIcon(request: Request, env: AppEnv, size: IconSize): Promi
     const res = await env.ASSETS?.fetch(new Request(new URL(`/icons/default-${size}.png`, request.url)));
     if (!res || !res.ok) return null;
     const bytes = new Uint8Array(await res.arrayBuffer());
-    // Pages answers an unknown path with the site's index page when there is no 404 page, so check what came back.
+    // The asset service could answer an unknown path with a page instead of a 404, so check what came back.
     return PNG_SIGNATURE.every((b, i) => bytes[i] === b) ? bytes : null;
   } catch {
     return null;

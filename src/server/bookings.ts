@@ -99,7 +99,10 @@ export function checkName(value: unknown, label: string): { name: string } | { m
   if (!/[\p{L}\p{N}]/u.test(name.replace(/\p{Default_Ignorable_Code_Point}/gu, ""))) {
     return { message: `The ${label} must contain at least one letter or number.` };
   }
-  if (identityKey(name) === "") return { message: `Enter the ${label}.` };
+  // A private-use character (category Co) draws as whatever font the reader has, or as a box, and the braille blank (U+2800) draws as
+  // nothing, so either could pass for a real character beside a letter. Unassigned code points (Cn) stay allowed: a newer runtime
+  // may have assigned one to an emoji, and refusing it would break names that were fine yesterday.
+  if (/[\p{Co}\u2800]/u.test(name)) return { message: `The ${label} can't contain private-use or blank-looking characters. Try plain text.` };
   return { name };
 }
 

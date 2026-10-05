@@ -37,3 +37,6 @@ Thumbs.db
 
 # Per-session working notes (local only)
 session-notes-*.md
+
+# Database exports: a `wrangler d1 export` backup contains the admin_credentials row (the admin secret hash and the session signing key)
+*backup*.sql

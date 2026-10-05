@@ -126,6 +126,23 @@ describe("countAttempt", () => {
     expect(results.filter((r) => r.allowed)).toHaveLength(5);
   });
 
+  it("without options allows exactly 5 attempts per 900 seconds (the login limit)", async () => {
+    const key = await keyOf("198.51.100.30");
+    for (let i = 0; i < 5; i++) expect((await countAttempt(t.env.DB, key, T0)).allowed).toBe(true);
+    expect(await countAttempt(t.env.DB, key, T0 + 10)).toEqual({ allowed: false, retryAfterSeconds: 890 });
+    expect((await countAttempt(t.env.DB, key, T0 + 899)).allowed).toBe(false);
+    expect((await countAttempt(t.env.DB, key, T0 + 900)).allowed).toBe(true);
+  });
+
+  it("takes its own max and window length when given", async () => {
+    const key = await keyOf("198.51.100.31");
+    const options = { max: 2, windowSeconds: 60 };
+    expect((await countAttempt(t.env.DB, key, T0, options)).allowed).toBe(true);
+    expect((await countAttempt(t.env.DB, key, T0, options)).allowed).toBe(true);
+    expect(await countAttempt(t.env.DB, key, T0 + 10, options)).toEqual({ allowed: false, retryAfterSeconds: 50 });
+    expect((await countAttempt(t.env.DB, key, T0 + 60, options)).allowed).toBe(true);
+  });
+
   it("clearAttempts forgets a client", async () => {
     const key = await keyOf("198.51.100.6");
     for (let i = 0; i < 6; i++) await countAttempt(t.env.DB, key, T0);

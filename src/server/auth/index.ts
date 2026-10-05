@@ -34,7 +34,7 @@ export async function adminAuthFor(
     if (!stored) return { error: "not_configured", reason: "no admin credentials yet: open /setup (SETUP_CODE must be set)", awaitingSetup: true };
     const config = parsePasswordConfig({ ADMIN_PASSWORD_HASH: stored.secretHash, ADMIN_SESSION_SECRET: stored.sessionSecret });
     if (typeof config === "string") return { error: "not_configured", reason: config };
-    return { auth: createPasswordAuth(config, deps, { db: env.DB, secretHash: stored.secretHash }) };
+    return { auth: createPasswordAuth(config, deps, { db: env.DB, secretHash: stored.secretHash, firstLoginAt: stored.firstLoginAt }) };
   }
   return { error: "not_configured", reason: 'ADMIN_AUTH must be "access" or "password"' };
 }

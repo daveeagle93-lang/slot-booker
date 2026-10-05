@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { refuseUnlessAdmin } from "./admin-context";
 
 describe("refuseUnlessAdmin", () => {
-  it("lets a request through when the middleware set a non-empty identity", () => {
+  it("lets a request through when the guard set a non-empty identity", () => {
     expect(refuseUnlessAdmin({ admin: { identity: "test@example.com", csrfBinding: "x" } })).toBeNull();
   });
 

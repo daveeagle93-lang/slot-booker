@@ -530,6 +530,19 @@ describe("POST /api/events/:slug/bookings", () => {
       });
     });
 
+    it("refuses private-use characters and the braille blank beside a real letter, with a 400 naming the field, and stores nothing", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      for (const ch of ["\uE000", "\u{F0000}", "\u2800"]) {
+        const res = await post(slug, entry(SLOT, `Rex${ch}`, `${ch}Sam`));
+        expect(res.status, JSON.stringify(ch)).toBe(400);
+        expect(((await res.json()) as ErrorBody).fields).toEqual({
+          dogName: "The dog's name can't contain private-use or blank-looking characters. Try plain text.",
+          handlerName: "The handler's name can't contain private-use or blank-looking characters. Try plain text.",
+        });
+      }
+      expect(await rows(id)).toHaveLength(0);
+    });
+
     describe("line and paragraph separators (they could fake a line in a pasted lineup)", () => {
       it.each([
         ["LINE SEPARATOR U+2028", "\u2028", "can't contain line or paragraph separators"],

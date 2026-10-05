@@ -2,7 +2,7 @@ import { adminAuthFor, type AdminData, type AuthDeps } from "../server/auth";
 import { csrfFailure, hasSameOrigin } from "../server/auth/csrf";
 import { noStore } from "../server/bookings";
 import type { AppEnv } from "../server/env";
-import { errorResponse } from "../server/http";
+import { errorResponse, plain } from "../server/http";
 import { setupState } from "../server/setup";
 
 const LOGIN_PATH = "/api/admin/login";
@@ -10,12 +10,6 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 // Only the password provider has a sign-in page, so only then may these be fetched unauthenticated.
 const LOGIN_PAGES = new Set(["/admin/login", "/admin/login.html", "/admin/login.js"]);
-
-export const plain = (status: number, text: string, headers: HeadersInit = {}): Response =>
-  new Response(text, {
-    status,
-    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", ...headers },
-  });
 
 /**
  * The single choke point for /api/admin/*, including paths no route handles: every request must be

@@ -50,7 +50,7 @@ const stored = async (eventId: number) =>
 const body = async (res: Response) => (await res.json()) as Record<string, any>;
 
 const unauthenticated = (name: string, send: (data: unknown[]) => Promise<Response>) =>
-  it(`${name}: refuses with 401 unless the middleware set an admin identity`, async () => {
+  it(`${name}: refuses with 401 unless the guard set an admin identity`, async () => {
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       const res = await send([data]);
       expect(res.status).toBe(401);

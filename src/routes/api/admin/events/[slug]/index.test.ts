@@ -175,7 +175,7 @@ describe("GET /api/admin/events/[slug]", () => {
     expect((await detail(a.slug)).slots.map((s) => s.booking)).toEqual([null, null, null]);
   });
 
-  it("refuses with 401 unless the middleware set an admin identity", async () => {
+  it("refuses with 401 unless the guard set an admin identity", async () => {
     const { slug } = await insertEvent(t.env.DB);
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       const res = await get(slug, data);
@@ -637,7 +637,7 @@ describe("PUT /api/admin/events/[slug]: invalid requests", () => {
     expect(await countRows(t.env.DB, "events")).toBe(events);
   });
 
-  it("refuses with 401 unless the middleware set an admin identity", async () => {
+  it("refuses with 401 unless the guard set an admin identity", async () => {
     const { id, slug } = await seed();
     const before = await snapshot(id);
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
@@ -807,7 +807,7 @@ describe("DELETE /api/admin/events/[slug]", () => {
     }
   });
 
-  it("refuses with 401 unless the middleware set an admin identity, deleting nothing", async () => {
+  it("refuses with 401 unless the guard set an admin identity, deleting nothing", async () => {
     const e = await withData();
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       expect((await del(e.slug, { confirmName: NAME }, { data: [data] })).status).toBe(401);

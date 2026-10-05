@@ -230,7 +230,7 @@ All data is in one Cloudflare D1 database, `slot-booker-db` by default (the main
 | `events` | One row per event: name, start and end time, session length, gap, cost, venue postcode, details, whether archived, whether listed, its secret link slug. |
 | `breaks` | Periods within an event with no slots (for example lunch), each with an optional label. |
 | `bookings` | One row per booked slot: slot start time, **dog name, handler name**, when it was booked, plus a private token for the booking's calendar link and technical keys that stop double bookings. |
-| `login_attempts` | Failed-attempt counting for the admin sign-in and for `/setup`: a keyed hash of the client's network address, a count and a time. Never used with Access. |
+| `login_attempts` | Attempt counting (every attempt, right or wrong) for the admin sign-in and for `/setup`: a keyed hash of the client's network address, a count and a time. Never used with Access. |
 | `site_settings` | One row: club name, privacy contact name and email, website address and theme colours. |
 | `site_logo` | At most one row: the club logo as an image, with its type, size and checksum. |
 | `site_icons` | Up to three rows (32, 180 and 512 pixels): the app icons drawn from the logo and theme colour, as PNG images. None means the bundled default icons are used. |
@@ -243,6 +243,8 @@ All data is in one Cloudflare D1 database, `slot-booker-db` by default (the main
 **Retention.** Nothing is deleted automatically, except old `login_attempts` rows, which are removed as a side effect of later login attempts. Bookings and events are only removed by an admin (checked in `src/server/admin-event-lifecycle.ts`): **Archive** hides the event and keeps all its data; **Delete** removes an event with its bookings and breaks, permanently; **Clear out past events** (`src/routes/api/admin/events/clear-past.ts`) does the same for the past events you pick, and asks you to type `DELETE`. The booking form's privacy notice says details are kept until an organiser deletes the event, which matches this. Delete old events when you no longer need them.
 
 **Backups.** D1 Time Travel can restore a database to an earlier moment: 7 days back on the Workers Free plan and 30 on Paid ([Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)). `npx wrangler d1 time-travel info <DB>` shows the available range. A restore overwrites the database in place, so use it with care, and it is not a replacement for exports.
+
+**Exports and backups are as sensitive as the admin secret.** A database export or backup (`wrangler d1 export`, the dashboard, a Time Travel copy) contains the `admin_credentials` row: the hash of the admin secret and the key that signs sign-in cookies. Anyone holding a copy could sign in as admin. Keep exports private and delete them when you are done. Deleting the row, or running setup again before the first sign-in, replaces that key and so ends every existing sign-in.
 
 **Free-plan limits worth knowing.** Cloudflare's Workers Free plan allows 100,000 requests a day to the Worker (resetting at 00:00 UTC) and 10 ms of CPU per request. Static files served straight from `public/` are free and unlimited; the Worker handles `/`, `/e/*`, `/api/*`, `/admin`, `/admin/*` and `/setup`. Past the daily limit those requests get a 429 and static files keep working ([Workers limits](https://developers.cloudflare.com/workers/platform/limits/)). D1 on the free plan allows 5 million rows read and 100,000 rows written a day, 5 GB of storage and 10 databases per account ([D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/), [D1 limits](https://developers.cloudflare.com/d1/platform/limits/)). Whether a login fits the 10 ms on real Workers is **unverified** (`admin-auth.md`, "What a login costs").
 
@@ -260,7 +262,7 @@ This writes the database's structure and contents to a file, including `admin_cr
 
 - Cloudflare says an export blocks other requests to that database while it runs, so the booking page may pause briefly: export at a quiet time. An export has limits (a database of at most 5 GiB, no virtual tables, an SQL statement of at most 100 KB) ([Limits](https://developers.cloudflare.com/d1/platform/limits/)); this app's database is far smaller.
 - How BLOBs (the logo and the icons) are exported is not in Cloudflare's documentation. Check as in Step C. Always restore into a scratch database and look, before relying on a backup.
-- An export file contains every name and the privacy contact. Keep it private (not in the repository, not in email or a shared chat) and delete it when it is no longer needed. `backup.sql` is not git-ignored by default: do not commit it.
+- An export file contains every name and the privacy contact, and the admin sign-in key (see "Backups" above). Keep it private (not in the repository, not in email or a shared chat) and delete it when it is no longer needed. Files named `*backup*.sql` are git-ignored in this repository, but an export with another name is not, so do not commit it.
 - **Never delete a database before the new one is verified**, and not before there is at least one export you have restored successfully somewhere.
 
 ## If something goes wrong, and after the handover

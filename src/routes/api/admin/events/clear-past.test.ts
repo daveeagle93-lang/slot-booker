@@ -88,7 +88,7 @@ describe("POST /api/admin/events/clear-past: the request", () => {
     expect(await rows()).toEqual([1, 1, 2]);
   });
 
-  it("refuses with 401 unless the middleware set an admin identity, deleting nothing", async () => {
+  it("refuses with 401 unless the guard set an admin identity, deleting nothing", async () => {
     const e = await seed(PAST);
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       const res = await clear({ slugs: [e.slug], confirm: "DELETE" }, { data: [data] });

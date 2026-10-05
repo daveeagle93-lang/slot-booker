@@ -20,8 +20,9 @@ describe("SECURITY_HEADERS", () => {
     expect(SECURITY_HEADERS).toEqual(staticHeaders());
   });
 
-  it("has the four headers", () => {
-    expect(Object.keys(SECURITY_HEADERS).sort()).toEqual(["Content-Security-Policy", "Referrer-Policy", "X-Content-Type-Options", "X-Robots-Tag"]);
+  it("has the five headers, and HSTS is one year with no includeSubDomains or preload", () => {
+    expect(Object.keys(SECURITY_HEADERS).sort()).toEqual(["Content-Security-Policy", "Referrer-Policy", "Strict-Transport-Security", "X-Content-Type-Options", "X-Robots-Tag"]);
+    expect(SECURITY_HEADERS["Strict-Transport-Security"]).toBe("max-age=31536000");
   });
 });
 

@@ -135,7 +135,7 @@ describe("POST /api/admin/events/[slug]/archive", () => {
     expect((await publicBook(slug, "2026-10-24T08:00:00Z")).status).toBe(201);
   });
 
-  it("refuses with 401 unless the middleware set an admin identity, changing nothing", async () => {
+  it("refuses with 401 unless the guard set an admin identity, changing nothing", async () => {
     const { id, slug } = await insertEvent(t.env.DB, FUTURE);
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       const res = await archive(slug, { archived: true }, { data: [data] });

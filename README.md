@@ -36,7 +36,7 @@ Good to know:
 - Until you first sign in successfully, `/setup` stays open and running it again **replaces** the secret (the old one stops working).
 - After the first successful sign-in, `/setup` is closed for good (it answers 404).
 - Only a hash of the secret is stored, in the `admin_credentials` table. The secret itself never is, so nobody can look it up for you.
-- The setup code is limited to 5 wrong attempts per 15 minutes per visitor.
+- The setup code is limited to 5 attempts per 15 minutes per visitor (every attempt counts).
 - If the secret is lost after the first sign-in, there is a recovery that needs your Cloudflare login: [If the admin secret is lost](docs/handover.md#if-the-admin-secret-is-lost).
 - The `SETUP_CODE` has no other use afterwards, so it may stay where it is. It is what lets you run `/setup` again after a recovery.
 

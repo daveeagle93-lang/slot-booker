@@ -246,7 +246,7 @@ describe("POST /api/admin/events", () => {
     }
   });
 
-  it("refuses with 401 unless the middleware set an admin identity, writing nothing", async () => {
+  it("refuses with 401 unless the guard set an admin identity, writing nothing", async () => {
     const events = await countRows(t.env.DB, "events");
     for (const data of [undefined, {}, { admin: { identity: "" } }]) {
       const res = await post(draft(), { data });
@@ -555,7 +555,7 @@ describe("GET /api/admin/events", () => {
     ]);
   });
 
-  it("refuses with 401 unless the middleware set an admin identity", async () => {
+  it("refuses with 401 unless the guard set an admin identity", async () => {
     for (const data of [undefined, {}, { admin: {} }]) {
       const res = await list({}, data);
       expect(res.status).toBe(401);

@@ -96,7 +96,7 @@ describe("GET /api/admin/events/[slug]/export.csv", () => {
     expect((await get(slug)).headers.get("content-disposition")).toMatch(/^attachment; filename="[A-Za-z0-9_-]+-bookings\.csv"$/);
   });
 
-  it("answers 401 and no data when the middleware set no admin", async () => {
+  it("answers 401 and no data when the guard set no admin", async () => {
     const { id, slug } = await insertEvent(t.env.DB);
     await insertBooking(t.env.DB, id, "2026-06-13T08:00:00Z", "Rex", "Sam");
     for (const data of [undefined, {}, { admin: null }, { admin: { identity: "" } }]) {
@@ -119,7 +119,7 @@ describe("GET /api/admin/events/[slug]/export.csv", () => {
   });
 });
 
-describe("behind the admin middleware", () => {
+describe("behind the admin guard", () => {
   const routes = (context: { request: Request }): Response | Promise<Response> | undefined => {
     const m = /^\/api\/admin\/events\/([^/]+)\/export\.csv$/.exec(new URL(context.request.url).pathname);
     return m ? (onRequestGet as unknown as Handler)({ ...context, params: { slug: m[1] } }) : undefined;

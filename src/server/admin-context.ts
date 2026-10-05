@@ -2,7 +2,7 @@ import { noStore } from "./bookings";
 import { errorResponse } from "./http";
 
 /**
- * Defence in depth: the admin middleware authenticates every /api/admin/* request and sets
+ * Defence in depth: the admin guard (src/worker/guards.ts) authenticates every /api/admin/* request and sets
  * `data.admin = { identity, csrfBinding }`. A handler calls this first and returns the response if
  * there is one, so a routing mistake can never expose it without a signed-in admin.
  */

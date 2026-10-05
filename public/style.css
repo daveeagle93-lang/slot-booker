@@ -269,7 +269,9 @@ input[aria-invalid="true"] { border-color: var(--danger-text); }
 }
 .check { display: flex; align-items: center; gap: 0.5rem; min-height: 48px; margin: 0 0 0.5rem; }
 .check input { display: inline-block; flex: none; width: 24px; min-height: 24px; height: 24px; margin: 0; accent-color: var(--accent); }
-.button[aria-disabled="true"] { opacity: 0.6; cursor: not-allowed; pointer-events: none; }
+.login .message .button:disabled { margin-bottom: 0.5rem; cursor: not-allowed; }
+.login .message .hint { margin: 0 0 0.5rem; color: var(--muted); }
+.login .message .copy-status { margin: 0.5rem 0 1rem; }
 
 /* Landing page (public/index.html): one big tap target per event. */
 .event-links { list-style: none; margin: 0; padding: 0; }
