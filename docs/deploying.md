@@ -183,7 +183,7 @@ Then check the landing page at the root:
 curl -s -o /dev/null -w "%{http_code}\n" https://preview.slot-booker.pages.dev/
 ```
 
-It should print `200`, and opening `/` in a browser should show the landing page, with the club name or "Slot booker", the logo and the upcoming events. It lists only upcoming, non-archived events, each with its booking link, and nothing else. I have not run this check against a remote deployment.
+It should print `200`, and opening `/` in a browser should show the landing page, with the club name or "Slot booker", the logo and the upcoming events. It lists only upcoming, non-archived, listed events, each with its booking link, and nothing else. I have not run this check against a remote deployment.
 
 Then check the admin gate:
 
@@ -332,7 +332,7 @@ Going live on a custom domain, with Cloudflare Access in front of `/admin/*` and
     curl -sI $PREVIEW/admin/login | grep -i "^content-security-policy"
     ```
 
-    Expected: `{"ok":true}`; a JSON 404 with code `not_found`; `200` for the root (the landing page, with the club name or "Slot booker", the logo and the upcoming, non-archived events with their booking links: open `$PREVIEW/` in a browser to see it); `401`; a `200` with headers; and a `Content-Security-Policy` line that contains `frame-ancestors 'none'`. A 500 on the first two means the `DB` binding is missing from the preview (dashboard: project, "Settings", "Bindings", Preview). A `503` on the admin events request means `ADMIN_AUTH` or a secret is missing or malformed (the function logs say which: follow [Troubleshooting](#troubleshooting)). If the CSP header is missing, the login page could be framed: tell the maintainers.
+    Expected: `{"ok":true}`; a JSON 404 with code `not_found`; `200` for the root (the landing page, with the club name or "Slot booker", the logo and the upcoming, non-archived, listed events with their booking links: open `$PREVIEW/` in a browser to see it); `401`; a `200` with headers; and a `Content-Security-Policy` line that contains `frame-ancestors 'none'`. A 500 on the first two means the `DB` binding is missing from the preview (dashboard: project, "Settings", "Bindings", Preview). A `503` on the admin events request means `ADMIN_AUTH` or a secret is missing or malformed (the function logs say which: follow [Troubleshooting](#troubleshooting)). If the CSP header is missing, the login page could be framed: tell the maintainers.
 
 12. In a browser, open `$PREVIEW/admin/login` and sign in with the secret from step 8 (let the password manager fill it in). Then check, using a test event (the seeded one will do):
     - Sign-in works, and a wrong secret is refused. After "Sign out", `/admin/` sends you back to the login page.

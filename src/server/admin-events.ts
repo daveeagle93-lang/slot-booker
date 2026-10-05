@@ -22,6 +22,8 @@ export interface EventDraft {
   date: string; start: string; end: string;
   sessionMinutes: number; gapMinutes: number; costPence: number;
   venuePostcode: string; details: string;
+  /** Whether the landing page lists the event; undefined when the request didn't say (create: listed; edit: unchanged). */
+  listed?: boolean;
   startUtc: string; endUtc: string;
   breaks: { start: string; end: string; label: string; startUtc: string; endUtc: string }[];
 }
@@ -134,6 +136,7 @@ export function parseEventDraft(
   if ("message" in postcode) fields.venuePostcode = postcode.message;
   const details = checkDetails(raw.details);
   if ("message" in details) fields.details = details.message;
+  if (raw.listed !== undefined && typeof raw.listed !== "boolean") fields.listed = "Listed must be true or false.";
 
   const breaks: EventDraft["breaks"] = [];
   if (!Array.isArray(raw.breaks)) fields.breaks = "Breaks must be a list.";
@@ -164,7 +167,7 @@ export function parseEventDraft(
     name: (name as { name: string }).name, date: dateText, start: raw.start as string, end: raw.end as string,
     sessionMinutes: sessionMinutes!, gapMinutes: gapMinutes!, costPence: costPence!,
     venuePostcode: (postcode as { postcode: string }).postcode, details: (details as { details: string }).details,
-    startUtc: startUtc!, endUtc: endUtc!, breaks,
+    listed: raw.listed as boolean | undefined, startUtc: startUtc!, endUtc: endUtc!, breaks,
   };
   const slotCount = previewSchedule(draft).slots.length;
   if (slotCount === 0) return { fields: { end: "No sessions fit between the start and end." } };
@@ -236,7 +239,7 @@ export function previewSchedule(draft: EventDraft): { slots: TimeRange[]; sugges
 /** An event as stored, with the breaks as stored: all that create answers with and compares. */
 export interface SavedEvent {
   slug: string; name: string; startUtc: string; endUtc: string; sessionMinutes: number; gapMinutes: number;
-  costPence: number; venuePostcode: string; details: string;
+  costPence: number; venuePostcode: string; details: string; listed: boolean;
   breaks: { startUtc: string; endUtc: string; label: string }[];
 }
 
@@ -263,7 +266,7 @@ function sameEvent(saved: SavedEvent, d: EventDraft): boolean {
   const theirs = saved.breaks.map(breakKey).sort();
   return saved.name === d.name && saved.startUtc === d.startUtc && saved.endUtc === d.endUtc
     && saved.sessionMinutes === d.sessionMinutes && saved.gapMinutes === d.gapMinutes && saved.costPence === d.costPence
-    && saved.venuePostcode === d.venuePostcode && saved.details === d.details
+    && saved.venuePostcode === d.venuePostcode && saved.details === d.details && saved.listed === (d.listed ?? true)
     && mine.length === theirs.length && mine.every((k, i) => k === theirs[i]);
 }
 
@@ -277,7 +280,7 @@ export async function findEventByKey(
 ): Promise<{ kind: "replayed" | "idempotency_key_reuse"; saved: SavedEvent } | null> {
   const [events, breaks] = await db.batch([
     db.prepare(
-      `SELECT slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details
+      `SELECT slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, listed
        FROM events WHERE idempotency_key = ?`,
     ).bind(key),
     db.prepare(
@@ -287,12 +290,13 @@ export async function findEventByKey(
   ]);
   const e = (events.results as {
     slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number; gap_minutes: number;
-    cost_pence: number; venue_postcode: string; details: string;
+    cost_pence: number; venue_postcode: string; details: string; listed: number;
   }[])[0];
   if (!e) return null;
   const saved: SavedEvent = {
     slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc, sessionMinutes: e.session_minutes,
     gapMinutes: e.gap_minutes, costPence: e.cost_pence, venuePostcode: e.venue_postcode, details: e.details,
+    listed: e.listed === 1,
     breaks: (breaks.results as { start_utc: string; end_utc: string; label: string }[])
       .map((b) => ({ startUtc: b.start_utc, endUtc: b.end_utc, label: b.label })),
   };
@@ -317,7 +321,7 @@ export async function createEvent(db: D1Database, d: EventDraft, key: string): P
     if (won) return won;
     throw e;
   }
-  return { kind: "created", saved: { ...d, slug } };
+  return { kind: "created", saved: { ...d, listed: d.listed ?? true, slug } };
 }
 
 /**
@@ -327,27 +331,28 @@ export async function createEvent(db: D1Database, d: EventDraft, key: string): P
 export async function insertEventWithBreaks(db: D1Database, slug: string, d: EventDraft, idempotencyKey: string): Promise<void> {
   await db.batch([
     db.prepare(
-      `INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, idempotency_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(slug, d.name, d.startUtc, d.endUtc, d.sessionMinutes, d.gapMinutes, d.costPence, d.venuePostcode, d.details, idempotencyKey),
+      `INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, listed, idempotency_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(slug, d.name, d.startUtc, d.endUtc, d.sessionMinutes, d.gapMinutes, d.costPence, d.venuePostcode, d.details,
+      d.listed === false ? 0 : 1, idempotencyKey),
     ...d.breaks.map((b) =>
       db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES ((SELECT id FROM events WHERE slug = ?), ?, ?, ?)")
         .bind(slug, b.startUtc, b.endUtc, b.label)),
   ]);
 }
 
-interface ListedEvent { id: number; slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number; gap_minutes: number; cost_pence: number; venue_postcode: string }
+interface ListedEvent { id: number; slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number; gap_minutes: number; cost_pence: number; venue_postcode: string; listed: number }
 
-interface ListedOld { slug: string; name: string; start_utc: string; end_utc: string; venue_postcode: string; archived: number; booked: number }
+interface ListedOld { slug: string; name: string; start_utc: string; end_utc: string; venue_postcode: string; archived: number; listed: number; booked: number }
 
 /** The first 100 of an ended or archived group (most recently started first) with booked counts, and whether more exist. */
 const olderEvents = (db: D1Database, where: string) =>
   db.prepare(
     `WITH page AS (
-       SELECT id, slug, name, start_utc, end_utc, venue_postcode, archived FROM events WHERE ${where}
+       SELECT id, slug, name, start_utc, end_utc, venue_postcode, archived, listed FROM events WHERE ${where}
        ORDER BY start_utc DESC, id DESC LIMIT ${MAX_LIST + 1}
      ), counts AS (SELECT event_id, COUNT(*) AS n FROM bookings WHERE event_id IN (SELECT id FROM page) GROUP BY event_id)
-     SELECT page.slug, page.name, page.start_utc, page.end_utc, page.venue_postcode, page.archived, COALESCE(counts.n, 0) AS booked
+     SELECT page.slug, page.name, page.start_utc, page.end_utc, page.venue_postcode, page.archived, page.listed, COALESCE(counts.n, 0) AS booked
      FROM page LEFT JOIN counts ON counts.event_id = page.id ORDER BY page.start_utc DESC, page.id DESC`,
   );
 
@@ -355,7 +360,7 @@ function olderGroup(rows: ListedOld[]) {
   return {
     items: rows.slice(0, MAX_LIST).map((e) => ({
       slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc, venuePostcode: e.venue_postcode,
-      bookedCount: e.booked, archived: e.archived === 1,
+      bookedCount: e.booked, archived: e.archived === 1, listed: e.listed === 1,
     })),
     hasMore: rows.length > MAX_LIST,
   };
@@ -372,7 +377,7 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
   const upcoming = `SELECT id FROM events WHERE archived = 0 AND end_utc > ?1 ORDER BY start_utc, id LIMIT ${MAX_LIST}`;
   const [events, breaks, counts, pastRows, archivedRows] = await db.batch([
     db.prepare(
-      `SELECT id, slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode
+      `SELECT id, slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, listed
        FROM events WHERE id IN (${upcoming}) ORDER BY start_utc, id`,
     ).bind(nowIso),
     db.prepare(`SELECT event_id, start_utc, end_utc, label FROM breaks WHERE event_id IN (${upcoming})`).bind(nowIso),
@@ -389,7 +394,7 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
     const row = {
       id: e.id, slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc,
       sessionMinutes: e.session_minutes, gapMinutes: e.gap_minutes, costPence: e.cost_pence,
-      venuePostcode: e.venue_postcode, details: "", archived: false, breaks: breaksOf.get(e.id) ?? [],
+      venuePostcode: e.venue_postcode, details: "", archived: false, listed: e.listed === 1, breaks: breaksOf.get(e.id) ?? [],
     } satisfies EventRow;
     const slotCount = generateSchedule({
       start: row.startUtc, end: row.endUtc, sessionMinutes: row.sessionMinutes, gapMinutes: row.gapMinutes, breaks: row.breaks,
@@ -397,7 +402,7 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
     const bookedCount = bookedOf.get(e.id) ?? 0;
     return {
       slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc, costPence: e.cost_pence,
-      venuePostcode: e.venue_postcode, slotCount, bookedCount, archived: false,
+      venuePostcode: e.venue_postcode, slotCount, bookedCount, archived: false, listed: e.listed === 1,
       full: slotCount > 0 && bookedCount >= slotCount,
       bookings: bookingWindow(row, cutoffOffsetMinutes, now),
       path: `/e/${e.slug}`,

@@ -63,6 +63,21 @@ describe("GET /api/events", () => {
     expect(events[1].slug).toBe(shown.slug);
   });
 
+  it("leaves out unlisted events and keeps the listed ones", async () => {
+    const shown = await insertEvent(t.env.DB, { name: "Shown", ...at(12) });
+    await insertEvent(t.env.DB, { name: "Hidden", ...at(10), listed: false });
+    const { events } = await list();
+    expect(events).toEqual([{ slug: shown.slug, name: "Shown", ...at(12) }]);
+  });
+
+  it("returns an empty list when every upcoming event is unlisted", async () => {
+    await insertEvent(t.env.DB, { name: "Hidden", ...at(10), listed: false });
+    await insertEvent(t.env.DB, { name: "Also hidden", ...at(11), listed: false });
+    const { res, events } = await list();
+    expect(res.status).toBe(200);
+    expect(events).toEqual([]);
+  });
+
   it("returns an empty list when nothing is upcoming", async () => {
     expect((await list()).events).toEqual([]);
   });

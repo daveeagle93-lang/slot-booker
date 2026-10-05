@@ -51,6 +51,18 @@ describe("GET /api/events/:slug", () => {
     });
   });
 
+  it("serves an unlisted event exactly as a listed one, without saying it is unlisted", async () => {
+    const listed = await insertEvent(t.env.DB, { name: "Same", slug: "L".repeat(22) });
+    const unlisted = await insertEvent(t.env.DB, { name: "Same", slug: "U".repeat(22), listed: false });
+    const [a, b] = await Promise.all([get(listed.slug), get(unlisted.slug)]);
+    expect(b.status).toBe(200);
+    const [bodyA, bodyB] = (await Promise.all([a.json(), b.json()])) as { event: Record<string, unknown>; slots: unknown[] }[];
+    expect(bodyB.event).toEqual({ ...bodyA.event, slug: unlisted.slug });
+    expect(bodyB.slots).toEqual(bodyA.slots);
+    expect(JSON.stringify(bodyA)).not.toContain("listed");
+    expect(JSON.stringify(bodyB)).not.toContain("listed");
+  });
+
   it("lists sorted free slots and sets Cache-Control: no-store", async () => {
     const { slug } = await insertEvent(t.env.DB);
     const res = await get(slug);

@@ -5,7 +5,7 @@ import { errorResponse, json } from "../../../src/server/http";
 const MAX_EVENTS = 50;
 
 /**
- * The landing page's list: events open to the public that haven't started yet, soonest first. Only what the
+ * The landing page's list: listed events open to the public that haven't started yet, soonest first. Only what the
  * list shows (slug for the link, name, times); no ids, counts, venue or details.
  */
 export const onRequestGet: PagesFunction<AppEnv> = async ({ env }) => {
@@ -13,7 +13,7 @@ export const onRequestGet: PagesFunction<AppEnv> = async ({ env }) => {
   try {
     const { results } = await env.DB.prepare(
       `SELECT slug, name, start_utc, end_utc FROM events
-       WHERE archived = 0 AND slug IS NOT NULL AND start_utc > ?1
+       WHERE archived = 0 AND listed = 1 AND slug IS NOT NULL AND start_utc > ?1
        ORDER BY start_utc, id LIMIT ${MAX_EVENTS}`,
     ).bind(nowIso).all<{ slug: string; name: string; start_utc: string; end_utc: string }>();
     return json(

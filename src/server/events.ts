@@ -13,6 +13,8 @@ export interface EventRow {
   venuePostcode: string;
   details: string;
   archived: boolean;
+  /** Whether the landing page lists it. Unlisted events are still bookable by their link. */
+  listed: boolean;
   breaks: (TimeRange & { label: string })[];
 }
 
@@ -20,7 +22,7 @@ export interface SlotView extends TimeRange { status: "free" | "taken" | "past" 
 
 interface RawEvent {
   id: number; slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number;
-  gap_minutes: number; cost_pence: number; venue_postcode: string; details: string; archived: number;
+  gap_minutes: number; cost_pence: number; venue_postcode: string; details: string; archived: number; listed: number;
 }
 
 export async function loadEventBySlug(db: D1Database, slug: string): Promise<EventRow | null> {
@@ -34,7 +36,7 @@ export async function loadEventBySlug(db: D1Database, slug: string): Promise<Eve
   return {
     id: e.id, slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc,
     sessionMinutes: e.session_minutes, gapMinutes: e.gap_minutes, costPence: e.cost_pence,
-    venuePostcode: e.venue_postcode, details: e.details, archived: e.archived === 1,
+    venuePostcode: e.venue_postcode, details: e.details, archived: e.archived === 1, listed: e.listed === 1,
     breaks: results.map((b) => ({ start: b.start_utc, end: b.end_utc, label: b.label })),
   };
 }

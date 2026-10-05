@@ -320,6 +320,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     const children = [
       h("h1", {}, "Schedule"),
       h("p", { class: "event-name" }, event.name),
+      ...(event.listed === false ? [h("p", {}, h("span", { class: "badge closed" }, "Not listed"))] : []),
       h("p", { class: "sched-date" }, formatDate(event.startUtc)),
       h("div", { class: "actions" }, ...links, copy),
       status,

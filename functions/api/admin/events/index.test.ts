@@ -95,6 +95,29 @@ describe("POST /api/admin/events", () => {
     ]);
   });
 
+  it("lists the event on the landing page by default, and unlisted when asked, either way still bookable by its link", async () => {
+    const shown = (await create()).event.slug;
+    const hidden = (await create({ listed: false })).event.slug;
+    const { results } = await t.env.DB.prepare("SELECT slug, listed FROM events WHERE slug IN (?, ?) ORDER BY listed").bind(shown, hidden).all();
+    expect(results).toEqual([{ slug: hidden, listed: 0 }, { slug: shown, listed: 1 }]);
+    const slots = (await publicEvent(hidden)).slots;
+    expect(slots.length).toBeGreaterThan(0);
+    expect(slots).toEqual((await publicEvent(shown)).slots);
+  });
+
+  it("stores an explicit listed: true as listed", async () => {
+    const { event } = await create({ listed: true });
+    expect(await t.env.DB.prepare("SELECT listed FROM events WHERE slug = ?").bind(event.slug).first()).toEqual({ listed: 1 });
+  });
+
+  it.each([["a string", "no"], ["a number", 0], ["null", null]])("refuses `listed` as %s with 400 and fields.listed, writing nothing", async (_n, listed) => {
+    const events = await countRows(t.env.DB, "events");
+    const res = await post(draft({ listed }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: unknown }).fields).toEqual({ listed: "Listed must be true or false." });
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+  });
+
   it("stores each break's label, and an unnamed break as an empty one", async () => {
     const { event } = await create({ breaks: [{ start: "10:00", end: "10:30", label: "Lunch" }, { start: "11:00", end: "11:10" }] });
     const { results } = await t.env.DB.prepare(
@@ -307,6 +330,17 @@ describe("POST /api/admin/events: idempotency key", () => {
     expect(await breakRows(rows[0].id)).toHaveLength(2);
   });
 
+  it("treats the same key with a different `listed` as a changed request: 422, the original untouched", async () => {
+    const body = draft({ listed: false });
+    expect((await post(body)).status).toBe(201);
+    const same = await post(body);
+    expect(same.status).toBe(201);
+    expect(same.headers.get("idempotent-replayed")).toBe("true");
+    const changed = await post({ ...body, listed: true });
+    expect(changed.status).toBe(422);
+    expect(await t.env.DB.prepare("SELECT listed FROM events WHERE idempotency_key = ?").bind(body.idempotencyKey).first()).toEqual({ listed: 0 });
+  });
+
   it("gives different keys different events", async () => {
     const a = await create();
     const b = await create();
@@ -467,13 +501,20 @@ describe("GET /api/admin/events", () => {
     const events = ((await (await list({ BOOKING_CUTOFF_OFFSET_MINUTES: "-60" })).json()) as { events: Record<string, unknown>[] }).events;
     expect(events[0]).toEqual({
       slug, name: "Show", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z", costPence: 900,
-      venuePostcode: "ZZ9 9ZZ", slotCount: 10, bookedCount: 2, archived: false, full: false,
+      venuePostcode: "ZZ9 9ZZ", slotCount: 10, bookedCount: 2, archived: false, listed: true, full: false,
       bookings: { open: true, closesAt: "2026-06-13T07:00:00Z" }, path: `/e/${slug}`,
     });
     expect(events[1]).toMatchObject({ slotCount: 4, bookedCount: 0 });
     vi.setSystemTime(new Date("2026-06-13T07:00:00Z"));
     const closed = ((await (await list({ BOOKING_CUTOFF_OFFSET_MINUTES: "-60" })).json()) as { events: { bookings: unknown }[] }).events;
     expect(closed[0].bookings).toEqual({ open: false, closesAt: "2026-06-13T07:00:00Z" });
+  });
+
+  it("says whether each event is listed", async () => {
+    await insertEvent(t.env.DB, { startUtc: "2026-10-10T08:00:00Z", endUtc: "2026-10-10T09:00:00Z" });
+    await insertEvent(t.env.DB, { startUtc: "2026-10-11T08:00:00Z", endUtc: "2026-10-11T09:00:00Z", listed: false });
+    const events = ((await (await list()).json()) as { events: { listed: boolean }[] }).events;
+    expect(events.map((e) => e.listed)).toEqual([true, false]);
   });
 
   it("keeps each event's breaks and booking counts to itself", async () => {
@@ -576,12 +617,19 @@ describe("GET /api/admin/events: Past and Archived", () => {
     const body = await listing();
     expect(body.past).toEqual([{
       slug: past.slug, name: "Old show", startUtc: "2026-09-01T08:00:00Z", endUtc: "2026-09-01T11:00:00Z",
-      venuePostcode: "ZZ9 9ZZ", bookedCount: 2, archived: false,
+      venuePostcode: "ZZ9 9ZZ", bookedCount: 2, archived: false, listed: true,
     }]);
     expect(body.archived).toEqual([{
       slug: old.slug, name: "Filed", startUtc: "2026-02-01T08:00:00Z", endUtc: "2026-02-01T11:00:00Z",
-      venuePostcode: "AB1 2CD", bookedCount: 1, archived: true,
+      venuePostcode: "AB1 2CD", bookedCount: 1, archived: true, listed: true,
     }]);
+  });
+
+  it("says whether each Past and Archived item is listed", async () => {
+    await insertEvent(t.env.DB, at("2026-09-01T08:00:00Z", "2026-09-01T09:00:00Z", { listed: false }));
+    await insertEvent(t.env.DB, at("2026-02-01T08:00:00Z", "2026-02-01T09:00:00Z", { archived: true, listed: false }));
+    const body = await listing();
+    expect([body.past[0].listed, body.archived[0].listed]).toEqual([false, false]);
   });
 
   it("counts bookings per event, zero where there are none, and keeps them to their own event", async () => {

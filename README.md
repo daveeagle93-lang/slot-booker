@@ -16,7 +16,7 @@ npm run dev                # serves on http://localhost:8788
 npm test                   # also: npm run typecheck
 ```
 
-Open the URL that `seed` prints. Each run adds a new event (nothing is wiped); pass `-- --no-bookings` to skip the sample bookings. The landing page at `/` lists the upcoming events with their booking links. The public booking page is at `/e/<slug>` (static files in `public/`, no build step); the raw event data is at `/api/events/<slug>`. To seed the remote preview database instead, see `docs/deploying.md` (`npm run seed -- --remote --env preview`).
+Open the URL that `seed` prints. Each run adds a new event (nothing is wiped); pass `-- --no-bookings` to skip the sample bookings. The landing page at `/` lists the upcoming events with their booking links (an event can be left off it with the "Listed on the home page" box when you create or edit it; its link still works). The public booking page is at `/e/<slug>` (static files in `public/`, no build step); the raw event data is at `/api/events/<slug>`. To seed the remote preview database instead, see `docs/deploying.md` (`npm run seed -- --remote --env preview`).
 
 ## Landing page, club settings, logo and theme
 

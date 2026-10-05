@@ -72,6 +72,15 @@ const options = (select: HTMLElement) => [...select.querySelectorAll("option")].
 afterEach(() => { document.body.innerHTML = ""; });
 
 describe("loading and rendering", () => {
+  it("tags an unlisted event Not listed, and a listed one (or one with no flag) not at all", async () => {
+    await start({ initial: detail(undefined, undefined, undefined, { ...EVENT, listed: false }) });
+    expect($$(".badge").map((b) => b.textContent)).toEqual(["Not listed"]);
+    await start({ initial: detail(undefined, undefined, undefined, { ...EVENT, listed: true }) });
+    expect($$(".badge")).toHaveLength(0);
+    await start();
+    expect($$(".badge")).toHaveLength(0);
+  });
+
   it("shows the event, the London date, the links, and every slot and break in time order", async () => {
     const { calls } = await start();
     expect(calls.map((c) => c.url)).toEqual(["/api/admin/session", BASE]);

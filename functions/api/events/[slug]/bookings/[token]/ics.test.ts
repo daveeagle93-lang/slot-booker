@@ -54,6 +54,14 @@ function vevent(ics: string): ICAL.Event {
 const uidOf = (ics: string): string => vevent(ics).uid;
 
 describe("GET /api/events/:slug/bookings/:token/ics", () => {
+  it("serves the .ics for a booking on an unlisted event", async () => {
+    const { id, slug } = await insertEvent(t.env.DB, { listed: false });
+    const token = await book(id, SLOT, "Rex", "Sam");
+    const res = await getIcs(slug, token);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/calendar");
+  });
+
   it("returns the .ics for an existing booking, with headers and parseable content", async () => {
     const { id, slug } = await insertEvent(t.env.DB, {
       name: "Summer show", costPence: 1250, venuePostcode: "SW1A 1AA", details: "Bring water",

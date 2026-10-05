@@ -25,7 +25,7 @@ export interface BookingRef { id: number; slotStart: string; dogName: string; ha
 
 /** The event as the edit form uses it: London-local date and times next to the stored UTC instants. */
 export const eventView = (e: EventRow) => ({
-  slug: e.slug, name: e.name, archived: e.archived,
+  slug: e.slug, name: e.name, archived: e.archived, listed: e.listed,
   date: utcToLondon(e.startUtc).date, start: utcToLondon(e.startUtc).time, end: utcToLondon(e.endUtc).time,
   sessionMinutes: e.sessionMinutes, gapMinutes: e.gapMinutes, costPence: e.costPence,
   venuePostcode: e.venuePostcode, details: e.details,
@@ -104,6 +104,8 @@ export async function saveEventEdit(
   if (affected.some((b) => !confirmed.has(b.id))) return { kind: "bookings_affected", affected };
   await hooks.afterRead?.();
 
+  // A request without `listed` leaves it as it is.
+  const listed = draft.listed ?? event.listed;
   const starts = JSON.stringify(slots.map((s) => s.start));
   const ids = JSON.stringify(affected.map((b) => b.id));
   const outside = "slot_start_utc NOT IN (SELECT value FROM json_each(?))";
@@ -117,9 +119,9 @@ export async function saveEventEdit(
       ),
       db.prepare(
         `UPDATE events SET name = ?, start_utc = ?, end_utc = ?, session_minutes = ?, gap_minutes = ?, cost_pence = ?,
-           venue_postcode = ?, details = ? WHERE id = ?`,
+           venue_postcode = ?, details = ?, listed = ? WHERE id = ?`,
       ).bind(draft.name, draft.startUtc, draft.endUtc, draft.sessionMinutes, draft.gapMinutes, draft.costPence,
-        draft.venuePostcode, draft.details, event.id),
+        draft.venuePostcode, draft.details, listed ? 1 : 0, event.id),
       db.prepare("DELETE FROM breaks WHERE event_id = ?").bind(event.id),
       ...draft.breaks.map((b) =>
         db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (?, ?, ?, ?)").bind(event.id, b.startUtc, b.endUtc, b.label)),
@@ -133,7 +135,7 @@ export async function saveEventEdit(
       kind: "saved", slotCount: slots.length,
       event: {
         ...event, name: draft.name, startUtc: draft.startUtc, endUtc: draft.endUtc, sessionMinutes: draft.sessionMinutes,
-        gapMinutes: draft.gapMinutes, costPence: draft.costPence, venuePostcode: draft.venuePostcode, details: draft.details,
+        gapMinutes: draft.gapMinutes, costPence: draft.costPence, venuePostcode: draft.venuePostcode, details: draft.details, listed,
         breaks: draft.breaks.map((b) => ({ start: b.startUtc, end: b.endUtc, label: b.label })),
       },
       removed: deleted.map((r) => ({ id: r.id, slotStart: r.slot_start_utc, dogName: r.dog_name, handlerName: r.handler_name }))

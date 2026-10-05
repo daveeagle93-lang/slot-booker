@@ -55,6 +55,16 @@ describe("POST /api/admin/events/[slug]/preview", () => {
     expect(body.slots.at(-1)).toEqual({ start: "2026-10-24T10:15:00Z", end: "2026-10-24T10:30:00Z" });
   });
 
+  it("does not treat `listed` as a schedule change: nothing affected whatever it says", async () => {
+    const { id, slug } = await seed();
+    await insertBooking(t.env.DB, id, "2026-10-24T10:45:00Z", "Rex", "Sam");
+    for (const listed of [true, false]) {
+      const body = (await (await post(slug, draft({ listed }))).json()) as Body;
+      expect(body.affected).toEqual([]);
+      expect(body.slots).toHaveLength(12);
+    }
+  });
+
   it("has nothing affected when slots are only added", async () => {
     const { id, slug } = await seed();
     await insertBooking(t.env.DB, id, "2026-10-24T10:45:00Z", "Rex", "Sam");

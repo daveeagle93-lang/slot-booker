@@ -97,7 +97,7 @@ describe("form", () => {
     const labels = $$("label").map((l) => l.textContent);
     expect(labels).toEqual([
       "Event name", "Date", "Start time", "End time", "Session length (minutes)", "Gap between sessions (minutes)",
-      "Cost (£)", "Venue postcode", "Details (optional)",
+      "Cost (£)", "Venue postcode", "Details (optional)", "Listed on the home page",
     ]);
     for (const label of $$("label")) expect(document.getElementById(label.getAttribute("for")!)).not.toBeNull();
     expect(input("date").type).toBe("date");
@@ -113,6 +113,26 @@ describe("form", () => {
     expect(text()).toContain("You can edit the event after saving, so you can fix any slip later.");
     expect(buttonNamed("Save event")).toBeDefined();
     expect($("form").hasAttribute("novalidate")).toBe(true);
+  });
+
+  it("has a Listed on the home page checkbox, ticked by default, with its hint", async () => {
+    await start();
+    const box = input("listed");
+    expect(box.type).toBe("checkbox");
+    expect(box.checked).toBe(true);
+    const hint = document.getElementById(box.getAttribute("aria-describedby")!)!;
+    expect(hint.textContent).toBe("Untick to keep this event off the home page. Anyone with its link can still book.");
+    expect($("label[for='listed']").contains(box)).toBe(true);
+  });
+
+  it("does not preview when the checkbox is toggled", async () => {
+    const { calls } = await start();
+    fillAll();
+    await settle();
+    const before = previewCalls(calls).length;
+    input("listed").click();
+    await settle();
+    expect(previewCalls(calls)).toHaveLength(before);
   });
 
   it("sends the browser to login without a session", async () => {
@@ -565,8 +585,25 @@ describe("saving", () => {
     expect(create.body).toEqual({
       name: "Trial Day", date: "2026-06-13", start: "09:00", end: "16:00", sessionMinutes: 15, gapMinutes: 5,
       costPence: 1250, venuePostcode: "SW1A 1AA", details: "Bring water.", breaks: [{ start: "12:00", end: "12:20", label: "" }],
-      idempotencyKey: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+      listed: true, idempotencyKey: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
     });
+  });
+
+  it("sends listed: false when the box is unticked", async () => {
+    const { calls } = await start();
+    fillAll();
+    input("listed").click();
+    submit();
+    await tick();
+    expect(calls.find((c) => c.url === CREATE)!.body.listed).toBe(false);
+  });
+
+  it("shows a server error for listed as the form error, as it has no field of its own on the page", async () => {
+    await start({ create: () => reply(400, { error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: { listed: "Listed must be true or false." } }) });
+    fillAll();
+    submit();
+    await tick();
+    expect($(".form-error").textContent).toContain("Listed must be true or false.");
   });
 
   it("sends 0 pence for a free event", async () => {

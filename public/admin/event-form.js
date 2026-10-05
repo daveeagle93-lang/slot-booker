@@ -81,6 +81,12 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
   };
   const value = (key) => fields.get(key).input.value.trim();
 
+  // Not in `fields`: it has no error of its own and isn't part of the schedule, so it never triggers a preview.
+  const listed = control("input", "listed", { type: "checkbox", checked: true, "aria-describedby": "listed-hint" });
+  const listedField = h("div", { class: "field" },
+    h("label", { class: "select-all", for: "listed" }, listed, "Listed on the home page"),
+    h("p", { class: "note", id: "listed-hint" }, "Untick to keep this event off the home page. Anyone with its link can still book."));
+
   const breaksError = h("p", { id: "breaks-error", class: "field-error", role: "alert", tabindex: "-1" });
   fields.set("breaks", { key: "breaks", input: null, error: breaksError, touched: true });
   const breakList = h("div", { class: "breaks" });
@@ -99,7 +105,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     h("fieldset", { class: "breaks-group" },
       h("legend", {}, "Breaks (optional)"),
       breakList, breaksError, addBreak),
-    f.cost, f.postcode, f.details,
+    f.cost, f.postcode, f.details, listedField,
     h("p", { class: "note" }, editing
       ? "Changing the times can remove booked slots. You'll see who is affected and be asked to confirm before anything is removed."
       : "You can edit the event after saving, so you can fix any slip later."),
@@ -363,7 +369,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
       payload: {
         name: value("name"), date: value("date"), start: value("start"), end: value("end"),
         sessionMinutes: wholeNumber(value("sessionMinutes")), gapMinutes: wholeNumber(value("gapMinutes")),
-        costPence: cost.pence, venuePostcode: value("venuePostcode"), details: value("details"),
+        costPence: cost.pence, venuePostcode: value("venuePostcode"), details: value("details"), listed: listed.checked,
         breaks: used.map((r) => ({ start: r.startInput.value, end: r.endInput.value, label: r.labelInput.value })),
       },
     };
@@ -507,6 +513,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     f.cost.querySelector("input").value = poundsText(initial.costPence);
     f.postcode.querySelector("input").value = initial.venuePostcode;
     f.details.querySelector("textarea").value = initial.details;
+    listed.checked = initial.listed !== false;
     for (const b of initial.breaks) {
       const row = addRow(false);
       row.startInput.value = b.start;

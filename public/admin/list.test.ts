@@ -60,6 +60,12 @@ describe("list page", () => {
     expect(open.getAttribute("href")).toBe("/e/abc123");
   });
 
+  it("tags an unlisted event Not listed, and only that one", async () => {
+    await start([{ ...EVENT, listed: true }, { ...EVENT, slug: "def", path: "/e/def", name: "Hidden", listed: false }, { ...EVENT, slug: "ghi", path: "/e/ghi", name: "Old data" }]);
+    const badges = [...document.querySelectorAll(".event-card")].map((c) => [...c.querySelectorAll(".badge")].map((b) => b.textContent));
+    expect(badges).toEqual([["Bookings open"], ["Bookings open", "Not listed"], ["Bookings open"]]);
+  });
+
   it("links to the settings page from the header, before Sign out", async () => {
     await start([]);
     const bar = [...$(".admin-bar").children];

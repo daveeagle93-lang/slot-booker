@@ -55,12 +55,18 @@ describe("GET /api/admin/events/[slug]", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     const body = (await res.json()) as Detail;
     expect(body.event).toEqual({
-      slug, name: "Saturday trial day", archived: false, date: "2026-10-24", start: "09:00", end: "12:00",
+      slug, name: "Saturday trial day", archived: false, listed: true, date: "2026-10-24", start: "09:00", end: "12:00",
       sessionMinutes: 15, gapMinutes: 5, costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water",
       startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z",
       breaks: [{ start: "10:00", end: "10:30", label: "Lunch", startUtc: "2026-10-24T09:00:00Z", endUtc: "2026-10-24T09:30:00Z" }],
     });
     expect(body.orphans).toEqual([]);
+  });
+
+  it("says whether the event is listed", async () => {
+    const shown = await insertEvent(t.env.DB);
+    const hidden = await insertEvent(t.env.DB, { listed: false });
+    expect([(await detail(shown.slug)).event.listed, (await detail(hidden.slug)).event.listed]).toEqual([true, false]);
   });
 
   it("returns a GMT date as it is (2026-10-31: 09:00 is 09:00Z)", async () => {
@@ -244,7 +250,7 @@ describe("PUT /api/admin/events/[slug]: saving without bookings in the way", () 
     expect(res.headers.get("cache-control")).toBe("no-store");
     const body = (await res.json()) as Saved;
     expect(body.event).toEqual({
-      slug, name: "Renamed day", archived: false, date: "2026-10-31", start: "10:00", end: "13:00",
+      slug, name: "Renamed day", archived: false, listed: true, date: "2026-10-31", start: "10:00", end: "13:00",
       sessionMinutes: 20, gapMinutes: 5, costPence: 2000, venuePostcode: "CD3 4EF", details: "New details",
       startUtc: "2026-10-31T10:00:00Z", endUtc: "2026-10-31T13:00:00Z",
       breaks: [{ start: "11:00", end: "11:15", label: "Tea", startUtc: "2026-10-31T11:00:00Z", endUtc: "2026-10-31T11:15:00Z" }],
@@ -257,6 +263,31 @@ describe("PUT /api/admin/events/[slug]: saving without bookings in the way", () 
       gap_minutes: 5, cost_pence: 2000, venue_postcode: "CD3 4EF", details: "New details", archived: 0, idempotency_key: `key-${slug}`,
     });
     expect(await storedBreaks(id)).toEqual([{ start_utc: "2026-10-31T11:00:00Z", end_utc: "2026-10-31T11:15:00Z", label: "Tea" }]);
+  });
+
+  it("saves `listed` both ways, leaves it alone when the request has none, and changes nothing else", async () => {
+    const { id, slug } = await seed();
+    const other = async () => JSON.stringify(Object.entries((await t.env.DB.prepare("SELECT * FROM events WHERE id = ?").bind(id).first<Record<string, unknown>>())!).filter(([k]) => k !== "listed"));
+    const before = await other();
+    const listed = async () => (await t.env.DB.prepare("SELECT listed FROM events WHERE id = ?").bind(id).first<{ listed: number }>())!.listed;
+    const off = await put(slug, draft({ listed: false }));
+    expect(off.status).toBe(200);
+    expect(((await off.json()) as Saved).event.listed).toBe(false);
+    expect(await listed()).toBe(0);
+    expect((await put(slug, draft())).status).toBe(200);
+    expect(await listed()).toBe(0);
+    expect(((await (await put(slug, draft({ listed: true }))).json()) as Saved).event.listed).toBe(true);
+    expect(await listed()).toBe(1);
+    expect(await other()).toBe(before);
+  });
+
+  it("refuses a `listed` that is not true or false with 400, changing nothing", async () => {
+    const { id, slug } = await seed();
+    const before = await snapshot(id);
+    const res = await put(slug, draft({ listed: "yes" }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: unknown }).fields).toEqual({ listed: "Listed must be true or false." });
+    expect(await snapshot(id)).toBe(before);
   });
 
   it("answers the same event a following GET shows", async () => {
@@ -358,6 +389,14 @@ describe("PUT /api/admin/events/[slug]: bookings that would lose their slot", ()
     { id: e.b, slotStart: "2026-10-24T10:30:00Z", dogName: "Bravo", handlerName: "Bob" },
     { id: e.c, slotStart: "2026-10-24T10:45:00Z", dogName: "Charlie", handlerName: "Cat" },
   ];
+
+  it("saves a change to `listed` alone with bookings present: no 409, nothing removed, bookings kept", async () => {
+    const e = await withBookings();
+    const res = await put(e.slug, draft({ listed: false }));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Saved).removed).toEqual([]);
+    expect(await bookingIds(e.id)).toEqual([e.a, e.b, e.c]);
+  });
 
   it("saves an extended end time with the bookings left alone", async () => {
     const e = await withBookings();

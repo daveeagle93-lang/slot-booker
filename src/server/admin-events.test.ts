@@ -48,6 +48,16 @@ describe("parseEventDraft: accepted input", () => {
     expect(draftOf({ date: "2026-10-31" })).toMatchObject({ startUtc: "2026-10-31T09:00:00Z", endUtc: "2026-10-31T12:00:00Z" });
   });
 
+  it("leaves `listed` unset when the input has none, and takes true or false as given", () => {
+    expect(draftOf().listed).toBeUndefined();
+    expect(draftOf({ listed: true }).listed).toBe(true);
+    expect(draftOf({ listed: false }).listed).toBe(false);
+  });
+
+  it.each([["a string", "false"], ["a number", 0], ["null", null], ["an object", {}]])("refuses `listed` as %s, under its own key", (_n, listed) => {
+    expect(fieldsOf({ listed })).toEqual({ listed: "Listed must be true or false." });
+  });
+
   it("ignores unknown keys", () => {
     expect("draft" in parse({ colour: "red", id: 7 })).toBe(true);
   });

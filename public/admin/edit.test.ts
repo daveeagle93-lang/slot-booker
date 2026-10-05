@@ -10,7 +10,7 @@ const reply = (status: number, body: unknown = null) =>
 const SESSION = { identity: "ann@example.com", provider: "password", csrfToken: "tok" };
 // 2026-06-13 is BST: 09:00 London is 08:00Z.
 const EVENT = {
-  slug: SLUG, name: "Trial Day", archived: false, date: "2026-06-13", start: "09:00", end: "16:00",
+  slug: SLUG, name: "Trial Day", archived: false, listed: true, date: "2026-06-13", start: "09:00", end: "16:00",
   sessionMinutes: 15, gapMinutes: 5, costPence: 1250, venuePostcode: "SW1A 1AA", details: "Bring water",
   startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T15:00:00Z",
   breaks: [{ start: "12:00", end: "12:20", label: "Lunch", startUtc: "2026-06-13T11:00:00Z", endUtc: "2026-06-13T11:20:00Z" }],
@@ -106,6 +106,15 @@ describe("loading", () => {
       breaks: [{ start: "12:00", end: "12:20", label: "Lunch" }],
     });
     expect($$(".chips li").map((li) => li.textContent)).toEqual(["09:00", "09:20", "09:40"]);
+  });
+
+  it("ticks the Listed on the home page box for a listed event and leaves it unticked for an unlisted one", async () => {
+    await start();
+    expect(input("listed").checked).toBe(true);
+    await start({ get: () => reply(200, { ...DETAIL, event: { ...EVENT, listed: false } }) });
+    expect(input("listed").checked).toBe(false);
+    expect(document.getElementById(input("listed").getAttribute("aria-describedby")!)!.textContent)
+      .toBe("Untick to keep this event off the home page. Anyone with its link can still book.");
   });
 
   it("shows a free event's cost as 0 and a whole-pound one without pence", async () => {
@@ -222,10 +231,31 @@ describe("saving with nothing affected", () => {
     expect(put.body).toEqual({
       name: "Trial Day, renamed", date: "2026-06-13", start: "09:00", end: "16:00", sessionMinutes: 15, gapMinutes: 5,
       costPence: 1500, venuePostcode: "SW1A 1AA", details: "Bring water",
-      breaks: [{ start: "12:00", end: "12:20", label: "Lunch" }], removeBookingIds: [],
+      breaks: [{ start: "12:00", end: "12:20", label: "Lunch" }], listed: true, removeBookingIds: [],
     });
     expect(document.querySelector(".confirm")).toBeNull();
     expect($("h1").textContent).toBe("Saved.");
+  });
+
+  it("does not preview again when the box is toggled, as it is not a schedule change", async () => {
+    const { calls } = await start({ preview: () => preview([REX]) });
+    await tick();
+    const previews = previewCalls(calls).length;
+    input("listed").click();
+    await settle();
+    expect(previewCalls(calls)).toHaveLength(previews);
+    expect(affectedLines()).toEqual(["10:05 — Rex — Sam Smith"]);
+  });
+
+  it("saves listed: false for an event that was listed, with nothing to confirm", async () => {
+    const { calls } = await start();
+    await tick();
+    input("listed").click();
+    submit();
+    await tick();
+    expect(puts(calls)).toHaveLength(1);
+    expect(puts(calls)[0].body).toMatchObject({ listed: false, removeBookingIds: [] });
+    expect(document.querySelector(".confirm")).toBeNull();
   });
 
   it("saves straight away when Save is pressed before the first preview has come back", async () => {

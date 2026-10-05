@@ -96,6 +96,14 @@ describe("POST /api/events/:slug/bookings", () => {
     expect(stored[0].handler_key).toBe("sam jones");
   });
 
+  it("books an unlisted event through its link, and the response does not say it is unlisted", async () => {
+    const { id, slug } = await insertEvent(t.env.DB, { listed: false });
+    const res = await post(slug, entry(SLOT, "Rex", "Sam"));
+    expect(res.status).toBe(201);
+    expect(JSON.stringify(await res.json())).not.toContain("listed");
+    expect(await rows(id)).toHaveLength(1);
+  });
+
   describe("concurrency (the database is the referee)", () => {
     it("20 parallel bookings for one slot: exactly one wins, nineteen get slot_taken", async () => {
       const { id, slug } = await insertEvent(t.env.DB);

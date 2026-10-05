@@ -336,7 +336,8 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       h("p", { class: "booked" }, `${ev.bookedCount} of ${ev.slotCount} slots booked`),
       h("p", {}, h("span", { class: ev.bookings?.open ? "badge open" : "badge closed" },
         ev.bookings?.open ? "Bookings open" : "Bookings closed"),
-      ...(ev.full ? [" ", h("span", { class: "badge full" }, "Full")] : [])),
+      ...(ev.full ? [" ", h("span", { class: "badge full" }, "Full")] : []),
+      ...(ev.listed === false ? [" ", h("span", { class: "badge closed" }, "Not listed")] : [])),
     ];
     // Only events with a sound booking path get any links, as before.
     const edit = h("a", { class: "button", href: `/admin/edit?slug=${encodeURIComponent(ev.slug)}` }, "Edit");

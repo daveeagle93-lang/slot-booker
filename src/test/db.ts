@@ -37,14 +37,16 @@ export interface EventOverrides {
   venuePostcode?: string;
   details?: string;
   archived?: boolean;
+  /** Defaults to listed, as the column does. */
+  listed?: boolean;
 }
 
 export async function insertEvent(db: D1Database, o: EventOverrides = {}): Promise<{ id: number; slug: string }> {
   const slug = o.slug ?? generateSlug();
   const row = await db
     .prepare(
-      `INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, archived)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+      `INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, archived, listed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .bind(
       slug,
@@ -57,6 +59,7 @@ export async function insertEvent(db: D1Database, o: EventOverrides = {}): Promi
       o.venuePostcode ?? "AB1 2CD",
       o.details ?? "Test details",
       o.archived ? 1 : 0,
+      o.listed === false ? 0 : 1,
     )
     .first<{ id: number }>();
   return { id: row!.id, slug };
