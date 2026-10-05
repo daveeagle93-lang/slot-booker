@@ -30,7 +30,7 @@ const created = () => reply(201, {
 type Call = { url: string; init?: RequestInit };
 type Handler = (call: Call) => Response | Promise<Response>;
 
-async function start(handler: Handler, pathname = `/e/${SLUG}`) {
+async function start(handler: Handler, pathname = `/e/${SLUG}`, settings?: unknown) {
   document.body.innerHTML = '<main id="app"></main>';
   const calls: Call[] = [];
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
@@ -39,7 +39,10 @@ async function start(handler: Handler, pathname = `/e/${SLUG}`) {
     return handler(call);
   });
   const clipboard = { writeText: vi.fn(async () => {}) };
-  await init({ document, fetch: fetch as unknown as typeof globalThis.fetch, location: { pathname }, clipboard });
+  await init({
+    document, fetch: fetch as unknown as typeof globalThis.fetch, location: { pathname }, clipboard,
+    settings: (settings === undefined ? null : Promise.resolve(settings)) as never,
+  });
   return { calls, clipboard };
 }
 
@@ -694,5 +697,119 @@ describe("text safety", () => {
     submit();
     await vi.waitFor(() => expect(form().textContent).toContain(evil));
     expect(document.querySelector("img")).toBeNull();
+  });
+});
+
+describe("branding, privacy contact and the admin notice", () => {
+  const SETTINGS = {
+    clubName: "Barkside Agility", website: null, logo: null, loaded: true,
+    privacyContact: { name: "Ann Lee", email: "ann@barkside.example" },
+  };
+  const SESSION = "/api/admin/session";
+  const withSettings = (over: Record<string, unknown> = {}) => ({ ...SETTINGS, ...over });
+  const probes = (calls: Call[]) => calls.filter((c) => c.url === SESSION);
+  /** Event requests get the event, the session probe gets `session`. */
+  const route = (session: Handler = () => reply(401, {})): Handler => (call) => (call.url === SESSION ? session(call) : getOk());
+  const banner = () => [...document.querySelectorAll(".notice")].find((n) => n.textContent!.startsWith("Admin notice"));
+
+  it("titles the page '<event> – <club>' and adds the header", async () => {
+    await start(route(), `/e/${SLUG}`, SETTINGS);
+    expect(document.title).toBe("Trial Day – Barkside Agility");
+    expect(document.querySelector(".site-header a")!.textContent).toBe("Barkside Agility");
+    expect(document.querySelector(".site-header a")!.getAttribute("href")).toBe("/");
+  });
+
+  it("titles the page with the event name alone when no club name is set", async () => {
+    await start(route(), `/e/${SLUG}`, withSettings({ clubName: null }));
+    expect(document.title).toBe("Trial Day");
+  });
+
+  it("shows the privacy contact after the notice, with a mailto link", async () => {
+    await start(route(), `/e/${SLUG}`, SETTINGS);
+    const paragraphs = [...document.querySelectorAll(".privacy p")];
+    const last = paragraphs[paragraphs.length - 1];
+    expect(last.textContent).toBe("Questions about your details, or want them deleted? Contact Ann Lee, ann@barkside.example.");
+    expect(paragraphs.length).toBeGreaterThan(1);
+    const a = last.querySelector("a")!;
+    expect(a.getAttribute("href")).toBe("mailto:ann@barkside.example");
+    expect(a.textContent).toBe("ann@barkside.example");
+  });
+
+  it("leaves the name out when it is empty", async () => {
+    await start(route(), `/e/${SLUG}`, withSettings({ privacyContact: { name: "", email: "ann@barkside.example" } }));
+    expect(document.querySelector(".privacy p:last-child")!.textContent)
+      .toBe("Questions about your details, or want them deleted? Contact ann@barkside.example.");
+  });
+
+  it("omits the contact when none is set", async () => {
+    await start(route(), `/e/${SLUG}`, withSettings({ privacyContact: null }));
+    expect(text()).not.toContain("Questions about your details");
+    expect(document.querySelector(".privacy a")).toBeNull();
+  });
+
+  it("builds the mailto link safely from a hostile address", async () => {
+    for (const email of ['a@b.c?cc=x&body=y', 'a"@b.c', "a@b.c><img src=x onerror=alert(1)>"]) {
+      await start(route(), `/e/${SLUG}`, withSettings({ privacyContact: { name: "", email } }));
+      const a = document.querySelector<HTMLAnchorElement>(".privacy a")!;
+      const href = a.getAttribute("href")!;
+      expect(href, email).toMatch(/^mailto:[^?&"<>\s]*$/);
+      expect(decodeURIComponent(href.slice("mailto:".length))).toBe(email);
+      expect(a.textContent).toBe(email);
+      expect(document.querySelector(".privacy img")).toBeNull();
+    }
+  });
+
+  it("shows the admin notice, with a link to Settings, when the contact is missing and the probe answers 200", async () => {
+    const { calls } = await start(route(() => reply(200, { csrfToken: "x" })), `/e/${SLUG}`, withSettings({ privacyContact: null }));
+    expect(probes(calls)).toHaveLength(1);
+    expect(probes(calls)[0].init).toEqual({ credentials: "same-origin", cache: "no-store" });
+    expect(banner()!.textContent).toBe(
+      "Admin notice (the people booking can't see this): no privacy contact is set, so bookers aren't told who to contact "
+      + "about their details. Set one in Settings.",
+    );
+    expect(banner()!.querySelector("a")!.getAttribute("href")).toBe("/admin/settings");
+    expect(document.querySelector("#app")!.firstElementChild).toBe(banner());
+  });
+
+  it("keeps the admin notice through later renders", async () => {
+    await start(route(() => reply(200, {})), `/e/${SLUG}`, withSettings({ privacyContact: null }));
+    slotButton("09:20").click();
+    expect(banner()).toBeDefined();
+    expect(document.querySelectorAll(".notice").length).toBeGreaterThan(1); // the booking notice (hidden) and the admin one
+    expect(document.querySelector("#app")!.firstElementChild).toBe(banner());
+  });
+
+  it("shows nothing when the probe answers 401", async () => {
+    const { calls } = await start(route(() => reply(401, {})), `/e/${SLUG}`, withSettings({ privacyContact: null }));
+    expect(probes(calls)).toHaveLength(1);
+    expect(banner()).toBeUndefined();
+  });
+
+  it("shows nothing, and still renders the page, when the probe fails", async () => {
+    const { calls } = await start(route(() => { throw new TypeError("blocked by CSP"); }), `/e/${SLUG}`, withSettings({ privacyContact: null }));
+    expect(probes(calls)).toHaveLength(1);
+    expect(banner()).toBeUndefined();
+    expect(slotButtons()).toHaveLength(3);
+  });
+
+  it("shows nothing when the probe was redirected, even to a 200 page", async () => {
+    const redirected = () => Object.defineProperty(new Response("<html>", { status: 200 }), "redirected", { value: true });
+    await start(route(redirected), `/e/${SLUG}`, withSettings({ privacyContact: null }));
+    expect(banner()).toBeUndefined();
+  });
+
+  it("makes no probe and shows no notice when the settings are unavailable", async () => {
+    const unavailable = { clubName: null, website: null, privacyContact: null, logo: null, loaded: false };
+    const { calls } = await start(route(() => reply(200, {})), `/e/${SLUG}`, unavailable);
+    expect(probes(calls)).toHaveLength(0);
+    expect(banner()).toBeUndefined();
+    const { calls: noSettings } = await start(route(() => reply(200, {})));
+    expect(probes(noSettings)).toHaveLength(0);
+  });
+
+  it("makes no probe at all when a contact is set", async () => {
+    const { calls } = await start(route(() => reply(200, {})), `/e/${SLUG}`, SETTINGS);
+    expect(probes(calls)).toHaveLength(0);
+    expect(banner()).toBeUndefined();
   });
 });

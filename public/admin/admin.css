@@ -40,7 +40,7 @@ main.admin { max-width: 40rem; }
   border: 2px solid var(--accent);
   border-radius: 999px;
 }
-.badge.open { color: var(--accent-text); background: var(--accent); }
+.badge.open { color: var(--on-primary); background: var(--primary); border-color: var(--primary); }
 .badge.closed { color: var(--muted); border-color: var(--border); }
 .badge.full { color: var(--notice-text); background: var(--notice-bg); border-color: currentColor; }
 

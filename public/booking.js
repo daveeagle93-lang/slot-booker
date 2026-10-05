@@ -1,3 +1,4 @@
+import { brandPage, loadSettings, pageTitle } from "./branding.js";
 import {
   copyText, formatDate, formatPounds, formatTime, formatTimeRange, mapsUrl, newIdempotencyKey, privacyParagraphs,
   slotsLeftText, slugFromPathname,
@@ -7,8 +8,11 @@ const GENERIC_ERROR = "Something went wrong. Please try again.";
 const CLOSED = "Bookings for this event are closed.";
 const SAVED_EARLIER = "We'd already saved a booking from this page, so we haven't changed it. Here it is. To change it, contact the organiser.";
 
-/** Wires the booking page into `#app`. Resolves once the first load has settled. */
-export function init({ document, fetch, location, clipboard }) {
+/**
+ * Wires the booking page into `#app`. `settings` is the branding promise (see branding.js); without it the page
+ * has no branding, no privacy contact and no admin warning. Resolves once the first load has settled.
+ */
+export function init({ document, fetch, location, clipboard, settings = null }) {
   const root = document.getElementById("app");
   const slug = slugFromPathname(location.pathname);
   let event = null;
@@ -20,6 +24,9 @@ export function init({ document, fetch, location, clipboard }) {
   // way back to the form, so a second booking means a reload, and so a new key.
   const idempotencyKey = newIdempotencyKey();
   let view = null; // element refs for the booking view
+  let club = null; // the settings once they arrive; null while unknown or unavailable
+  let banner = null; // the admin-only warning, kept across re-renders
+  const branded = settings ? brandPage(document, settings, { pageTitle: "Book a slot", home: "/" }) : Promise.resolve(null);
 
   // All text goes through textContent; nothing here ever parses HTML.
   const h = (tag, attrs = {}, ...children) => {
@@ -31,7 +38,7 @@ export function init({ document, fetch, location, clipboard }) {
     node.append(...children);
     return node;
   };
-  const show = (...nodes) => root.replaceChildren(...nodes);
+  const show = (...nodes) => root.replaceChildren(...(banner ? [banner] : []), ...nodes);
   const reduceMotion = () => document.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
   const scrollTo = (el) => el.scrollIntoView?.({ block: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
   const mapsLink = (postcode) =>
@@ -57,6 +64,31 @@ export function init({ document, fetch, location, clipboard }) {
       ...(ev.details ? [h("p", { class: "details" }, ev.details)] : []));
   }
 
+  /**
+   * Tells a signed-in admin, and nobody else, that no privacy contact is set. A single probe of the session
+   * endpoint: anything but a plain 200 (401, a redirect, a network error, or a cross-origin Access redirect that
+   * the CSP blocks) shows nothing. If the settings didn't load we don't know, so we don't warn.
+   */
+  async function warnAdmin() {
+    const s = await branded;
+    if (!s?.loaded || s.privacyContact) return;
+    try {
+      const res = await fetch("/api/admin/session", { credentials: "same-origin", cache: "no-store" });
+      if (res.status !== 200 || res.redirected) return;
+    } catch {
+      return;
+    }
+    banner = h("div", { class: "notice", role: "status" },
+      "Admin notice (the people booking can't see this): no privacy contact is set, so bookers aren't told who to "
+      + "contact about their details. Set one in ", h("a", { href: "/admin/settings" }, "Settings"), ".");
+    root.prepend(banner);
+  }
+
+  const contactLine = ({ name, email }) => h("p", {},
+    "Questions about your details, or want them deleted? Contact ", ...(name ? [`${name}, `] : []),
+    // Encoded so nothing in the address can add a header or body to the mailto URL; "@" stays readable.
+    h("a", { href: `mailto:${encodeURIComponent(email).replace(/%40/g, "@")}` }, email), ".");
+
   async function fetchEvent() {
     try {
       const res = await fetch(`/api/events/${slug}`, { cache: "no-store" });
@@ -81,7 +113,8 @@ export function init({ document, fetch, location, clipboard }) {
     slots = shown(r.data.slots);
     privacyText = r.data.privacyNotice ?? "";
     selected = null;
-    document.title = event.name;
+    club = await branded;
+    document.title = pageTitle(event.name, club?.clubName);
     if (isClosed(r.data)) showClosed();
     else showBooking();
   }
@@ -110,7 +143,8 @@ export function init({ document, fetch, location, clipboard }) {
     const heading = h("h2", { tabindex: "-1" });
     const submit = h("button", { type: "submit", class: "button primary" });
     const progress = h("p", { class: "progress", "aria-live": "polite" });
-    const privacy = privacyParagraphs(privacyText);
+    const privacy = privacyParagraphs(privacyText).map((p) => h("p", {}, p));
+    if (club?.privacyContact) privacy.push(contactLine(club.privacyContact));
     const form = h("form", { id: "booking-form", hidden: true },
       heading,
       formError,
@@ -118,7 +152,7 @@ export function init({ document, fetch, location, clipboard }) {
       h("div", { class: "field" }, h("label", { for: "handler-name" }, "Handler's name"), handler, handlerError),
       ...(privacy.length > 0
         ? [h("section", { class: "privacy", "aria-labelledby": "privacy-heading" },
-          h("h3", { id: "privacy-heading" }, "Privacy"), ...privacy.map((p) => h("p", {}, p)))]
+          h("h3", { id: "privacy-heading" }, "Privacy"), ...privacy)]
         : []),
       submit,
       progress);
@@ -312,13 +346,14 @@ export function init({ document, fetch, location, clipboard }) {
     return ok;
   }
 
-  return load();
+  return Promise.all([load(), warnAdmin()]).then(() => {});
 }
 
 // Browser entry only: the page opts in with data-autostart, so importing this module (tests) does nothing.
 if (globalThis.document?.getElementById("app")?.hasAttribute("data-autostart")) {
+  const fetchPage = (...args) => fetch(...args);
   init({
     document, location, clipboard: navigator.clipboard,
-    fetch: (...args) => fetch(...args),
+    fetch: fetchPage, settings: loadSettings(fetchPage),
   });
 }

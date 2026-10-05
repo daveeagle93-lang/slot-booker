@@ -6,8 +6,12 @@
   --text: #14181f;
   --muted: #4a5360;
   --border: #c4cad3;
+  /* The default theme; /api/theme.css overrides these three (the values here are what it produces by default).
+     --primary fills buttons, selected slots and the header band, --on-primary is the text on those fills, and
+     --accent is link text and the outline and text of secondary buttons. */
+  --primary: #0b5cad;
+  --on-primary: #ffffff;
   --accent: #0b5cad;
-  --accent-text: #ffffff;
   --focus: #b45309;
   --danger-bg: #fdecec;
   --danger-text: #8a1111;
@@ -25,8 +29,9 @@
     --text: #f1f3f6;
     --muted: #b3bbc7;
     --border: #3b4350;
-    --accent: #6cb2ff;
-    --accent-text: #08121f;
+    --primary: #1563b0;
+    --on-primary: #ffffff;
+    --accent: #4f8ac4;
     --focus: #fbbf24;
     --danger-bg: #3a1618;
     --danger-text: #ffb4b4;
@@ -122,8 +127,9 @@ a { color: var(--accent); }
   touch-action: manipulation;
 }
 .slot[aria-pressed="true"] {
-  background: var(--accent);
-  color: var(--accent-text);
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
 }
 .slot.past {
   display: flex;
@@ -157,8 +163,9 @@ a { color: var(--accent); }
   touch-action: manipulation;
 }
 .button.primary {
-  color: var(--accent-text);
-  background: var(--accent);
+  color: var(--on-primary);
+  background: var(--primary);
+  border-color: var(--primary);
 }
 .button:disabled {
   opacity: 0.6;
@@ -203,6 +210,9 @@ input[aria-invalid="true"] { border-color: var(--danger-text); }
   border-radius: var(--radius);
 }
 
+/* The link sits on the notice's own background, which the accent colour isn't checked against. */
+.notice a { color: inherit; }
+
 .privacy { margin: 0 0 1rem; color: var(--muted); font-size: 0.9375rem; }
 .privacy h3 { margin: 0 0 0.25rem; font-size: 1rem; color: var(--text); }
 .privacy p { margin: 0 0 0.5rem; white-space: pre-line; overflow-wrap: anywhere; }
@@ -243,3 +253,46 @@ input[aria-invalid="true"] { border-color: var(--danger-text); }
 /* Admin sign-in page (public/admin/login.html). */
 .login { max-width: 24rem; padding-top: 2rem; }
 .login form { margin-top: 0; }
+
+/* Landing page (public/index.html): one big tap target per event. */
+.event-links { list-style: none; margin: 0; padding: 0; }
+.event-link {
+  display: block;
+  min-height: 48px;
+  padding: 0.75rem 1rem;
+  margin-bottom: var(--gap);
+  color: inherit;
+  text-decoration: none;
+  background: var(--surface);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+}
+.event-link-name { display: block; font-size: 1.25rem; font-weight: 700; overflow-wrap: anywhere; }
+.event-link-when { display: block; color: var(--muted); }
+
+/* Branding (public/branding.js): the band is the primary colour, so everything in it uses the text colour for it. */
+.site-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  padding: 0.5rem 1rem;
+  color: var(--on-primary);
+  background: var(--primary);
+}
+.site-header a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  min-width: 0;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+/* The usual focus colour has no guaranteed contrast against the band; the text colour does. */
+.site-header a:focus-visible { outline-color: currentColor; }
+/* Shrinks with the row, so a wide logo can't push the band past a 320px screen. */
+.site-logo { max-height: 40px; max-width: 30%; width: auto; height: auto; flex: 0 1 auto; }
+.site-footer { max-width: 40rem; margin: 0 auto; padding: 0 1rem 2rem; color: var(--muted); }
+.site-footer a { display: inline-flex; align-items: center; min-height: 48px; }

@@ -1,3 +1,4 @@
+import { brandPage, loadSettings } from "../branding.js";
 import { isBookingPath } from "../lib.js";
 import { createApi, makeH, writeClipboard } from "./api.js";
 import { bookingLine, mountEventForm } from "./event-form.js";
@@ -109,6 +110,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
 
 // Browser entry only: the page opts in with data-autostart, so importing this module (tests) does nothing.
 if (globalThis.document?.getElementById("app")?.hasAttribute("data-autostart")) {
+  brandPage(document, loadSettings((...args) => fetch(...args)), { pageTitle: document.title, home: "/admin/" });
   init({
     document, location, clipboard: navigator.clipboard,
     fetch: (...args) => fetch(...args),
