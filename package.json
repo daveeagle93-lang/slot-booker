@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.public.json",
     "dev": "wrangler dev",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrations:apply": "wrangler d1 migrations apply DB --remote",
+    "deploy": "npm run db:migrations:apply && wrangler deploy",
     "seed": "node scripts/seed.ts",
     "seed:local": "node scripts/seed.ts --local",
     "configure": "node scripts/configure.ts",
@@ -26,5 +28,15 @@
   "allowScripts": {
     "esbuild@0.28.1": true,
     "workerd@1.20261001.1": true
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "Your club's booking database. Cloudflare creates it for you, so the suggested name is fine."
+      },
+      "SETUP_CODE": {
+        "description": "A private phrase you choose, at least 12 characters long. Keep it to yourself. You will type it once on your new site's /setup page to create your admin sign-in secret, and that page closes for good after the first successful sign-in."
+      }
+    }
   }
 }
