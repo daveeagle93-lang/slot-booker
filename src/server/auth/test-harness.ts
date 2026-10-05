@@ -1,9 +1,9 @@
-// Test-only helpers: run a request through the admin middleware and then the matching route, as Pages would.
+// Test-only helpers: run a request through the admin API guard and then the matching route, as the Worker does.
 import { vi } from "vitest";
-import { createAdminMiddleware } from "../../../functions/api/admin/_middleware";
-import { createLoginHandler } from "../../../functions/api/admin/login";
-import { onRequestPost as logout } from "../../../functions/api/admin/logout";
-import { onRequestGet as session } from "../../../functions/api/admin/session";
+import { guardAdminApi } from "../../worker/guards";
+import { createLoginHandler } from "../../routes/api/admin/login";
+import { onRequestPost as logout } from "../../routes/api/admin/logout";
+import { onRequestGet as session } from "../../routes/api/admin/session";
 import { json } from "../http";
 import type { AppEnv } from "../env";
 import { base64urlEncode, hashAdminSecret, utf8 } from "./crypto";
@@ -53,16 +53,18 @@ export const jwksFetch = (keys: () => AccessKey[]) =>
   vi.fn(async () => Response.json({ keys: keys().map((k) => k.jwk), public_cert: { kid: "x", cert: "x" }, public_certs: [] }));
 
 /**
- * `/api/admin/whoami` is a stand-in for the other admin routes: it echoes what the middleware put in context.data.
- * Any other path the middleware lets through ends at a 404, as a missing static file would.
- * `routes` adds more routes (return undefined for a path it doesn't handle), so a test can put a real handler behind the real middleware.
+ * `/api/admin/whoami` is a stand-in for the other admin routes: it echoes what the guard put in `data`.
+ * Any other path the guard lets through ends at a 404, as an unknown path does in the Worker.
+ * `routes` adds more routes (return undefined for a path it doesn't handle), so a test can put a real handler behind the real guard.
+ * For the whole Worker (router, guards and headers together) use createWorker from src/worker.ts instead.
  */
 export function adminApp(deps: AuthDeps = {}, routes?: (context: never) => Response | Promise<Response> | undefined) {
-  const middleware = createAdminMiddleware(deps);
   const login = createLoginHandler(deps);
-  return (env: AppEnv, path: string, init: RequestInit = {}): Promise<Response> => {
+  return async (env: AppEnv, path: string, init: RequestInit = {}): Promise<Response> => {
     const request = new Request(`${ORIGIN}${path}`, init);
-    const data: Record<string, unknown> = {};
+    const guarded = await guardAdminApi(request, env, deps);
+    if (guarded instanceof Response) return guarded;
+    const data: Record<string, unknown> = { ...guarded };
     const route = (): Response | Promise<Response> => {
       const { pathname } = new URL(request.url);
       const context = { request, env, data, params: {} } as never;
@@ -74,7 +76,7 @@ export function adminApp(deps: AuthDeps = {}, routes?: (context: never) => Respo
       if (routed) return routed;
       return new Response("not found", { status: 404 });
     };
-    return Promise.resolve(middleware({ request, env, data, params: {}, next: async () => route() } as never));
+    return route();
   };
 }
 

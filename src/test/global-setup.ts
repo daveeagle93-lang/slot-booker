@@ -9,7 +9,7 @@ import type { TestProject } from "vitest/node";
 // persistence directory; each test env copies it. See createTestEnv in ./db.ts.
 export default function setup(project: TestProject): () => void {
   const dir = mkdtempSync(join(tmpdir(), "slot-booker-template-"));
-  execFileSync("npx", ["wrangler", "d1", "migrations", "apply", "slot-booker-db", "--local", "--persist-to", dir], {
+  execFileSync("npx", ["wrangler", "d1", "migrations", "apply", "DB", "--local", "--persist-to", dir], {
     stdio: "pipe",
     env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
   });

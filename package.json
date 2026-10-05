@@ -7,8 +7,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.public.json",
-    "dev": "wrangler pages dev",
-    "db:migrate:local": "wrangler d1 migrations apply slot-booker-db --local",
+    "dev": "wrangler dev",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "seed": "node scripts/seed.ts",
     "seed:local": "node scripts/seed.ts --local",
     "configure": "node scripts/configure.ts",

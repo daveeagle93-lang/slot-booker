@@ -2,12 +2,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** What Pages' ASSETS binding does, for the one thing the Functions read from it: files in public/. Anything else is a 404, as on Pages. */
-export const publicAssets = (): { fetch: (request: Request) => Promise<Response>; requested: string[] } => {
+/** What the ASSETS binding does, for the one thing the handlers read from it: files in public/. Anything else is a 404. */
+export const publicAssets = (): Fetcher & { requested: string[] } => {
   const requested: string[] = [];
   return {
     requested,
-    async fetch(request) {
+    async fetch(request: Request) {
       const { pathname } = new URL(request.url);
       requested.push(pathname);
       if (pathname.includes("..")) return new Response("not found", { status: 404 });
@@ -17,5 +17,5 @@ export const publicAssets = (): { fetch: (request: Request) => Promise<Response>
         return new Response("not found", { status: 404 });
       }
     },
-  };
+  } as Fetcher & { requested: string[] };
 };

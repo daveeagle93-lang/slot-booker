@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = join(import.meta.dirname, "..");
 const PUBLIC = join(ROOT, "public");
-const FUNCTIONS = join(ROOT, "functions");
+const ROUTES = join(ROOT, "src/routes");
 
 const htmlFiles = (dir: string): string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? htmlFiles(join(dir, e.name)) : e.name.endsWith(".html") ? [join(dir, e.name)] : []));
@@ -15,7 +15,7 @@ const links = (html: string): Record<string, string>[] =>
   [...html.matchAll(/<link\b([^>]*)>/g)].map(([, attrs]) =>
     Object.fromEntries([...attrs.matchAll(/([\w-]+)="([^"]*)"/g)].map(([, k, v]) => [k, v])));
 
-/** True if Pages would answer this path: a file in public/, or a Pages Function file (a [name] segment matches any one segment). */
+/** True if the app would answer this path: a file in public/, or a route file under src/routes/ (a [name] segment matches any one segment; src/worker/routes.test.ts holds the route table to those files). */
 function isServed(pathname: string): boolean {
   if (existsSync(join(PUBLIC, pathname))) return true;
   const segments = pathname.split("/").filter(Boolean);
@@ -30,7 +30,7 @@ function isServed(pathname: string): boolean {
       return e.name.endsWith(".ts") && !e.name.endsWith(".test.ts") && tail.length === 0 && matchesSegment;
     });
   };
-  return walk(FUNCTIONS, segments);
+  return walk(ROUTES, segments);
 }
 
 describe("the icon, touch icon and manifest links in every page", () => {

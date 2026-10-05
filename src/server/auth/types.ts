@@ -15,7 +15,7 @@ export interface AdminAuth {
   authenticate(request: Request): Promise<AdminSession | null>;
 }
 
-/** The `context.data` shape after functions/api/admin/_middleware.ts has run. */
+/** The `context.data` shape after guardAdminApi (src/worker/guards.ts) has run. */
 export type AdminData = { admin: AdminSession };
 
 /** Injection points for tests; production uses the globals. `now` returns epoch milliseconds. */

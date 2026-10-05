@@ -12,5 +12,5 @@
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["worker-configuration.d.ts", "functions", "src", "vitest.config.ts"]
+  "include": ["worker-configuration.d.ts", "src", "vitest.config.ts"]
 }

@@ -167,7 +167,9 @@ const template = () => ({
   $schema: "./node_modules/wrangler/config-schema.json",
   name: "slot-booker",
   compatibility_date: "2026-09-28",
-  pages_build_output_dir: "./public",
+  main: "src/worker.ts",
+  assets: { directory: "./public", binding: "ASSETS", run_worker_first: ["/", "/api/*"] },
+  preview_urls: false,
   d1_databases: [{ binding: "DB", database_name: "slot-booker-db", database_id: "00000000-0000-0000-0000-000000000000", migrations_dir: "migrations" }],
   env: {
     preview: {
@@ -183,7 +185,9 @@ describe("buildConfig", () => {
     expect(out.env.preview.d1_databases).toEqual([{ binding: "DB", database_name: "slot-booker-db-preview", database_id: PREVIEW, migrations_dir: "migrations" }]);
     expect(out.name).toBe("slot-booker");
     expect(out.compatibility_date).toBe("2026-09-28");
-    expect(out.pages_build_output_dir).toBe("./public");
+    expect(out.main).toBe("src/worker.ts");
+    expect(out.assets).toEqual(template().assets);
+    expect(out.preview_urls).toBe(false);
     expect(out.vars).toBeUndefined();
     expect(out.env.preview.vars).toBeUndefined();
   });

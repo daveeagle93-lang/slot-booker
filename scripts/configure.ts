@@ -6,7 +6,7 @@
 //   npm run configure -- --clear  removes the generated wrangler.json, so Wrangler uses wrangler.jsonc again
 //
 // Wrangler looks for wrangler.json before wrangler.jsonc in the same directory, so the generated file
-// takes over every command (pages dev, pages deploy, d1 ..., the tests) with env.preview intact.
+// takes over every command (dev, deploy, d1 ..., the tests) with env.preview intact.
 // See docs/deploying.md, step 3. Plain Node (type stripping), hence the explicit .ts extensions.
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -73,7 +73,7 @@ writeFileSync(outPath, renderConfig(buildConfig(rawConfig as Record<string, any>
 
 console.log(
   `Wrote wrangler.json from wrangler.jsonc and account.local.json: production and preview database IDs`
-  + `${parsed.account.name ? `, project name ${parsed.account.name}` : ""}`
+  + `${parsed.account.name ? `, Worker name ${parsed.account.name}` : ""}`
   + `, ${describeVars(parsed.account)}.\n`
   + "Wrangler now reads wrangler.json instead of wrangler.jsonc. Run this again after wrangler.jsonc or account.local.json changes.\n"
   + "Undo: npm run configure -- --clear",

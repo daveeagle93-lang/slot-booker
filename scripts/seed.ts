@@ -1,6 +1,6 @@
 // Creates one test event. Each run adds a new event; nothing is wiped.
 //
-//   npm run seed                            LOCAL D1 (the state `wrangler pages dev` uses, .wrangler/state):
+//   npm run seed                            LOCAL D1 (the state `wrangler dev` uses, .wrangler/state):
 //                                           applies pending migrations, then event plus 3 sample bookings
 //   npm run seed -- --no-bookings           event only
 //   SEED_PERSIST_TO=/some/dir npm run seed  use a throwaway local state directory instead
@@ -19,7 +19,7 @@ import { generateSchedule } from "../src/core/schedule.ts";
 import { generateBookingToken, generateSlug } from "../src/core/slug.ts";
 import { executeArgs, migrateArgs, parseArgs } from "./seed-args.ts";
 
-const PORT = 8788; // wrangler pages dev default
+const PORT = 8787; // wrangler dev default
 const root = join(import.meta.dirname, "..");
 const parsed = parseArgs(process.argv.slice(2));
 if ("error" in parsed) {
@@ -98,4 +98,4 @@ console.log(`Slug: ${slug}`);
 console.log(`Path: /e/${slug}`);
 console.log(mode === "local"
   ? `URL:  http://localhost:${PORT}/e/${slug}`
-  : "Seeded the remote PREVIEW database. Open the path above on your preview URL (https://<alias>.<project>.pages.dev).");
+  : "Seeded the remote PREVIEW database. Open the path above on your preview Worker's URL.");

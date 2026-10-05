@@ -2,6 +2,7 @@
 export interface Account {
   productionDatabaseId: string;
   previewDatabaseId: string;
+  /** The Worker's name. Wrangler derives env.preview's from it (`<name>-preview`). */
   name?: string;
   /** Shared by both environments. */
   vars: Record<string, string>;
@@ -43,7 +44,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PLACEHOLDER = /^0{8}-0{4}-0{4}-0{4}-0{11}[0-9a-f]$/i;
 const KEYS = new Set(["productionDatabaseId", "previewDatabaseId", "name", "vars", "productionVars", "previewVars"]);
 const VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-// Secrets must go to Pages secrets or .dev.vars: a var is stored and uploaded in plain text.
+// Secrets must go to Worker secrets or .dev.vars: a var is stored and uploaded in plain text.
 const SECRET_VARS = new Set(["ADMIN_PASSWORD_HASH", "ADMIN_SESSION_SECRET"]);
 
 function parseVars(key: string, value: unknown, errors: string[]): Record<string, string> {
@@ -53,7 +54,7 @@ function parseVars(key: string, value: unknown, errors: string[]): Record<string
   else {
     for (const [k, v] of Object.entries(value)) {
       if (!VAR_NAME.test(k)) errors.push(`${key}: "${k}" is not a valid variable name.`);
-      else if (SECRET_VARS.has(k)) errors.push(`${key}: ${k} is a secret; set it with \`wrangler pages secret put\` or in .dev.vars, not here.`);
+      else if (SECRET_VARS.has(k)) errors.push(`${key}: ${k} is a secret; set it with \`wrangler secret put\` or in .dev.vars, not here.`);
       else if (typeof v !== "string") errors.push(`${key}: ${k} must be a string.`);
       else vars[k] = v;
     }
@@ -81,7 +82,7 @@ export function parseAccount(raw: unknown): { account: Account } | { errors: str
   }
 
   if (o.name !== undefined && (typeof o.name !== "string" || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(o.name))) {
-    errors.push("name must be lower-case letters, digits and hyphens, not starting or ending with a hyphen.");
+    errors.push("name (the Worker name) must be lower-case letters, digits and hyphens, not starting or ending with a hyphen.");
   }
 
   const vars = parseVars("vars", o.vars, errors);

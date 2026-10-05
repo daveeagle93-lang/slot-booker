@@ -1,8 +1,8 @@
-/** The bindings and variables the handlers read. Wider than the generated global `Env`, which only has DB. */
+/** The bindings and variables the handlers read. Wider than the generated global `Env`, which only has the bindings (DB, ASSETS). */
 export interface AppEnv {
   DB: D1Database;
-  /** Pages' static-asset binding (what is in public/). Only the default icons are read through it. */
-  ASSETS?: { fetch: (request: Request) => Promise<Response> };
+  /** The Worker's static-asset binding (what is in public/): the pages, scripts and default icons. Optional so tests can omit it. */
+  ASSETS?: Fetcher;
   /** Minutes after the event's start at which bookings close (negative = before). See docs/configuration.md. */
   BOOKING_CUTOFF_OFFSET_MINUTES?: string;
   /** Plain-text privacy notice shown on the booking form. See docs/configuration.md. */
@@ -18,3 +18,16 @@ export interface AppEnv {
   /** Password only, SECRET: at least 32 random characters that sign the session cookie. */
   ADMIN_SESSION_SECRET?: string;
 }
+
+/** What the Worker's router hands a route handler. `data` carries what the guards add (the admin session, under `admin`). */
+export interface RouteContext<Params extends string = string, Data = Record<string, unknown>> {
+  request: Request;
+  env: AppEnv;
+  /** The captured, percent-decoded `:param` segments of the matched pattern. */
+  params: Record<Params, string>;
+  data: Data;
+}
+
+/** A route handler: the exported `onRequest*` functions under src/routes/. */
+export type RouteHandler<Params extends string = string, Data = Record<string, unknown>> =
+  (context: RouteContext<Params, Data>) => Response | Promise<Response>;
