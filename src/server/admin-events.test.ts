@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { londonToUtc } from "../core/london";
 import { generateSchedule } from "../core/schedule";
 import { generateSlug } from "../core/slug";
+import { FORMAT_CODE_POINTS, hex, ORDINARY_NAMES } from "../test/format-chars";
 import { countRows, createTestEnv, type TestEnv } from "../test/db";
 import { loadEventBySlug } from "./events";
 import { insertEventWithBreaks, parseEventDraft, previewSchedule, type EventDraft } from "./admin-events";
@@ -87,8 +88,8 @@ describe("parseEventDraft: name", () => {
     expect(fieldsOf({ name }).name).toMatch(message);
   });
 
-  it("allows an emoji joiner", () => {
-    expect(ok({ name: "👩‍🐕" })).toBe(true);
+  it("rejects an emoji joiner (ZWJ, U+200D, is Cf)", () => {
+    expect(fieldsOf({ name: "👩\u200D🐕" }).name).toMatch(/invisible/);
   });
 });
 
@@ -213,8 +214,10 @@ describe("parseEventDraft: details", () => {
   it("rejects a next-line (U+0085) as a control character", () => {
     expect(fieldsOf({ details: "a\u0085b" }).details).toMatch(/control/);
   });
-  it("allows emoji joiners and newlines", () => {
-    expect(draftOf({ details: "👩\u200D🐕 a\u200Cb\nc" }).details).toBe("👩\u200D🐕 a\u200Cb\nc");
+  it("allows newlines but rejects the joiners ZWJ and ZWNJ (U+200D, U+200C, both Cf)", () => {
+    expect(draftOf({ details: "a\nc" }).details).toBe("a\nc");
+    expect(fieldsOf({ details: "👩\u200D🐕" }).details).toMatch(/invisible/);
+    expect(fieldsOf({ details: "a\u200Cb" }).details).toMatch(/invisible/);
   });
   it("rejects a lone surrogate and non-strings", () => {
     expect(fieldsOf({ details: "a\uD800" }).details).toMatch(/unpaired/);
@@ -312,8 +315,9 @@ describe("parseEventDraft: break labels", () => {
     expect(fieldsOf(labelled(label))["breaks.0.label"]).toBe("The break name must be text.");
   });
 
-  it("allows emoji joiners and keeps the text as typed", () => {
-    expect(labelOf("👩\u200D🐕 <b>Lunch</b>")).toBe("👩\u200D🐕 <b>Lunch</b>");
+  it("keeps the text as typed, but rejects an emoji joiner (ZWJ, U+200D, is Cf)", () => {
+    expect(labelOf("🐕 <b>Lunch</b>")).toBe("🐕 <b>Lunch</b>");
+    expect(fieldsOf(labelled("👩\u200D🐕 Lunch"))["breaks.0.label"]).toMatch(/invisible/);
   });
 
   it("reports the label error under its own break's index, alongside time errors", () => {
@@ -454,5 +458,31 @@ describe("insertEventWithBreaks", () => {
     expect(await countRows(t.env.DB, "events")).toBe(events);
     expect(await countRows(t.env.DB, "breaks")).toBe(breaks);
     expect(await t.env.DB.prepare("SELECT 1 FROM events WHERE slug = ?").bind(slug).first()).toBeNull();
+  });
+});
+
+describe("event name, break name and details: format characters (Unicode category Cf)", () => {
+  const cases: Array<[string, (value: string) => string | undefined]> = [
+    ["event name", (value) => fieldsOf({ name: value }).name],
+    ["break name", (value) => fieldsOf({ breaks: [{ start: "10:00", end: "10:30", label: value }] })["breaks.0.label"]],
+    ["details", (value) => fieldsOf({ details: value }).details],
+  ];
+
+  it.each(cases)("rejects every Cf character in the %s", (_label, errorOf) => {
+    const wrong: string[] = [];
+    for (const cp of FORMAT_CODE_POINTS) {
+      if (!errorOf(`a${String.fromCodePoint(cp)}b`)?.includes("invisible")) wrong.push(hex(cp));
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it.each(cases)("rejects U+061C ARABIC LETTER MARK in the %s by name", (_label, errorOf) => {
+    expect(errorOf("a\u061Cb")).toMatch(/can't contain invisible or direction-changing characters/);
+  });
+
+  it("still accepts ordinary text", () => {
+    for (const text of ORDINARY_NAMES) {
+      expect(draftOf({ name: text, details: text, breaks: [{ start: "10:00", end: "10:30", label: text }] })).toMatchObject({ name: text, details: text });
+    }
   });
 });

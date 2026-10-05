@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { FORMAT_CODE_POINTS, hex, ORDINARY_NAMES } from "../test/format-chars";
 import { makePng } from "../test/images";
 import { createTestEnv, type TestEnv } from "../test/db";
 import {
@@ -77,6 +78,42 @@ describe("parseSettingsInput", () => {
     ])("rejects %s", (_name, value) => {
       expect(fieldsOf(parse({ clubName: value }))).toHaveProperty("clubName");
       expect(fieldsOf(parse({ privacyContact: { name: value, email: "a@b.co" } }))).toHaveProperty(["privacyContact.name"]);
+    });
+  });
+
+  describe("format characters (Unicode category Cf)", () => {
+    const settingsWith = (field: string, value: string) => {
+      if (field === "clubName") return parse({ clubName: value });
+      if (field === "website") return parse({ website: value });
+      if (field === "privacyContact.name") return parse({ privacyContact: { name: value, email: "a@b.co" } });
+      return parse({ privacyContact: { name: "", email: value } });
+    };
+    const textFields = ["clubName", "privacyContact.name", "privacyContact.email", "website"];
+    const wrap = (field: string, ch: string) =>
+      field === "website" ? `https://exa${ch}mple.org/` : field === "privacyContact.email" ? `a${ch}b@c.co` : `a${ch}b`;
+
+    it("rejects every Cf character in every text field as invisible", () => {
+      const wrong: string[] = [];
+      for (const cp of FORMAT_CODE_POINTS) {
+        for (const field of textFields) {
+          const fields = fieldsOf(settingsWith(field, wrap(field, String.fromCodePoint(cp))));
+          if (!fields?.[field]?.includes("invisible")) wrong.push(`${hex(cp)} in ${field}`);
+        }
+      }
+      expect(wrong).toEqual([]);
+    });
+
+    it("rejects U+061C ARABIC LETTER MARK by name", () => {
+      expect(fieldsOf(parse({ clubName: "Cl\u061Cub" }))?.clubName).toBe("The club name can't contain invisible or direction-changing characters.");
+    });
+
+    it("rejects the joiners U+200C and U+200D", () => {
+      for (const ch of ["\u200C", "\u200D"]) expect(fieldsOf(parse({ clubName: `a${ch}b` }))).toHaveProperty("clubName");
+    });
+
+    it.each(ORDINARY_NAMES)("still accepts %s as a club name and a contact name", (name) => {
+      expect(fieldsOf(parse({ clubName: name }))).toBeNull();
+      expect(fieldsOf(parse({ privacyContact: { name, email: "a@b.co" } }))).toBeNull();
     });
   });
 

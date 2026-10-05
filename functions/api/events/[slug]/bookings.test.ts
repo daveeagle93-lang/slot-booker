@@ -489,11 +489,11 @@ describe("POST /api/events/:slug/bookings", () => {
         expect(await rows(id)).toHaveLength(0);
       });
 
-      it("keeps ZWJ and ZWNJ, which emoji sequences and some scripts need", async () => {
+      it("rejects ZWJ and ZWNJ too: every Unicode format character (Cf) is refused, even in emoji sequences and some scripts", async () => {
         const { id, slug } = await insertEvent(t.env.DB);
-        expect((await post(slug, entry(SLOT, "👨\u200D👩\u200D👧", "Sam"))).status).toBe(201);
-        expect((await post(slug, entry("2026-06-13T08:15:00Z", "می\u200Cخواهم", "Sam"))).status).toBe(201);
-        expect(await rows(id)).toHaveLength(2);
+        expect((await post(slug, entry(SLOT, "👨\u200D👩\u200D👧", "Sam"))).status).toBe(400);
+        expect((await post(slug, entry("2026-06-13T08:15:00Z", "می\u200Cخواهم", "Sam"))).status).toBe(400);
+        expect(await rows(id)).toHaveLength(0);
       });
     });
 
