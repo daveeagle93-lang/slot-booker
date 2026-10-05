@@ -28,6 +28,7 @@ const put = (body: unknown, extra: { raw?: string; contentType?: string | null; 
 };
 const stored = () => t.env.DB.prepare("SELECT club_name, privacy_contact_name, privacy_contact_email, website_url FROM site_settings").first();
 
+const DEFAULT_THEME_INFO = { primary: "#0b5cad", accent: "#0b5cad", isDefault: true };
 const good = { clubName: "Example Dog Club", privacyContact: { name: "Pat", email: "pat@example.org" }, website: "https://example.org/" };
 
 describe("GET /api/admin/settings", () => {
@@ -35,7 +36,7 @@ describe("GET /api/admin/settings", () => {
     const res = await call(onRequestGet);
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await res.json()).toEqual({ clubName: "", privacyContact: { name: "", email: "" }, website: "", logo: null });
+    expect(await res.json()).toEqual({ clubName: "", privacyContact: { name: "", email: "" }, website: "", logo: null, theme: DEFAULT_THEME_INFO });
   });
 
   it("returns the settings and the logo's details", async () => {
@@ -44,7 +45,20 @@ describe("GET /api/admin/settings", () => {
     const info = await saveLogo(t.env.DB, png, { type: "image/png", width: 40, height: 30 });
     expect(await (await call(onRequestGet)).json()).toEqual({
       ...good, logo: { url: `/api/logo?v=${info.sha256.slice(0, 16)}`, width: 40, height: 30, contentType: "image/png", bytes: png.length },
+      theme: DEFAULT_THEME_INFO,
     });
+  });
+
+  it("returns the saved theme, and the default again once it is reset", async () => {
+    await t.env.DB.prepare("UPDATE site_settings SET theme_primary = '#1b6b3a', theme_accent = '#a1235f'").run();
+    expect(((await (await call(onRequestGet)).json()) as { theme: unknown }).theme).toEqual({ primary: "#1b6b3a", accent: "#a1235f", isDefault: false });
+    await t.env.DB.prepare("UPDATE site_settings SET theme_primary = NULL, theme_accent = NULL").run();
+    expect(((await (await call(onRequestGet)).json()) as { theme: unknown }).theme).toEqual(DEFAULT_THEME_INFO);
+  });
+
+  it("returns the default, not a stored theme that fails the contrast checks", async () => {
+    await t.env.DB.prepare("UPDATE site_settings SET theme_primary = '#0b5cad', theme_accent = '#ffd400'").run();
+    expect(((await (await call(onRequestGet)).json()) as { theme: unknown }).theme).toEqual(DEFAULT_THEME_INFO);
   });
 
   it("refuses with 401 unless the middleware set an admin identity", async () => {
@@ -61,26 +75,27 @@ describe("PUT /api/admin/settings", () => {
     const res = await put(good);
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await res.json()).toEqual({ ...good, logo: null });
-    expect(await (await call(onRequestGet)).json()).toEqual({ ...good, logo: null });
+    expect(await res.json()).toEqual({ ...good, logo: null, theme: DEFAULT_THEME_INFO });
+    expect(await (await call(onRequestGet)).json()).toEqual({ ...good, logo: null, theme: DEFAULT_THEME_INFO });
   });
 
   it("stores trimmed text and the normalised website", async () => {
     const res = await put({ clubName: "  Padded  ", privacyContact: { name: " ", email: " a@b.co " }, website: "HTTPS://Example.org" });
-    expect(await res.json()).toEqual({ clubName: "Padded", privacyContact: { name: "", email: "a@b.co" }, website: "https://example.org/", logo: null });
+    expect(await res.json()).toEqual({ clubName: "Padded", privacyContact: { name: "", email: "a@b.co" }, website: "https://example.org/", logo: null, theme: DEFAULT_THEME_INFO });
   });
 
   it("clears everything when sent empty strings (a full replacement)", async () => {
     await put(good);
     const res = await put({ clubName: "", privacyContact: { name: "", email: "" }, website: "" });
-    expect(await res.json()).toEqual({ clubName: "", privacyContact: { name: "", email: "" }, website: "", logo: null });
+    expect(await res.json()).toEqual({ clubName: "", privacyContact: { name: "", email: "" }, website: "", logo: null, theme: DEFAULT_THEME_INFO });
   });
 
   it("leaves the logo and the theme alone", async () => {
     await saveLogo(t.env.DB, makePng(4, 4), { type: "image/png", width: 4, height: 4 });
-    await t.env.DB.prepare("UPDATE site_settings SET theme_primary = '#112233'").run();
-    const body = (await (await put(good)).json()) as { logo: unknown };
+    await t.env.DB.prepare("UPDATE site_settings SET theme_primary = '#112233', theme_accent = '#445566'").run();
+    const body = (await (await put(good)).json()) as { logo: unknown; theme: unknown };
     expect(body.logo).not.toBeNull();
+    expect(body.theme).toEqual({ primary: "#112233", accent: "#445566", isDefault: false });
     expect((await t.env.DB.prepare("SELECT theme_primary FROM site_settings").first<{ theme_primary: string }>())!.theme_primary).toBe("#112233");
   });
 

@@ -1,4 +1,5 @@
 import { MAX_IMAGE_BYTES, type ImageType } from "../core/image";
+import { checkTheme, DEFAULT_THEME, normaliseHex } from "../../public/theme.js";
 import { INVISIBLE, LINE_SEPARATORS } from "./bookings";
 
 const MAX_CLUB_NAME = 80;
@@ -136,7 +137,7 @@ export async function loadLogo(db: D1Database): Promise<{ info: LogoInfo; data: 
   return { info: toInfo(row), data: row.bytes instanceof ArrayBuffer ? new Uint8Array(row.bytes) : Uint8Array.from(row.bytes) };
 }
 
-const hex = (bytes: ArrayBuffer): string => [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
+export const hex = (bytes: ArrayBuffer): string => [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
 
 /** Stores the logo in place of any earlier one. The caller has already run the bytes through inspectImage. */
 export async function saveLogo(db: D1Database, data: Uint8Array, image: { type: ImageType; width: number; height: number }): Promise<LogoInfo> {
@@ -166,10 +167,69 @@ export const adminLogo = (info: LogoInfo): AdminLogo => ({
   url: logoUrl(info), width: info.width, height: info.height, contentType: info.contentType, bytes: info.bytes,
 });
 
+export interface ThemeInfo { primary: string; accent: string; isDefault: boolean }
+
+const defaultTheme = (): ThemeInfo => ({ ...DEFAULT_THEME, isDefault: true });
+
+/**
+ * The stored theme, or the default if none is set. What is stored is checked again here (the same colour and
+ * contrast rules as at save time) because it ends up in a served stylesheet on every page: a value someone
+ * edited into the database by hand falls back to the default instead of being served.
+ */
+export async function loadTheme(db: D1Database): Promise<ThemeInfo> {
+  const row = await db
+    .prepare("SELECT theme_primary, theme_accent FROM site_settings WHERE id = 1")
+    .first<{ theme_primary: string | null; theme_accent: string | null }>();
+  if (!row) return defaultTheme();
+  const primary = normaliseHex(row.theme_primary);
+  const accent = normaliseHex(row.theme_accent);
+  if (!primary || !accent || !checkTheme({ primary, accent }).ok) return defaultTheme();
+  return { primary, accent, isDefault: false };
+}
+
+/** Stores a theme. The colours are normalised again here, so only "#rrggbb" can reach the database. */
+export async function saveTheme(db: D1Database, theme: { primary: string; accent: string }): Promise<void> {
+  const primary = normaliseHex(theme.primary);
+  const accent = normaliseHex(theme.accent);
+  if (!primary || !accent) throw new RangeError("primary and accent must be hex colours");
+  await db
+    .prepare(`UPDATE site_settings SET theme_primary = ?1, theme_accent = ?2, updated_at = ${NOW_SQL} WHERE id = 1`)
+    .bind(primary, accent)
+    .run();
+}
+
+/** Back to the default theme. Resetting one that is already default is fine. */
+export async function resetTheme(db: D1Database): Promise<void> {
+  await db.prepare(`UPDATE site_settings SET theme_primary = NULL, theme_accent = NULL, updated_at = ${NOW_SQL} WHERE id = 1`).run();
+}
+
+export interface ContrastFailure { id: string; label: string; mode: "light" | "dark"; ratio: number; min: number }
+
+/**
+ * Validates a theme request: both colours must be hex (fields per bad colour), and the pair must pass every
+ * blocking contrast check (the failures, otherwise). Non-blocking warnings don't stop a save. The browser runs the
+ * same checks as a convenience; this is the one that is enforced.
+ */
+export function parseThemeInput(raw: Record<string, unknown>):
+  { theme: { primary: string; accent: string } } | { fields: Fields } | { failures: ContrastFailure[] } {
+  const primary = normaliseHex(raw.primary);
+  const accent = normaliseHex(raw.accent);
+  const fields: Fields = {};
+  if (!primary) fields.primary = "Enter the main colour as a hex code, like #0b5cad.";
+  if (!accent) fields.accent = "Enter the accent colour as a hex code, like #0b5cad.";
+  if (!primary || !accent) return { fields };
+  const result = checkTheme({ primary, accent });
+  if (result.ok) return { theme: { primary, accent } };
+  const failures = result.checks
+    .filter((c) => c.blocking && !c.pass)
+    .map(({ id, label, mode, ratio, min }) => ({ id, label, mode, ratio, min }));
+  return { failures };
+}
+
 /** Everything the settings form shows. */
-export async function loadAdminSettings(db: D1Database): Promise<SiteSettings & { logo: AdminLogo | null }> {
-  const [settings, logo] = await Promise.all([loadSettings(db), loadLogoInfo(db)]);
-  return { ...settings, logo: logo ? adminLogo(logo) : null };
+export async function loadAdminSettings(db: D1Database): Promise<SiteSettings & { logo: AdminLogo | null; theme: ThemeInfo }> {
+  const [settings, logo, theme] = await Promise.all([loadSettings(db), loadLogoInfo(db), loadTheme(db)]);
+  return { ...settings, logo: logo ? adminLogo(logo) : null, theme };
 }
 
 export interface PublicSettings {

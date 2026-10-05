@@ -10,11 +10,13 @@ import { createTestEnv, type TestEnv } from "../../../../src/test/db";
 import { makePng, toBase64 } from "../../../../src/test/images";
 import * as index from "./index";
 import * as logo from "./logo";
+import * as theme from "./theme";
 
 let t: TestEnv;
 beforeAll(async () => { t = await createTestEnv(); });
 afterAll(async () => { await t.dispose(); });
 
+const GOOD_THEME = { primary: "#1b6b3a", accent: "#a1235f" };
 const GOOD_SETTINGS = { clubName: "Example Dog Club", privacyContact: { name: "Pat", email: "pat@example.org" }, website: "https://example.org/" };
 
 interface Route {
@@ -34,6 +36,8 @@ const ROUTES: Route[] = [
   { file: "index.ts", module: index, path: "/api/admin/settings", method: "PUT", handler: "onRequestPut", body: GOOD_SETTINGS },
   { file: "logo.ts", module: logo, path: "/api/admin/settings/logo", method: "PUT", handler: "onRequestPut", body: { data: toBase64(makePng(8, 8)) } },
   { file: "logo.ts", module: logo, path: "/api/admin/settings/logo", method: "DELETE", handler: "onRequestDelete" },
+  { file: "theme.ts", module: theme, path: "/api/admin/settings/theme", method: "PUT", handler: "onRequestPut", body: GOOD_THEME },
+  { file: "theme.ts", module: theme, path: "/api/admin/settings/theme", method: "DELETE", handler: "onRequestDelete" },
 ];
 
 /** Puts the real handlers behind the real middleware, as Pages routes them. */
@@ -82,7 +86,7 @@ const csrfOf = async (p: Provider, auth: Record<string, string>): Promise<string
   ((await (await p.app(p.env, "/api/admin/session", { headers: auth })).json()) as { csrfToken: string }).csrfToken;
 
 const stateOf = async () => ({
-  settings: await t.env.DB.prepare("SELECT club_name, website_url FROM site_settings").first(),
+  settings: await t.env.DB.prepare("SELECT club_name, website_url, theme_primary, theme_accent, updated_at FROM site_settings").first(),
   logos: (await t.env.DB.prepare("SELECT COUNT(*) AS n FROM site_logo").first<{ n: number }>())!.n,
 });
 
@@ -151,12 +155,15 @@ describe("settings routes are admin-only and CSRF-protected", () => {
 
       const auth = await p.auth();
       const headers = writeHeaders(await csrfOf(p, auth), auth);
-      const [, putSettings, putLogo, deleteLogo] = ROUTES;
+      const [, putSettings, putLogo, deleteLogo, putTheme, deleteTheme] = ROUTES;
       expect((await send(putSettings, headers)).status).toBe(200);
       expect((await send(putLogo, headers)).status).toBe(200);
-      expect((await stateOf())).toMatchObject({ settings: { club_name: "Example Dog Club" }, logos: 1 });
+      expect((await send(putTheme, headers)).status).toBe(200);
+      expect((await stateOf())).toMatchObject({ settings: { club_name: "Example Dog Club", theme_primary: "#1b6b3a", theme_accent: "#a1235f" }, logos: 1 });
       expect((await send(deleteLogo, headers)).status).toBe(200);
       expect((await stateOf()).logos).toBe(0);
+      expect((await send(deleteTheme, headers)).status).toBe(200);
+      expect((await stateOf())).toMatchObject({ settings: { theme_primary: null, theme_accent: null } });
     });
   });
 

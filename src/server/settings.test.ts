@@ -2,9 +2,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { makePng } from "../test/images";
 import { createTestEnv, type TestEnv } from "../test/db";
 import {
-  decodeBase64, deleteLogo, loadAdminSettings, loadLogo, loadLogoInfo, loadPublicSettings, loadSettings, MAX_LOGO_BASE64,
-  parseSettingsInput, saveLogo, saveSettings,
+  decodeBase64, deleteLogo, loadAdminSettings, loadLogo, loadLogoInfo, loadPublicSettings, loadSettings, loadTheme, MAX_LOGO_BASE64,
+  parseSettingsInput, parseThemeInput, resetTheme, saveLogo, saveSettings, saveTheme,
 } from "./settings";
+import { DEFAULT_THEME } from "../../public/theme.js";
 
 let t: TestEnv;
 beforeAll(async () => { t = await createTestEnv(); });
@@ -240,7 +241,141 @@ describe("loadPublicSettings and loadAdminSettings", () => {
     expect(await loadPublicSettings(t.env.DB)).toEqual({ ...ok, logo: { url, width: 10, height: 20 } });
     expect(await loadAdminSettings(t.env.DB)).toEqual({
       ...ok, logo: { url, width: 10, height: 20, contentType: "image/png", bytes: makePng(10, 20).length },
+      theme: { ...DEFAULT_THEME, isDefault: true },
     });
+  });
+
+  it("admin: carries the saved theme, public never does", async () => {
+    await saveTheme(t.env.DB, { primary: "#1b6b3a", accent: "#a1235f" });
+    expect((await loadAdminSettings(t.env.DB)).theme).toEqual({ primary: "#1b6b3a", accent: "#a1235f", isDefault: false });
+    expect(JSON.stringify(await loadPublicSettings(t.env.DB))).not.toMatch(/theme|1b6b3a|a1235f/);
+    await resetTheme(t.env.DB);
+  });
+});
+
+describe("the theme in D1", () => {
+  const DEFAULT = { ...DEFAULT_THEME, isDefault: true };
+  const row = () => t.env.DB.prepare("SELECT theme_primary, theme_accent, updated_at FROM site_settings").first<{ theme_primary: string | null; theme_accent: string | null; updated_at: string }>();
+  beforeEach(() => resetTheme(t.env.DB));
+
+  it("is the default, flagged as such, when both columns are NULL", async () => {
+    expect(await loadTheme(t.env.DB)).toEqual(DEFAULT);
+    await t.env.DB.prepare("UPDATE site_settings SET theme_primary = '#1b6b3a'").run(); // only one of the two
+    expect(await loadTheme(t.env.DB)).toEqual(DEFAULT);
+  });
+
+  it("is the default when the row is missing", async () => {
+    await t.env.DB.prepare("DELETE FROM site_settings").run();
+    try {
+      expect(await loadTheme(t.env.DB)).toEqual(DEFAULT);
+    } finally {
+      await t.env.DB.prepare("INSERT INTO site_settings (id) VALUES (1)").run();
+    }
+  });
+
+  it("saves normalised colours and loads them back", async () => {
+    await saveTheme(t.env.DB, { primary: " #1B6B3A ", accent: "#a1235f" });
+    expect(await row()).toMatchObject({ theme_primary: "#1b6b3a", theme_accent: "#a1235f" });
+    expect(await loadTheme(t.env.DB)).toEqual({ primary: "#1b6b3a", accent: "#a1235f", isDefault: false });
+  });
+
+  it("refuses to store anything that isn't a hex colour, leaving the old theme", async () => {
+    await saveTheme(t.env.DB, { primary: "#1b6b3a", accent: "#1b6b3a" });
+    for (const bad of ["red", "#fff;}x{", "url(//evil)", "", "#12345678", "</style>"]) {
+      await expect(saveTheme(t.env.DB, { primary: bad, accent: "#1b6b3a" }), bad).rejects.toThrow(RangeError);
+      await expect(saveTheme(t.env.DB, { primary: "#1b6b3a", accent: bad }), bad).rejects.toThrow(RangeError);
+    }
+    expect(await row()).toMatchObject({ theme_primary: "#1b6b3a", theme_accent: "#1b6b3a" });
+  });
+
+  it("refreshes updated_at on save and on reset, and reset is idempotent", async () => {
+    await t.env.DB.prepare("UPDATE site_settings SET updated_at = '2000-01-01T00:00:00Z'").run();
+    await saveTheme(t.env.DB, { primary: "#1b6b3a", accent: "#1b6b3a" });
+    expect((await row())!.updated_at > "2020-01-01T00:00:00Z").toBe(true);
+    await t.env.DB.prepare("UPDATE site_settings SET updated_at = '2000-01-01T00:00:00Z'").run();
+    await resetTheme(t.env.DB);
+    await resetTheme(t.env.DB);
+    const after = await row();
+    expect(after).toMatchObject({ theme_primary: null, theme_accent: null });
+    expect(after!.updated_at > "2020-01-01T00:00:00Z").toBe(true);
+    expect(await loadTheme(t.env.DB)).toEqual(DEFAULT);
+  });
+
+  it("leaves the text settings alone", async () => {
+    await saveSettings(t.env.DB, ok);
+    await saveTheme(t.env.DB, { primary: "#1b6b3a", accent: "#1b6b3a" });
+    await resetTheme(t.env.DB);
+    expect(await loadSettings(t.env.DB)).toEqual(ok);
+    await saveSettings(t.env.DB, { clubName: "", privacyContact: { name: "", email: "" }, website: "" });
+  });
+
+  // The CHECK in the migration only allows #rrggbb, which normaliseHex always accepts, so a stored value that gets
+  // past it can only fail the contrast rules. All of these are valid hex.
+  it.each([
+    ["a pale accent", "#0b5cad", "#ffd400"],
+    ["a grey accent", "#0b5cad", "#808080"],
+    ["a primary that light button text can't sit on", "#0077dd", "#0b5cad"],
+  ])("falls back to the default for stored colours that fail the contrast checks: %s", async (_name, primary, accent) => {
+    await t.env.DB.prepare("UPDATE site_settings SET theme_primary = ?, theme_accent = ?").bind(primary, accent).run();
+    expect(await loadTheme(t.env.DB)).toEqual(DEFAULT);
+  });
+
+  it("still serves a stored theme that only has warnings", async () => {
+    await t.env.DB.prepare("UPDATE site_settings SET theme_primary = '#ffd400', theme_accent = '#0b5cad'").run();
+    expect(await loadTheme(t.env.DB)).toEqual({ primary: "#ffd400", accent: "#0b5cad", isDefault: false });
+  });
+
+  it("falls back to the default for values the CHECK forbids, if they get in some other way", async () => {
+    // ignore_check_constraints stands in for a database edited by hand or restored from another version.
+    const bad = ["red", "#fff;}body{display:none", "url(//evil)", "</style><script>", "", "#12345678", "rgb(0,0,0)"];
+    try {
+      await t.env.DB.prepare("PRAGMA ignore_check_constraints = ON").run();
+      for (const value of bad) {
+        await t.env.DB.prepare("UPDATE site_settings SET theme_primary = ?1, theme_accent = '#0b5cad'").bind(value).run();
+        expect((await row())!.theme_primary, value).toBe(value); // it really is in the table
+        expect(await loadTheme(t.env.DB), value).toEqual(DEFAULT);
+        await t.env.DB.prepare("UPDATE site_settings SET theme_primary = '#0b5cad', theme_accent = ?1").bind(value).run();
+        expect(await loadTheme(t.env.DB), value).toEqual(DEFAULT);
+      }
+    } finally {
+      await t.env.DB.prepare("PRAGMA ignore_check_constraints = OFF").run();
+    }
+  });
+});
+
+describe("parseThemeInput", () => {
+  it("accepts two colours, normalising them", () => {
+    expect(parseThemeInput({ primary: "#1B6B3A", accent: " #a1b " })).toEqual({ theme: { primary: "#1b6b3a", accent: "#aa11bb" } });
+  });
+
+  it("names each colour that isn't hex, and only those", () => {
+    const fields = (raw: Record<string, unknown>) => ("fields" in parseThemeInput(raw) ? Object.keys((parseThemeInput(raw) as { fields: object }).fields) : null);
+    expect(fields({ primary: "red", accent: "#1b6b3a" })).toEqual(["primary"]);
+    expect(fields({ primary: "#1b6b3a", accent: 5 })).toEqual(["accent"]);
+    expect(fields({ primary: null, accent: undefined })).toEqual(["primary", "accent"]);
+    expect(fields({})).toEqual(["primary", "accent"]);
+  });
+
+  it("lists only the blocking failures, and not the warnings", () => {
+    const result = parseThemeInput({ primary: "#0b5cad", accent: "#ffd400" });
+    expect(result).toHaveProperty("failures");
+    const { failures } = result as { failures: { id: string; mode: string; ratio: number; min: number; label: string }[] };
+    expect(failures.map((f) => f.id)).toContain("accent-light-page");
+    for (const f of failures) {
+      expect(Object.keys(f).sort()).toEqual(["id", "label", "min", "mode", "ratio"]);
+      expect(f.ratio).toBeLessThan(f.min);
+      expect(f.id).not.toMatch(/^button-shape/);
+    }
+  });
+
+  it("lets a theme that only has non-blocking warnings through", () => {
+    // A pale yellow primary fails button-shape (a warning) but its button text is readable.
+    expect(parseThemeInput({ primary: "#ffd400", accent: "#0b5cad" })).toEqual({ theme: { primary: "#ffd400", accent: "#0b5cad" } });
+  });
+
+  it("reports a primary whose light-mode button text is just under the minimum", () => {
+    const result = parseThemeInput({ primary: "#0077dd", accent: "#0b5cad" }) as { failures: { id: string }[] };
+    expect(result.failures.map((f) => f.id)).toEqual(["button-text-light"]);
   });
 });
 
