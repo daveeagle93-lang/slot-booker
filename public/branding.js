@@ -68,6 +68,13 @@ function el(document, tag, attrs, ...children) {
   return node;
 }
 
+/** Adds (`show`) or removes the bundled default SVG icon link; either way it is never there twice. */
+export function setDefaultIconLink(document, show) {
+  const existing = document.head.querySelector('link[rel="icon"][type="image/svg+xml"]');
+  if (!show) existing?.remove();
+  else if (!existing) document.head.append(el(document, "link", { rel: "icon", type: "image/svg+xml", href: "/icons/default.svg" }));
+}
+
 /**
  * Adds the header band before <main>, sets the title, and adds the website footer when there is one.
  * `home` is where the club name links to; `pageTitle` may be null for the club name alone. Call once per page.
@@ -90,7 +97,7 @@ export function applyBranding(document, settings, { pageTitle: page, home }) {
 
   // The pages' own icon links are PNGs from /api/icon (the club's icon, or the bundled default). An SVG link is
   // added only once it is known there is no logo: browsers prefer an SVG icon, so a static one would hide a club's own.
-  if (s.loaded && !s.logo) document.head.append(el(document, "link", { rel: "icon", type: "image/svg+xml", href: "/icons/default.svg" }));
+  if (s.loaded && !s.logo) setDefaultIconLink(document, true);
 
   const site = s.website ? safeWebsite(s.website) : null;
   if (site) {

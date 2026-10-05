@@ -483,7 +483,7 @@ describe("POST /api/events/:slug/bookings", () => {
             const parsed = (await res.json()) as ErrorBody;
             expect(parsed.error.code, label).toBe("invalid_input");
             expect(Object.keys(parsed.fields ?? {}).sort(), label).toEqual(["dogName", "handlerName"]);
-            expect(parsed.fields?.dogName, label).toBe("The dog's name can't contain invisible or direction-changing characters.");
+            expect(parsed.fields?.dogName, label).toBe("The dog's name can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.");
           }
         }
         expect(await rows(id)).toHaveLength(0);

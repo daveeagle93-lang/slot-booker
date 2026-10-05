@@ -42,6 +42,27 @@ async function snapshot(eventId: number): Promise<string> {
 
 const load = async (slug: string) => (await loadEventBySlug(t.env.DB, slug))!;
 
+describe("saveEventEdit: listed", () => {
+  const listedOf = async (id: number) => (await t.env.DB.prepare("SELECT listed FROM events WHERE id = ?").bind(id).first<{ listed: number }>())!.listed;
+
+  it("leaves listed as it is in the database when the draft omits it, even if it changed after the event was loaded", async () => {
+    const e = await seed();
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), shortened(), [e.b, e.c], {
+      afterRead: async () => { await t.env.DB.prepare("UPDATE events SET listed = 0 WHERE id = ?").bind(e.id).run(); },
+    });
+    expect(result.kind).toBe("saved");
+    expect(await listedOf(e.id)).toBe(0);
+  });
+
+  it("still writes listed when the draft says it, either way", async () => {
+    const e = await seed();
+    await saveEventEdit(t.env.DB, await load(e.slug), shortened({ listed: false }), [e.b, e.c]);
+    expect(await listedOf(e.id)).toBe(0);
+    await saveEventEdit(t.env.DB, await load(e.slug), shortened({ listed: true }), []);
+    expect(await listedOf(e.id)).toBe(1);
+  });
+});
+
 describe("saveEventEdit: a booking lands between the read and the save", () => {
   it("aborts the whole batch, writing nothing, and returns the fresh list including the newcomer", async () => {
     const e = await seed();

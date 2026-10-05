@@ -104,7 +104,7 @@ export async function saveEventEdit(
   if (affected.some((b) => !confirmed.has(b.id))) return { kind: "bookings_affected", affected };
   await hooks.afterRead?.();
 
-  // A request without `listed` leaves it as it is.
+  // A request without `listed` leaves it as it is in the database now (COALESCE with null), not as it was when the event was loaded.
   const listed = draft.listed ?? event.listed;
   const starts = JSON.stringify(slots.map((s) => s.start));
   const ids = JSON.stringify(affected.map((b) => b.id));
@@ -119,9 +119,9 @@ export async function saveEventEdit(
       ),
       db.prepare(
         `UPDATE events SET name = ?, start_utc = ?, end_utc = ?, session_minutes = ?, gap_minutes = ?, cost_pence = ?,
-           venue_postcode = ?, details = ?, listed = ? WHERE id = ?`,
+           venue_postcode = ?, details = ?, listed = COALESCE(?, listed) WHERE id = ?`,
       ).bind(draft.name, draft.startUtc, draft.endUtc, draft.sessionMinutes, draft.gapMinutes, draft.costPence,
-        draft.venuePostcode, draft.details, listed ? 1 : 0, event.id),
+        draft.venuePostcode, draft.details, draft.listed === undefined ? null : draft.listed ? 1 : 0, event.id),
       db.prepare("DELETE FROM breaks WHERE event_id = ?").bind(event.id),
       ...draft.breaks.map((b) =>
         db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (?, ?, ?, ?)").bind(event.id, b.startUtc, b.endUtc, b.label)),

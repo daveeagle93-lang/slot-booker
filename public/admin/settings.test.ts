@@ -695,6 +695,42 @@ describe("app icons", () => {
   };
   const FAILURE = (what: string) => `${what} app icons couldn't be updated. They'll be tried again next time you open this page.`;
 
+  describe("the default SVG icon link", () => {
+    const svgLinks = () => $$('link[rel="icon"][type="image/svg+xml"]');
+    const addSvgLink = () => document.head.insertAdjacentHTML("beforeend", '<link rel="icon" type="image/svg+xml" href="/icons/default.svg" />');
+
+    it("is removed once a first logo is saved, so the browser uses the club's own icon", async () => {
+      const page = await start({ "PUT /api/admin/settings/logo": () => reply(200, { logo: NEW_LOGO }) }, { settings: { ...SETTINGS, logo: null, icons: null } });
+      addSvgLink(); // what branding.js added at load, there being no logo
+      expect(svgLinks()).toHaveLength(1);
+      await choose(picture());
+      submit("logo");
+      await flush();
+      expect(page.iconWrites()).toHaveLength(3);
+      expect(svgLinks()).toHaveLength(0);
+      expect($$('link[rel="stylesheet"]')).toHaveLength(1); // nothing else was touched
+    });
+
+    it("is put back, once, when the logo is removed", async () => {
+      await start({ "DELETE /api/admin/settings/logo": () => reply(200, { logo: null }) });
+      expect(svgLinks()).toHaveLength(0);
+      button("Remove logo").click();
+      button("Yes, remove logo").click();
+      await flush();
+      expect(svgLinks()).toHaveLength(1);
+      expect(svgLinks()[0].getAttribute("href")).toBe("/icons/default.svg");
+    });
+
+    it("stays when the logo upload fails", async () => {
+      await start({ "PUT /api/admin/settings/logo": () => reply(422, { error: { code: "invalid_image", message: "Bad." } }) }, { settings: { ...SETTINGS, logo: null, icons: null } });
+      addSvgLink();
+      await choose(picture());
+      submit("logo");
+      await flush();
+      expect(svgLinks()).toHaveLength(1);
+    });
+  });
+
   it("has a polite live status line of its own, empty until something is drawn", async () => {
     await start();
     const status = $("#icon-status");

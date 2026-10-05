@@ -40,13 +40,29 @@ describe("csvCell", () => {
     expect(csvCell("a\t")).toBe('"a\t"');
   });
 
+  it.each([["＝", "U+FF1D"], ["＋", "U+FF0B"], ["－", "U+FF0D"], ["＠", "U+FF20"]])(
+    "prefixes a single quote when the text starts with the fullwidth %s (%s), which a spreadsheet may read as the ASCII one",
+    (c) => {
+      expect(csvCell(`${c}1`)).toBe(`"'${c}1"`);
+      expect(csvCell(c)).toBe(`"'${c}"`);
+    },
+  );
+
+  it("adds the prefix to the original text, changing nothing else, and leaves letters alone even if normalising changes them", () => {
+    expect(csvCell("＝SUM(A1)")).toBe(`"'＝SUM(A1)"`);
+    expect(csvCell("Rex")).toBe('"Rex"');
+    expect(csvCell("ﬁdo")).toBe('"ﬁdo"'); // NFKC turns the ligature into "fi", still a letter
+    expect(csvCell("Ｚoë")).toBe('"Ｚoë"');
+    expect(csvCell("a＝b")).toBe('"a＝b"');
+  });
+
   it("leaves a date and time unchanged", () => {
     expect(csvCell("2026-06-13 09:00")).toBe('"2026-06-13 09:00"');
   });
 });
 
 describe("toCsv", () => {
-  const BOM = "﻿";
+  const BOM = "\uFEFF";
 
   it("starts with a UTF-8 byte order mark and ends every row with CRLF", () => {
     const out = toCsv([["Time", "Dog", "Handler", "Booked at"], ["2026-06-13 09:00", "Rex", "Sam", "2026-06-01 10:00"]]);

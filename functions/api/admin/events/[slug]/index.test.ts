@@ -649,6 +649,63 @@ describe("PUT /api/admin/events/[slug]: invalid requests", () => {
   });
 });
 
+describe("PUT /api/admin/events/[slug]: text already stored with an invisible character", () => {
+  const FLAG_DETAILS = "Bring water \u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F} 👩\u200D🐕";
+  const MESSAGE = (what: string) =>
+    `The ${what} can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.`;
+  const seedZwj = async () => {
+    const e = await seed({ name: "Dogs\u200D day", details: FLAG_DETAILS });
+    await t.env.DB.prepare("UPDATE breaks SET label = ? WHERE event_id = ?").bind("Lunch\u200C", e.id).run();
+    return e;
+  };
+  const same = { name: "Dogs\u200D day", details: FLAG_DETAILS, breaks: [{ start: "10:00", end: "10:30", label: "Lunch\u200C" }] };
+
+  it("saves a changed cost with the name, details and break name left as they are", async () => {
+    const { id, slug } = await seedZwj();
+    const res = await put(slug, draft({ ...same, costPence: 2500 }));
+    expect(res.status).toBe(200);
+    const row = await t.env.DB.prepare("SELECT name, details, cost_pence FROM events WHERE id = ?").bind(id).first();
+    expect(row).toEqual({ name: "Dogs\u200D day", details: FLAG_DETAILS, cost_pence: 2500 });
+    expect(await storedBreaks(id)).toMatchObject([{ label: "Lunch\u200C" }]);
+  });
+
+  it("still refuses details changed to a different value with one, naming the field in plain words", async () => {
+    const { id, slug } = await seedZwj();
+    const before = await snapshot(id);
+    const res = await put(slug, draft({ ...same, details: `${FLAG_DETAILS} too` }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: unknown }).fields).toEqual({ details: MESSAGE("details") });
+    expect(await snapshot(id)).toBe(before);
+  });
+
+  it("still refuses an event name changed to a different value with one", async () => {
+    const { id, slug } = await seedZwj();
+    const before = await snapshot(id);
+    const res = await put(slug, draft({ ...same, name: "Other\u200D day" }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: unknown }).fields).toEqual({ name: MESSAGE("event name") });
+    expect(await snapshot(id)).toBe(before);
+  });
+
+  it("accepts a break name equal to one of the event's existing break names, and refuses a changed one", async () => {
+    const { id, slug } = await seedZwj();
+    const res = await put(slug, draft({ ...same, breaks: [{ start: "10:00", end: "10:30", label: "Lunch\u200C" }, { start: "11:00", end: "11:15", label: "Lunch\u200C" }] }));
+    expect(res.status).toBe(200);
+    const before = await snapshot(id);
+    const bad = await put(slug, draft({ ...same, breaks: [{ start: "10:00", end: "10:30", label: "Tea\u200C" }] }));
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { fields: unknown }).fields).toEqual({ "breaks.0.label": MESSAGE("break name") });
+    expect(await snapshot(id)).toBe(before);
+  });
+
+  it("still applies the other checks to an unchanged value (a line separator is refused)", async () => {
+    const { slug } = await seed({ name: "Dogs\u200D day", details: "Pay\u2028now\u200D" });
+    const res = await put(slug, draft({ name: "Dogs\u200D day", details: "Pay\u2028now\u200D", breaks: [] }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: Record<string, string> }).fields.details).toMatch(/line or paragraph separators/);
+  });
+});
+
 // ---- DELETE ----
 
 const del = (slug: string, body: unknown, o: PutOptions = {}): Promise<Response> => {

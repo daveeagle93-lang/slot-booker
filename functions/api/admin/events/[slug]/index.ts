@@ -37,12 +37,13 @@ export const onRequestPut: PagesFunction<AppEnv, "slug"> = async ({ request, env
     if (body instanceof Response) return body;
     const remove = checkRemoveIds(body.removeBookingIds);
     const now = new Date();
-    const parsed = parseEventDraft(body, { now, requireFuture: false });
+    const stored = { name: event.name, details: event.details, breakLabels: event.breaks.map((b) => b.label) };
+    const parsed = parseEventDraft(body, { now, requireFuture: false, stored });
     if ("fields" in parsed) return invalidInput({ ...parsed.fields, ...("message" in remove ? { removeBookingIds: remove.message } : {}) });
     if ("message" in remove) return invalidInput({ removeBookingIds: remove.message });
     // Only a start that changes has to be in the future: a running or finished event can still be corrected.
     if (parsed.draft.startUtc !== event.startUtc) {
-      const strict = parseEventDraft(body, { now, requireFuture: true });
+      const strict = parseEventDraft(body, { now, requireFuture: true, stored });
       if ("fields" in strict) return invalidInput(strict.fields);
     }
     const result = await saveEventEdit(env.DB, event, parsed.draft, remove.ids);

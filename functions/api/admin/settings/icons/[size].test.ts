@@ -21,7 +21,7 @@ beforeEach(async () => {
   logoSha = (await saveLogo(t.env.DB, makePng(10, 10), { type: "image/png", width: 10, height: 10 })).sha256;
 });
 
-interface Options { contentType?: string | null; raw?: string; data?: unknown; headers?: Record<string, string>; body?: BodyInit; duplex?: boolean; params?: Record<string, string> }
+interface Options { env?: unknown; contentType?: string | null; raw?: string; data?: unknown; headers?: Record<string, string>; body?: BodyInit; duplex?: boolean; params?: Record<string, string> }
 
 const put = (size: string | number, body: unknown, o: Options = {}): Promise<Response> => {
   const headers: Record<string, string> = { ...o.headers };
@@ -30,7 +30,7 @@ const put = (size: string | number, body: unknown, o: Options = {}): Promise<Res
   if (o.duplex) init.duplex = "half";
   return Promise.resolve(onRequestPut({
     request: new Request(`http://localhost/api/admin/settings/icons/${size}`, init),
-    env: t.env as AppEnv, params: o.params ?? { size: String(size) }, data: "data" in o ? o.data : ADMIN,
+    env: (o.env ?? t.env) as AppEnv, params: o.params ?? { size: String(size) }, data: "data" in o ? o.data : ADMIN,
   } as never));
 };
 /** The body the browser sends, with each part overridable. */
@@ -121,6 +121,36 @@ describe("PUT /api/admin/settings/icons/[size]: what must match", () => {
     const res = await send(32, makePng(32, 32));
     expect(res.status).toBe(409);
     expect(((await res.json()) as ErrorBody).error.code).toBe("stale_logo");
+  });
+
+  describe("a change between the checks and the write", () => {
+    /** The same database, except that `change` runs just before the icon's INSERT: the moment between the reads and the write. */
+    const changingBefore = (change: () => Promise<unknown>) => {
+      const db = {
+        prepare: (sql: string) => {
+          const statement = t.env.DB.prepare(sql);
+          if (!sql.includes("INSERT INTO site_icons")) return statement;
+          return { bind: (...values: unknown[]) => ({ run: async () => { await change(); return statement.bind(...values).run(); } }) };
+        },
+      };
+      return { env: { ...t.env, DB: db } };
+    };
+
+    it("refuses with 409 stale_theme when the main colour changed, and stores nothing", async () => {
+      const o = changingBefore(() => t.env.DB.prepare("UPDATE site_settings SET theme_primary = '#1b6b3a', theme_accent = '#a1235f'").run());
+      const res = await send(32, makePng(32, 32), {}, o);
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("stale_theme");
+      expect(await iconRows()).toEqual([]);
+    });
+
+    it("refuses with 409 stale_logo when the logo changed, and stores nothing", async () => {
+      const o = changingBefore(() => saveLogo(t.env.DB, makePng(11, 11), { type: "image/png", width: 11, height: 11 }));
+      const res = await send(32, makePng(32, 32), {}, o);
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("stale_logo");
+      expect(await iconRows()).toEqual([]);
+    });
   });
 
   it("refuses a malformed background or digest with 400 on that field", async () => {

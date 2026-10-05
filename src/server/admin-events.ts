@@ -1,7 +1,7 @@
 import { londonToUtc, LondonTimeError, utcToLondon } from "../core/london";
 import { DEFAULT_NEAR_MISS_MINUTES, generateSchedule, type TimeRange } from "../core/schedule";
 import { generateSlug } from "../core/slug";
-import { IDEMPOTENCY_KEY, INVISIBLE, LINE_SEPARATORS, noStore, readJsonObject } from "./bookings";
+import { IDEMPOTENCY_KEY, INVISIBLE, invisibleMessage, LINE_SEPARATORS, noStore, readJsonObject } from "./bookings";
 import { bookingWindow, type EventRow } from "./events";
 import { errorResponse } from "./http";
 
@@ -47,10 +47,16 @@ function londonTime(date: string, value: unknown): { utc: string } | { message: 
   }
 }
 
-function checkName(value: unknown): { name: string } | { message: string } {
+/**
+ * The text an edit may keep without the invisible-character check: what is stored now. Rows written before that
+ * check existed can hold such a character, and an admin changing only the cost must not be locked out by it.
+ */
+export interface StoredText { name: string; details: string; breakLabels: readonly string[] }
+
+function checkName(value: unknown, stored?: string): { name: string } | { message: string } {
   if (typeof value !== "string") return { message: "Enter the event name." };
   if (!value.isWellFormed()) return { message: "The event name can't contain unpaired surrogate characters." };
-  if (INVISIBLE.test(value)) return { message: "The event name can't contain invisible or direction-changing characters." };
+  if (value !== stored && INVISIBLE.test(value)) return { message: invisibleMessage("event name") };
   if (LINE_SEPARATORS.test(value)) return { message: "The event name can't contain line or paragraph separators." };
   const name = value.trim();
   if (name === "") return { message: "Enter the event name." };
@@ -60,11 +66,11 @@ function checkName(value: unknown): { name: string } | { message: string } {
 }
 
 /** A break's optional name: missing, undefined or null means unnamed (""). */
-function checkLabel(value: unknown): { label: string } | { message: string } {
+function checkLabel(value: unknown, stored: readonly string[] = []): { label: string } | { message: string } {
   if (value === undefined || value === null) return { label: "" };
   if (typeof value !== "string") return { message: "The break name must be text." };
   if (!value.isWellFormed()) return { message: "The break name can't contain unpaired surrogate characters." };
-  if (INVISIBLE.test(value)) return { message: "The break name can't contain invisible or direction-changing characters." };
+  if (!stored.includes(value) && INVISIBLE.test(value)) return { message: invisibleMessage("break name") };
   if (LINE_SEPARATORS.test(value)) return { message: "The break name can't contain line or paragraph separators." };
   const label = value.trim();
   if ([...label].length > MAX_LABEL_CODE_POINTS) return { message: `The break name must be at most ${MAX_LABEL_CODE_POINTS} characters.` };
@@ -82,10 +88,10 @@ function checkPostcode(value: unknown): { postcode: string } | { message: string
   return { postcode: tidy.toUpperCase() };
 }
 
-function checkDetails(value: unknown): { details: string } | { message: string } {
+function checkDetails(value: unknown, stored?: string): { details: string } | { message: string } {
   if (typeof value !== "string") return { message: "Details must be text (they can be empty)." };
   if (!value.isWellFormed()) return { message: "The details can't contain unpaired surrogate characters." };
-  if (INVISIBLE.test(value)) return { message: "The details can't contain invisible or direction-changing characters." };
+  if (value !== stored && INVISIBLE.test(value)) return { message: invisibleMessage("details") };
   if (LINE_SEPARATORS.test(value)) return { message: "The details can't contain line or paragraph separators." };
   const details = value.replaceAll("\r\n", "\n");
   if (/(?!\n)\p{Cc}/u.test(details)) return { message: "The details can't contain control characters." };
@@ -100,11 +106,11 @@ const asRecord = (v: unknown): Record<string, unknown> | null =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 
 export function parseEventDraft(
-  raw: Record<string, unknown>, opts: { now: Date; requireFuture: boolean },
+  raw: Record<string, unknown>, opts: { now: Date; requireFuture: boolean; stored?: StoredText },
 ): { draft: EventDraft } | { fields: Fields } {
   const fields: Fields = {};
 
-  const name = checkName(raw.name);
+  const name = checkName(raw.name, opts.stored?.name);
   if ("message" in name) fields.name = name.message;
 
   const dateText = typeof raw.date === "string" ? raw.date : "";
@@ -134,7 +140,7 @@ export function parseEventDraft(
   if (costPence === null) fields.costPence = "Enter the cost in pence as a whole number from 0 to 100000.";
   const postcode = checkPostcode(raw.venuePostcode);
   if ("message" in postcode) fields.venuePostcode = postcode.message;
-  const details = checkDetails(raw.details);
+  const details = checkDetails(raw.details, opts.stored?.details);
   if ("message" in details) fields.details = details.message;
   if (raw.listed !== undefined && typeof raw.listed !== "boolean") fields.listed = "Listed must be true or false.";
 
@@ -148,7 +154,7 @@ export function parseEventDraft(
         fields[`breaks.${i}`] = "Each break needs a start and an end.";
         return;
       }
-      const label = checkLabel(b.label);
+      const label = checkLabel(b.label, opts.stored?.breakLabels);
       if ("message" in label) fields[`breaks.${i}.label`] = label.message;
       const s = londonTime(base, b.start);
       const e = londonTime(base, b.end);

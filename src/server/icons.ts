@@ -66,9 +66,11 @@ export async function serveIcon(request: Request, env: AppEnv, size: IconSize): 
         return new Response(null, { status: 304, headers });
       }
       if (head) return new Response(null, { headers });
-      // A conditional GET that didn't match reads the image now.
-      data ??= (await loadIcon(env.DB, size))?.data ?? null;
-      if (data) return new Response(data, { headers });
+      if (data !== null) return new Response(data, { headers });
+      // A conditional GET that didn't match reads the image now. The icon may have been replaced since the
+      // metadata read, so the tag and length come from this read, which is where the bytes come from.
+      const stored = await loadIcon(env.DB, size);
+      if (stored) return new Response(stored.data, { headers: iconHeaders(stored.info.sha256, stored.info.bytes, cache) });
     }
   } catch (e) {
     console.error("serveIcon failed:", e instanceof Error ? e.message : String(e));

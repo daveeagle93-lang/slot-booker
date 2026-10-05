@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
-import { drawIcon, ICON_PADDING, ICON_SIZES, IconError, iconLayout, updateIcons } from "./icon-image.js";
+import { drawIcon, ICON_PADDING, ICON_SCALES, ICON_SIZES, IconError, iconLayout, MAX_ICON_BYTES, updateIcons } from "./icon-image.js";
 
 const SHA = "a".repeat(64);
 const logo = (type = "image/webp") => new Blob([new Uint8Array(10)], { type });
@@ -8,7 +8,7 @@ const logo = (type = "image/webp") => new Blob([new Uint8Array(10)], { type });
 type Op = [string, ...unknown[]];
 
 /** Fake browser pieces: records what is drawn on each canvas; toBlob answers `type` with `bytes(size)` bytes. */
-function fakes({ source = { width: 300, height: 100 }, type = "image/png", bytes = (size: number) => size, context = true } = {}) {
+function fakes({ source = { width: 300, height: 100 }, type = "image/png", bytes = (size: number, _attempt: number) => size, context = true } = {}) {
   const drawn: { size: number; ops: Op[] }[] = [];
   const close = vi.fn();
   const deps = {
@@ -16,6 +16,7 @@ function fakes({ source = { width: 300, height: 100 }, type = "image/png", bytes
     loadImage: vi.fn(async (_file: unknown) => ({ source: {}, ...source })),
     createCanvas: (width: number, height: number) => {
       const canvas = { size: width, ops: [] as Op[] };
+      const attempt = drawn.filter((d) => d.size === width).length;
       drawn.push(canvas);
       expect(width).toBe(height);
       return {
@@ -27,7 +28,7 @@ function fakes({ source = { width: 300, height: 100 }, type = "image/png", bytes
         } : null),
         toBlob: (cb: (b: Blob | null) => void, asked: string) => {
           canvas.ops.push(["toBlob", asked]);
-          cb(type === "" ? null : new Blob([new Uint8Array(bytes(width))], { type }));
+          cb(type === "" ? null : new Blob([new Uint8Array(bytes(width, attempt))], { type }));
         },
       };
     },
@@ -68,6 +69,13 @@ describe("iconLayout", () => {
   });
 });
 
+describe("iconLayout with a scale", () => {
+  it("shrinks the logo within the padded box, still centred", () => {
+    expect(iconLayout(512, 512, 512, 0.5)).toEqual({ x: 164, y: 164, width: 184, height: 184 });
+    expect(iconLayout(512, 512, 512, 1)).toEqual(iconLayout(512, 512, 512));
+  });
+});
+
 describe("drawIcon", () => {
   it("fills the whole square with the background, then draws the logo in its layout, then exports a PNG", async () => {
     const { deps, drawn } = fakes();
@@ -79,6 +87,35 @@ describe("drawIcon", () => {
       ["fillStyle", "#1b6b3a"], ["fillRect", 0, 0, 180, 180], ["imageSmoothingQuality", "high"],
       ["drawImage", 25, 69, 130, 43], ["toBlob", "image/png"],
     ]);
+  });
+
+  it("exports once when the PNG fits the cap for its size", async () => {
+    const { deps, drawn } = fakes({ bytes: (size) => MAX_ICON_BYTES[size as 32 | 180 | 512] });
+    const png = await drawIcon(512, "#1b6b3a", { source: {}, width: 300, height: 100 }, deps);
+    expect(png.length).toBe(200 * 1024);
+    expect(drawn).toHaveLength(1);
+  });
+
+  it("redraws the logo smaller, keeping the background fill, until the PNG fits", async () => {
+    const { deps, drawn } = fakes({ bytes: (size, attempt) => (attempt < 2 ? MAX_ICON_BYTES[size as 32 | 180 | 512] + 1 : 1000) });
+    const png = await drawIcon(512, "#1b6b3a", { source: {}, width: 100, height: 100 }, deps);
+    expect(png.length).toBe(1000);
+    expect(drawn).toHaveLength(3);
+    expect(ICON_SCALES).toEqual([1, 0.8, 0.65, 0.5, 0.35]);
+    drawn.forEach((d, i) => {
+      const at = iconLayout(512, 100, 100, ICON_SCALES[i]);
+      expect(d.ops).toEqual([
+        ["fillStyle", "#1b6b3a"], ["fillRect", 0, 0, 512, 512], ["imageSmoothingQuality", "high"],
+        ["drawImage", at.x, at.y, at.width, at.height], ["toBlob", "image/png"],
+      ]);
+    });
+    expect(drawn[2].ops[3]).not.toEqual(drawn[0].ops[3]);
+  });
+
+  it("gives up with an IconError after the smallest step, without looping on", async () => {
+    const { deps, drawn } = fakes({ bytes: (size) => MAX_ICON_BYTES[size as 32 | 180 | 512] + 1 });
+    await expect(drawIcon(32, "#000000", { source: {}, width: 1, height: 1 }, deps)).rejects.toBeInstanceOf(IconError);
+    expect(drawn).toHaveLength(ICON_SCALES.length);
   });
 
   it("refuses a browser that has no 2D context, or answers anything but PNG", async () => {
@@ -154,6 +191,16 @@ describe("updateIcons", () => {
     await updateIcons(args as never);
     expect(f.drawn.map((d) => d.size)).toEqual([32]);
     expect(calls).toHaveLength(0);
+    expect(f.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a size that never fits as a failure, puts nothing for it, and doesn't go on to the next size", async () => {
+    const f = fakes({ bytes: (size) => (size === 180 ? MAX_ICON_BYTES[180] + 1 : size) });
+    const { calls, args } = run({ image: f.deps });
+    await expect(updateIcons(args as never)).rejects.toBeInstanceOf(IconError);
+    expect(calls.map((c) => c.size)).toEqual([32]);
+    expect(f.drawn.filter((d) => d.size === 180)).toHaveLength(ICON_SCALES.length);
+    expect(f.drawn.some((d) => d.size === 512)).toBe(false);
     expect(f.close).toHaveBeenCalledTimes(1);
   });
 });

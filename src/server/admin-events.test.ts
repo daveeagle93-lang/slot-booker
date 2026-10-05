@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { londonToUtc } from "../core/london";
 import { generateSchedule } from "../core/schedule";
 import { generateSlug } from "../core/slug";
-import { FORMAT_CODE_POINTS, hex, ORDINARY_NAMES } from "../test/format-chars";
+import { ANCHOR_CODE_POINTS, FORMAT_CODE_POINTS, hex, ORDINARY_NAMES } from "../test/format-chars";
 import { countRows, createTestEnv, type TestEnv } from "../test/db";
 import { loadEventBySlug } from "./events";
 import { insertEventWithBreaks, parseEventDraft, previewSchedule, type EventDraft } from "./admin-events";
@@ -216,7 +216,7 @@ describe("parseEventDraft: details", () => {
     expect(fieldsOf({ details }).details).toMatch(/control/);
   });
   it.each([["right-to-left override", "a\u202Eb"], ["zero-width space", "a\u200Bb"], ["byte order mark", "a\uFEFFb"], ["soft hyphen", "a\u00ADb"]])("rejects a %s", (_n, details) => {
-    expect(fieldsOf({ details }).details).toBe("The details can't contain invisible or direction-changing characters.");
+    expect(fieldsOf({ details }).details).toBe("The details can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.");
   });
   it.each([["line separator", "a\u2028b"], ["paragraph separator", "a\u2029b"], ["trailing line separator", "a\n\u2028"]])("rejects a %s (only \\n may break a line)", (_n, details) => {
     expect(fieldsOf({ details }).details).toBe("The details can't contain line or paragraph separators.");
@@ -484,6 +484,13 @@ describe("event name, break name and details: format characters (Unicode categor
       if (!errorOf(`a${String.fromCodePoint(cp)}b`)?.includes("invisible")) wrong.push(hex(cp));
     }
     expect(wrong).toEqual([]);
+  });
+
+  it.each(cases)("rejects each known format character (hand-listed, and in the scan) in the %s", (_label, errorOf) => {
+    for (const cp of ANCHOR_CODE_POINTS) {
+      expect(FORMAT_CODE_POINTS, hex(cp)).toContain(cp);
+      expect(errorOf(`a${String.fromCodePoint(cp)}b`), hex(cp)).toContain("invisible");
+    }
   });
 
   it.each(cases)("rejects U+061C ARABIC LETTER MARK in the %s by name", (_label, errorOf) => {

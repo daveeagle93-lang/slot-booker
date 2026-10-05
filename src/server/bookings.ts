@@ -12,6 +12,9 @@ export const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,64}$/;
 // mark, bidi controls, word joiner and invisible operators, BOM, tag characters and so on. They render as nothing or
 // reorder the text, so a name could look like another or fake a line. Emoji joined with ZWJ are rejected too.
 export const INVISIBLE = /\p{Cf}/u;
+/** The message for a refused Cf character: `what` is the field as the sentence names it ("event name", "details"). */
+export const invisibleMessage = (what: string): string =>
+  `The ${what} can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.`;
 // LINE SEPARATOR (U+2028) and PARAGRAPH SEPARATOR (U+2029) are categories Zl and Zp, not control characters, but
 // WhatsApp and most editors start a new line on them, so a name containing one could fake a line in a pasted lineup.
 export const LINE_SEPARATORS = /[\p{Zl}\p{Zp}]/u;
@@ -81,7 +84,7 @@ export function checkName(value: unknown, label: string): { name: string } | { m
   if (typeof value !== "string") return { message: `Enter the ${label}.` };
   if (!value.isWellFormed()) return { message: `The ${label} can't contain unpaired surrogate characters.` };
   if (INVISIBLE.test(value)) {
-    return { message: `The ${label} can't contain invisible or direction-changing characters.` };
+    return { message: invisibleMessage(label) };
   }
   if (LINE_SEPARATORS.test(value)) return { message: `The ${label} can't contain line or paragraph separators.` };
   const name = value.trim();

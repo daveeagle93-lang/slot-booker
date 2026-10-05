@@ -4,7 +4,7 @@ import { invalidInput, readEventBody } from "../../../../src/server/admin-events
 import { noStore } from "../../../../src/server/bookings";
 import type { AppEnv } from "../../../../src/server/env";
 import { json } from "../../../../src/server/http";
-import { loadAdminSettings, parseSettingsInput, saveSettings } from "../../../../src/server/settings";
+import { loadAdminSettings, loadSettings, parseSettingsInput, saveSettings } from "../../../../src/server/settings";
 
 export const onRequestGet: PagesFunction<AppEnv> = async ({ env, data }) => {
   const refused = refuseUnlessAdmin(data);
@@ -22,9 +22,9 @@ export const onRequestPut: PagesFunction<AppEnv> = async ({ request, env, data }
   if (refused) return refused;
   const body = await readEventBody(request);
   if (body instanceof Response) return body;
-  const parsed = parseSettingsInput(body);
-  if ("fields" in parsed) return invalidInput(parsed.fields);
   try {
+    const parsed = parseSettingsInput(body, await loadSettings(env.DB));
+    if ("fields" in parsed) return invalidInput(parsed.fields);
     await saveSettings(env.DB, parsed.settings);
     return json(await loadAdminSettings(env.DB), 200, noStore);
   } catch (e) {

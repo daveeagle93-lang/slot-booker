@@ -199,7 +199,7 @@ describe("POST /api/admin/events", () => {
     const res = await post(draft({ details: "Pay now\u202E" }));
     expect(res.status).toBe(400);
     expect(((await res.json()) as { fields: unknown }).fields).toEqual({
-      details: "The details can't contain invisible or direction-changing characters.",
+      details: "The details can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.",
     });
     expect(await countRows(t.env.DB, "events")).toBe(events);
   });

@@ -1,6 +1,6 @@
 import { MAX_IMAGE_BYTES, type ImageType } from "../core/image";
 import { checkTheme, DEFAULT_THEME, normaliseHex } from "../../public/theme.js";
-import { INVISIBLE, LINE_SEPARATORS } from "./bookings";
+import { INVISIBLE, invisibleMessage, LINE_SEPARATORS } from "./bookings";
 
 const MAX_CLUB_NAME = 80;
 const MAX_CONTACT_NAME = 100;
@@ -19,12 +19,13 @@ type Fields = Record<string, string>;
 
 /**
  * Trimmed text of at most `max` code points, with the same character rules as the event and booking names
- * (src/server/admin-events.ts). Empty is allowed: it means "not set".
+ * (src/server/admin-events.ts). Empty is allowed: it means "not set". A value exactly equal to `stored` (what is saved
+ * now) skips the invisible-character check, so text saved before that check existed can be kept while other fields change.
  */
-function checkText(value: unknown, label: string, max: number): { text: string } | { message: string } {
+function checkText(value: unknown, label: string, max: number, stored?: string): { text: string } | { message: string } {
   if (typeof value !== "string") return { message: `The ${label} must be text (it can be empty).` };
   if (!value.isWellFormed()) return { message: `The ${label} can't contain unpaired surrogate characters.` };
-  if (INVISIBLE.test(value)) return { message: `The ${label} can't contain invisible or direction-changing characters.` };
+  if (value !== stored && INVISIBLE.test(value)) return { message: invisibleMessage(label) };
   if (LINE_SEPARATORS.test(value)) return { message: `The ${label} can't contain line or paragraph separators.` };
   const text = value.trim();
   if ([...text].length > max) return { message: `The ${label} must be at most ${max} characters.` };
@@ -37,14 +38,14 @@ function checkText(value: unknown, label: string, max: number): { text: string }
 // safe to put in a mailto: link. The domain needs a dot.
 const EMAIL = /^[\p{L}\p{N}._+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+$/u;
 
-function checkEmail(value: unknown): { text: string } | { message: string } {
-  const checked = checkText(value, "email address", MAX_EMAIL);
+function checkEmail(value: unknown, stored?: string): { text: string } | { message: string } {
+  const checked = checkText(value, "email address", MAX_EMAIL, stored);
   if ("message" in checked || checked.text === "" || EMAIL.test(checked.text)) return checked;
   return { message: "Enter one email address, like name@example.org." };
 }
 
-function checkWebsite(value: unknown): { text: string } | { message: string } {
-  const checked = checkText(value, "website address", MAX_WEBSITE);
+function checkWebsite(value: unknown, stored?: string): { text: string } | { message: string } {
+  const checked = checkText(value, "website address", MAX_WEBSITE, stored);
   if ("message" in checked || checked.text === "") return checked;
   const bad = { message: "Enter a full web address starting with https://, like https://example.org." };
   // The prefix check keeps out javascript:, data:, http:, ftp:, //host and a bare host before the URL parser's leniency.
@@ -64,12 +65,15 @@ function checkWebsite(value: unknown): { text: string } | { message: string } {
 const asRecord = (v: unknown): Record<string, unknown> | null =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 
-/** Validates the whole settings group (all three parts are required), or returns a message per field. */
-export function parseSettingsInput(raw: Record<string, unknown>): { settings: SiteSettings } | { fields: Fields } {
+/**
+ * Validates the whole settings group (all three parts are required), or returns a message per field. `stored` is what
+ * is saved now: a text left exactly as it is isn't checked for invisible characters again.
+ */
+export function parseSettingsInput(raw: Record<string, unknown>, stored?: SiteSettings): { settings: SiteSettings } | { fields: Fields } {
   const fields: Fields = {};
-  const clubName = checkText(raw.clubName, "club name", MAX_CLUB_NAME);
+  const clubName = checkText(raw.clubName, "club name", MAX_CLUB_NAME, stored?.clubName);
   if ("message" in clubName) fields.clubName = clubName.message;
-  const website = checkWebsite(raw.website);
+  const website = checkWebsite(raw.website, stored?.website);
   if ("message" in website) fields.website = website.message;
 
   let name = "";
@@ -77,8 +81,8 @@ export function parseSettingsInput(raw: Record<string, unknown>): { settings: Si
   const contact = asRecord(raw.privacyContact);
   if (!contact) fields.privacyContact = "Send the privacy contact as a name and an email address.";
   else {
-    const n = checkText(contact.name, "privacy contact name", MAX_CONTACT_NAME);
-    const e = checkEmail(contact.email);
+    const n = checkText(contact.name, "privacy contact name", MAX_CONTACT_NAME, stored?.privacyContact.name);
+    const e = checkEmail(contact.email, stored?.privacyContact.email);
     if ("message" in n) fields["privacyContact.name"] = n.message;
     else name = n.text;
     if ("message" in e) fields["privacyContact.email"] = e.message;
@@ -194,8 +198,9 @@ export async function loadIcon(db: D1Database, size: IconSize): Promise<{ info: 
 
 /**
  * Stores one icon, in place of any earlier one for that size, only if the logo it was drawn from is still the stored
- * logo (one statement, so a logo change between a check and the write can't leave an icon from the old logo).
- * Returns the icon's SHA-256, or null when nothing was stored because that logo is gone. The caller has already checked the PNG.
+ * logo and its background is still the main colour (the stored one, else the default). One statement, so a logo or
+ * colour change between a check and the write can't leave an out-of-date icon.
+ * Returns the icon's SHA-256, or null when nothing was stored because one of them changed. The caller has already checked the PNG.
  */
 export async function saveIcon(db: D1Database, size: IconSize, data: Uint8Array, from: { background: string; logoSha256: string }): Promise<string | null> {
   const sha256 = hex(await crypto.subtle.digest("SHA-256", data));
@@ -203,10 +208,11 @@ export async function saveIcon(db: D1Database, size: IconSize, data: Uint8Array,
     .prepare(
       `INSERT INTO site_icons (size, content_type, bytes, width, height, sha256, background, logo_sha256)
        SELECT ?1, 'image/png', ?2, ?1, ?1, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM site_logo WHERE id = 1 AND sha256 = ?5)
+         AND COALESCE((SELECT theme_primary FROM site_settings WHERE id = 1), ?6) = ?4
        ON CONFLICT (size) DO UPDATE SET bytes = excluded.bytes, sha256 = excluded.sha256, background = excluded.background,
          logo_sha256 = excluded.logo_sha256, updated_at = ${NOW_SQL}`,
     )
-    .bind(size, data, sha256, from.background, from.logoSha256)
+    .bind(size, data, sha256, from.background, from.logoSha256, DEFAULT_THEME.primary)
     .run();
   return result.meta.changes > 0 ? sha256 : null;
 }
@@ -327,5 +333,9 @@ export const MAX_LOGO_BASE64 = Math.ceil(MAX_IMAGE_BYTES / 3) * 4;
 /** Standard base64 only: the + / alphabet, padded to a multiple of 4. No whitespace, no URL-safe alphabet. */
 export function decodeBase64(text: string): Uint8Array | null {
   if (text.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(text)) return null;
-  return Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+  // An index loop: Uint8Array.from with a callback took about 11 ms for 200 KiB, past the 10 ms CPU budget of the free plan.
+  const binary = atob(text);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
 }

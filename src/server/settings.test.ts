@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { FORMAT_CODE_POINTS, hex, ORDINARY_NAMES } from "../test/format-chars";
+import { ANCHOR_CODE_POINTS, FORMAT_CODE_POINTS, hex, ORDINARY_NAMES } from "../test/format-chars";
 import { makePng } from "../test/images";
 import { createTestEnv, type TestEnv } from "../test/db";
 import {
   decodeBase64, deleteLogo, loadAdminSettings, loadIcon, loadIconInfo, loadLogo, loadLogoInfo, loadPublicSettings, loadSettings, loadTheme,
-  MAX_LOGO_BASE64, parseSettingsInput, parseThemeInput, resetTheme, saveIcon, saveLogo, saveSettings, saveTheme,
+  MAX_ICON_BYTES, MAX_LOGO_BASE64, parseSettingsInput, parseThemeInput, resetTheme, saveIcon, saveLogo, saveSettings, saveTheme,
 } from "./settings";
+import { MAX_ICON_BYTES as CLIENT_MAX_ICON_BYTES } from "../../public/admin/icon-image.js";
 import { DEFAULT_THEME } from "../../public/theme.js";
 
 let t: TestEnv;
@@ -104,8 +105,17 @@ describe("parseSettingsInput", () => {
       expect(wrong).toEqual([]);
     });
 
+    it("rejects each known format character (hand-listed, and in the scan) in every text field", () => {
+      for (const cp of ANCHOR_CODE_POINTS) {
+        expect(FORMAT_CODE_POINTS, hex(cp)).toContain(cp);
+        for (const field of textFields) {
+          expect(fieldsOf(settingsWith(field, wrap(field, String.fromCodePoint(cp))))?.[field], `${hex(cp)} in ${field}`).toContain("invisible");
+        }
+      }
+    });
+
     it("rejects U+061C ARABIC LETTER MARK by name", () => {
-      expect(fieldsOf(parse({ clubName: "Cl\u061Cub" }))?.clubName).toBe("The club name can't contain invisible or direction-changing characters.");
+      expect(fieldsOf(parse({ clubName: "Cl\u061Cub" }))?.clubName).toBe("The club name can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.");
     });
 
     it("rejects the joiners U+200C and U+200D", () => {
@@ -260,6 +270,12 @@ describe("the logo in D1", () => {
   });
 });
 
+describe("MAX_ICON_BYTES", () => {
+  it("is the same in the browser's icon drawing (public/admin/icon-image.js) as on the server, so the two can't drift apart", () => {
+    expect(CLIENT_MAX_ICON_BYTES).toEqual(MAX_ICON_BYTES);
+  });
+});
+
 describe("the icons in D1", () => {
   const BG = "#0b5cad";
   const png = (size: number) => makePng(size, size);
@@ -268,6 +284,7 @@ describe("the icons in D1", () => {
     for (const size of [32, 180, 512] as const) expect(await saveIcon(t.env.DB, size, png(size), { background, logoSha256 })).toMatch(/^[0-9a-f]{64}$/);
   };
   const iconCount = async () => (await t.env.DB.prepare("SELECT COUNT(*) AS n FROM site_icons").first<{ n: number }>())!.n;
+  beforeEach(() => resetTheme(t.env.DB)); // an icon's background must be the main colour in force: the default unless a test sets one
 
   it("round-trips byte for byte, with the digest as lower-case hex", async () => {
     const sha = await storeLogo();
@@ -287,6 +304,7 @@ describe("the icons in D1", () => {
     const sha = await storeLogo();
     await saveIcon(t.env.DB, 180, png(180), { background: BG, logoSha256: sha });
     const before = (await loadIconInfo(t.env.DB, 180))!.sha256;
+    await saveTheme(t.env.DB, { primary: "#112233", accent: "#112233" });
     await saveIcon(t.env.DB, 180, makePng(180, 180, false), { background: "#112233", logoSha256: sha });
     expect(await iconCount()).toBe(1);
     expect((await loadIconInfo(t.env.DB, 180))!.sha256).not.toBe(before);
@@ -300,6 +318,18 @@ describe("the icons in D1", () => {
     expect(await saveIcon(t.env.DB, 32, png(32), { background: BG, logoSha256: "b".repeat(64) })).toBeNull();
     expect(await iconCount()).toBe(0);
     expect(await saveIcon(t.env.DB, 32, png(32), { background: BG, logoSha256: sha })).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("stores nothing when the background is not the main colour in force now (the stored one, else the default)", async () => {
+    const sha = await storeLogo();
+    expect(await saveIcon(t.env.DB, 32, png(32), { background: "#112233", logoSha256: sha })).toBeNull(); // default theme in force
+    await saveTheme(t.env.DB, { primary: "#1b6b3a", accent: "#1b6b3a" });
+    expect(await saveIcon(t.env.DB, 32, png(32), { background: BG, logoSha256: sha })).toBeNull(); // the old colour
+    expect(await iconCount()).toBe(0);
+    expect(await saveIcon(t.env.DB, 32, png(32), { background: "#1b6b3a", logoSha256: sha })).toMatch(/^[0-9a-f]{64}$/);
+    await resetTheme(t.env.DB);
+    expect(await saveIcon(t.env.DB, 180, png(180), { background: DEFAULT_THEME.primary, logoSha256: sha })).toMatch(/^[0-9a-f]{64}$/);
+    expect(await iconCount()).toBe(2);
   });
 
   it("is removed, all three sizes, in the same batch as a logo save or delete", async () => {
@@ -348,6 +378,7 @@ describe("the icons in D1", () => {
 
     it("are the background and logo digest once all three sizes are stored, never the bytes", async () => {
       const sha = await storeLogo();
+      await saveTheme(t.env.DB, { primary: "#1b6b3a", accent: "#1b6b3a" });
       await storeIcons(sha, "#1b6b3a");
       const admin = await loadAdminSettings(t.env.DB);
       expect(admin.icons).toEqual({ background: "#1b6b3a", logoSha256: sha });
@@ -357,6 +388,7 @@ describe("the icons in D1", () => {
     it("are null when the sizes were made on different backgrounds or from different logos (a half-redrawn set)", async () => {
       const sha = await storeLogo();
       await storeIcons(sha);
+      await saveTheme(t.env.DB, { primary: "#112233", accent: "#112233" });
       await saveIcon(t.env.DB, 512, png(512), { background: "#112233", logoSha256: sha });
       expect((await loadAdminSettings(t.env.DB)).icons).toBeNull();
     });
@@ -561,6 +593,25 @@ describe("decodeBase64", () => {
     ["a data: prefix", "data:image/png;base64,QUJD"], ["only padding", "===="],
   ])("rejects %s", (_name, text) => {
     expect(decodeBase64(text)).toBeNull();
+  });
+
+  it("round-trips every byte value, and a 200 KiB random buffer, byte for byte", () => {
+    const all = Uint8Array.from({ length: 256 }, (_, i) => i);
+    expect(decodeBase64(Buffer.from(all).toString("base64"))).toEqual(all);
+    const big = new Uint8Array(200 * 1024);
+    for (let offset = 0; offset < big.length; offset += 65_536) crypto.getRandomValues(big.subarray(offset, offset + 65_536));
+    const decoded = decodeBase64(Buffer.from(big).toString("base64"));
+    expect(decoded).toBeInstanceOf(Uint8Array);
+    expect(Buffer.from(decoded!).equals(Buffer.from(big))).toBe(true);
+  });
+
+  it("returns a Uint8Array of exactly the decoded length, for every padding", () => {
+    for (const length of [0, 1, 2, 3, 4, 5]) {
+      const bytes = Uint8Array.from({ length }, (_, i) => 200 + i);
+      const out = decodeBase64(Buffer.from(bytes).toString("base64"));
+      expect(out).toBeInstanceOf(Uint8Array);
+      expect(out!.length).toBe(length);
+    }
   });
 
   it("derives the encoded cap from the byte cap", () => {

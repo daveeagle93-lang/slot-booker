@@ -65,9 +65,15 @@ export const onRequestPut: PagesFunction<AppEnv, "size"> = async ({ request, env
     if (image.width !== size || image.height !== size) {
       return errorResponse(422, "invalid_image", `That icon must be exactly ${size} by ${size} pixels.`, { reason: "dimensions" }, noStore);
     }
-    // The same condition again inside the write, so a logo change after the read above can't slip an icon in.
+    // The same conditions again inside the write, so a colour or logo change after the reads above can't slip an icon in.
     const sha256 = await saveIcon(env.DB, size, bytes, { background, logoSha256 });
-    if (sha256 === null) return stale("stale_logo", "The logo has changed since that icon was drawn. Reload the page and try again.");
+    if (sha256 === null) {
+      // Which one changed: read again, colour first as above. (A change back in between still reports the logo.)
+      if (background !== (await loadTheme(env.DB)).primary) {
+        return stale("stale_theme", "The main colour has changed since that icon was drawn. Reload the page and try again.");
+      }
+      return stale("stale_logo", "The logo has changed since that icon was drawn. Reload the page and try again.");
+    }
     return json({ icon: { size, sha256, bytes: bytes.length, background, logoSha256 } }, 200, noStore);
   } catch (e) {
     return editFailed("saveIcon", e);

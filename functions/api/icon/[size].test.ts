@@ -81,6 +81,26 @@ describe("GET /api/icon/[size]: a stored icon", () => {
     expect((await call("32", { headers: { "If-None-Match": `"${sha256}"` } })).status).toBe(200);
   });
 
+  it("builds the tag and length of a non-matching conditional GET from the read that supplied the bytes", async () => {
+    const first = await store(32);
+    const second = pngOfSize(700, 32, 32);
+    // The icon is replaced right after the metadata read, so the body read finds a different row.
+    const db = {
+      prepare: (q: string) => {
+        const statement = t.env.DB.prepare(q);
+        if (!/length\(bytes\) AS bytes FROM/.test(q)) return statement;
+        return { bind: (...values: unknown[]) => ({ first: async () => { const row = await statement.bind(...values).first(); await store(32, second); return row; } }) };
+      },
+    } as unknown as D1Database;
+    const res = await call("32", { headers: { "If-None-Match": '"nope"' } }, { DB: db });
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(Buffer.from(second))).toBe(true);
+    expect(res.headers.get("etag")).toBe(`"${sha(second)}"`);
+    expect(res.headers.get("etag")).not.toBe(`"${first.sha256}"`);
+    expect(res.headers.get("content-length")).toBe(String(second.length));
+  });
+
   it("answers HEAD with the GET's headers and no body, from the metadata row", async () => {
     const stored = await store(512);
     const sql: string[] = [];

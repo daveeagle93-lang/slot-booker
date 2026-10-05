@@ -1,4 +1,4 @@
-import { brandPage, DEFAULT_CLUB, isLogoUrl, loadSettings } from "../branding.js";
+import { brandPage, DEFAULT_CLUB, isLogoUrl, loadSettings, setDefaultIconLink } from "../branding.js";
 import { checkTheme, DEFAULT_THEME, normaliseHex, PAGE_COLOURS, PRESETS, themeTokens } from "../theme.js";
 import { createApi, makeH } from "./api.js";
 import { updateIcons } from "./icon-image.js";
@@ -232,6 +232,8 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
       logoChanged(logo, blob = null) {
         state.logo = logo;
         state.blob = blob;
+        // Browsers prefer an SVG icon link, so the default one must go while the club has a logo of its own.
+        setDefaultIconLink(document, !logo);
         if (logo) return update("The logo was saved, but the");
         latest++; // the server dropped the icons with the logo; stop anything still drawing
         status.textContent = "";

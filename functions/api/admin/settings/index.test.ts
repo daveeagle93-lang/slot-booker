@@ -121,6 +121,23 @@ describe("PUT /api/admin/settings", () => {
     expect(await stored()).toEqual({ club_name: good.clubName, privacy_contact_name: "Pat", privacy_contact_email: "pat@example.org", website_url: good.website });
   });
 
+  it("saves a changed email when the club name stored earlier has a joiner and is sent unchanged", async () => {
+    await t.env.DB.prepare("UPDATE site_settings SET club_name = ?").bind("Dog\u200D Club").run();
+    const res = await put({ ...good, clubName: "Dog\u200D Club", privacyContact: { name: "Pat", email: "new@example.org" } });
+    expect(res.status).toBe(200);
+    expect(await stored()).toMatchObject({ club_name: "Dog\u200D Club", privacy_contact_email: "new@example.org" });
+  });
+
+  it("refuses a club name changed to a new value with a joiner, in plain words, saving nothing", async () => {
+    await t.env.DB.prepare("UPDATE site_settings SET club_name = ?").bind("Dog\u200D Club").run();
+    const res = await put({ ...good, clubName: "Cat\u200D Club" });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: unknown }).fields).toEqual({
+      clubName: "The club name can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.",
+    });
+    expect(await stored()).toMatchObject({ club_name: "Dog\u200D Club" });
+  });
+
   it("requires all three parts: a partial update is refused and saves nothing", async () => {
     await put(good);
     for (const partial of [{ clubName: "New" }, { website: "https://new.example/" }, { privacyContact: { name: "", email: "" } }, {}]) {

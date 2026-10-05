@@ -5,7 +5,8 @@ import type { AppEnv } from "../../src/server/env";
 import { apiHeaders, errorResponse } from "../../src/server/http";
 import { loadSettings, loadTheme } from "../../src/server/settings";
 
-const SHORT_NAME_CODE_POINTS = 12;
+const SHORT_NAME_CLUSTERS = 12;
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 /**
  * The web app manifest: a name, a start page, and the app icons from /api/icon. Built only with JSON.stringify
@@ -17,7 +18,8 @@ const manifest = (clubName: string, primary: string, startUrl: string): string =
   const name = clubName || DEFAULT_CLUB;
   return JSON.stringify({
     name,
-    short_name: [...name].slice(0, SHORT_NAME_CODE_POINTS).join(""),
+    // User-perceived characters, so a flag or an accented letter is never cut in half.
+    short_name: [...graphemes.segment(name)].slice(0, SHORT_NAME_CLUSTERS).map((g) => g.segment).join(""),
     start_url: startUrl,
     scope: "/",
     display: "standalone",

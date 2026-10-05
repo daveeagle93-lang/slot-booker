@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FORMAT_CODE_POINTS, hex, ORDINARY_NAMES } from "../test/format-chars";
+import { ANCHOR_CODE_POINTS, FORMAT_CODE_POINTS, hex, ORDINARY_NAMES } from "../test/format-chars";
 import { readJsonObject, validateBookingInput } from "./bookings";
 
 const request = (body: string): Request =>
@@ -40,6 +40,13 @@ describe("validateBookingInput: names", () => {
     expect(FORMAT_CODE_POINTS).toContain(0x061c);
   });
 
+  it.each(ANCHOR_CODE_POINTS)("lists the known format character %#, and a dog's and a handler's name containing it is refused", (cp) => {
+    expect(FORMAT_CODE_POINTS, hex(cp)).toContain(cp);
+    for (const key of ["dogName", "handlerName"]) {
+      expect(fieldsOf({ [key]: `a${String.fromCodePoint(cp)}b` })?.[key], `${hex(cp)} in ${key}`).toContain("invisible");
+    }
+  });
+
   it("rejects every Unicode format character (Cf) in a dog's name and a handler's name", () => {
     const accepted: string[] = [];
     for (const cp of FORMAT_CODE_POINTS) {
@@ -54,8 +61,8 @@ describe("validateBookingInput: names", () => {
   });
 
   it("rejects U+061C ARABIC LETTER MARK by name", () => {
-    expect(fieldsOf({ dogName: "Fl\u061Cy" })?.dogName).toBe("The dog's name can't contain invisible or direction-changing characters.");
-    expect(fieldsOf({ handlerName: "P\u061Cat" })?.handlerName).toBe("The handler's name can't contain invisible or direction-changing characters.");
+    expect(fieldsOf({ dogName: "Fl\u061Cy" })?.dogName).toBe("The dog's name can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.");
+    expect(fieldsOf({ handlerName: "P\u061Cat" })?.handlerName).toBe("The handler's name can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.");
   });
 
   it.each(["\u200C", "\u200D"])("rejects the joiner %j, which is Cf", (ch) => {

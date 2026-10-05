@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyBranding, brandPage, loadSettings, pageTitle, safeWebsite } from "./branding.js";
+import { applyBranding, brandPage, loadSettings, pageTitle, safeWebsite, setDefaultIconLink } from "./branding.js";
 
 const reply = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -172,6 +172,16 @@ describe("the default icon", () => {
     setup();
     await brandPage(document, loadSettings(asFetch(async () => reply(200, ALL))), opts);
     expect(icons()).toHaveLength(1);
+  });
+
+  it("setDefaultIconLink adds the SVG link once and removes only that link, whatever the number of calls", () => {
+    setup();
+    setDefaultIconLink(document, true);
+    setDefaultIconLink(document, true);
+    expect(icons()).toEqual([["image/png", "/api/icon/32"], ["image/svg+xml", "/icons/default.svg"]]);
+    setDefaultIconLink(document, false);
+    setDefaultIconLink(document, false);
+    expect(icons()).toEqual([["image/png", "/api/icon/32"]]);
   });
 
   it("never takes its address from the settings", () => {

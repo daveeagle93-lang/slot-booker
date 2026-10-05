@@ -55,6 +55,21 @@ describe("GET /api/manifest.webmanifest", () => {
     expect(m.name).toBe("😀".repeat(13));
   });
 
+  it("cuts the short name at 12 grapheme clusters, so a flag (two code points) stays whole", async () => {
+    await setName("Dog Club 1 🇬🇧");
+    const m = await manifest();
+    expect(m.short_name).toBe("Dog Club 1 🇬🇧");
+    expect(m.short_name.isWellFormed()).toBe(true);
+    expect(m.name).toBe("Dog Club 1 🇬🇧");
+  });
+
+  it("cuts a long plain name at exactly 12 clusters, a letter with a combining accent counting as one", async () => {
+    await setName("Hillside Dog Training Club");
+    expect((await manifest()).short_name).toBe("Hillside Dog");
+    await setName("e\u0301".repeat(13)); // e with a combining accent: one cluster, two code points
+    expect((await manifest()).short_name).toBe("e\u0301".repeat(12));
+  });
+
   it("carries a club name with quotes, backslashes, markup and non-ASCII exactly, as JSON", async () => {
     const name = `Dogs "R" Us \\ <b>&amp;</b> </script> é日本 ☃`;
     await setName(name);
