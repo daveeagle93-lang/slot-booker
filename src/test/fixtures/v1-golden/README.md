@@ -3,6 +3,8 @@
 Outputs of the **v1.0 code (commit `7810f8c`, "README: Deploy to Cloudflare button points at the public repository")** for one deterministic dog-club scenario.
 They are the oracle for the back-compat test: "an event created on v1.0 behaves and renders identically after the migration".
 
+The replay against the current code is `src/test/golden-v1.test.ts` (it applies `seed.sql` to a database at migration 0014, applies the later migrations, and compares every file here; its `ALLOWED_ADDITIONS` is the only list of differences).
+
 **Never regenerate these files from newer code.** If the new code differs from them, either the new code is wrong or the difference is a deliberate, explicitly allow-listed change in the test; the files stay as v1.0 produced them.
 
 ## How they were produced
