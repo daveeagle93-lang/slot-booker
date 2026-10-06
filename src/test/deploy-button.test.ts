@@ -24,7 +24,12 @@ const dbOf = (env?: string) => config(env).d1_databases.find((d: { binding: stri
 describe("package.json scripts", () => {
   it("applies the migrations before it deploys", () => {
     const steps = pkg.scripts.deploy.split("&&").map((s) => s.trim());
-    expect(steps).toEqual(["npm run db:migrations:apply", "wrangler deploy"]);
+    expect(steps).toEqual(["npm run db:migrations:apply", 'wrangler deploy --env=""']);
+  });
+
+  it("targets the top-level environment explicitly in both scripts (env.preview is defined, so no --env would warn)", () => {
+    expect(pkg.scripts.deploy).toContain('--env=""');
+    expect(pkg.scripts["db:migrations:apply"]).toContain('--env=""');
   });
 
   it("applies migrations to the remote database through the binding name, not the database name", () => {

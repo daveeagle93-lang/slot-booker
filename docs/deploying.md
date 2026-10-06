@@ -4,7 +4,7 @@ This page gets your club its own copy of the app on Cloudflare's free plan. The 
 
 Your copy is **one Cloudflare Worker**, named `slot-booker` unless you change it. It serves the website and the booking API, and it uses one D1 database, `slot-booker-db`. The migrations in `migrations/` (0001 to 0014) build the database.
 
-**What was and was not checked.** The button steps follow Cloudflare's documentation ([Deploy buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/)) and this repository's code and configuration. Nobody has run them against a real public copy of this repository, and no Cloudflare screen was seen while writing this. Where the text describes what a Cloudflare screen looks like, or says something the documentation and the code do not confirm, it says **unverified**. Dashboard labels may have changed.
+**What was and was not checked.** The button was run once end to end against the public copy of this repository on 6 October 2026 ([Deploy buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/)): the form, the build, the migrations, the deploy to `workers.dev`, `/setup`, sign-in, creating an event and booking all worked. The rest of the steps follow Cloudflare's documentation and this repository's code and configuration. Where the text says something that run, the documentation and the code do not confirm, it says **unverified**. Dashboard labels may have changed.
 
 Contents:
 
@@ -33,12 +33,13 @@ Decide on a `SETUP_CODE` first: a private phrase of **at least 12 characters**, 
 
 1. **Press the "Deploy to Cloudflare" button** in the [README](../README.md). It opens Cloudflare.
 2. **Sign in to Cloudflare**, or create the free account. The sign-up screens are Cloudflare's own: unverified here.
-3. **Connect your GitHub or GitLab account** when asked. Cloudflare's docs say the button copies the repository into your own account, so you end up with your own copy that you own.
+3. **Connect your GitHub or GitLab account** when asked. The form has a toggle for whether your copy of the repository is private. Cloudflare's docs say the button copies the repository into your own account, so you end up with your own copy that you own.
 4. **Fill in the prompts.** Cloudflare's docs say you can customise the "repository name, Worker name, and required resource names". The suggestions are fine.
    - The **Worker name** becomes part of your address: `https://<worker-name>.<your-workers-subdomain>.workers.dev`.
-   - The **database** (`DB`) is made for you. The description shown is the one in `package.json`: "Your club's booking database. Cloudflare creates it for you, so the suggested name is fine." (Whether that description appears is **unverified**.)
-   - **`SETUP_CODE`**: type your phrase. The description shown is the one in `package.json`. A code under 12 characters is accepted by the form but then `/setup` refuses it (see Troubleshooting). Whether the form shows `SETUP_CODE` as a prompt at all is **unverified**: if it does not, add it afterwards (see "If `/setup` says it isn't ready" below).
-5. **Deploy.** Cloudflare builds the copy with Workers Builds, creates the database, applies the migrations and publishes the Worker. The migrations run through the `deploy` script in `package.json` (`npm run db:migrations:apply`, then `wrangler deploy`). Wait for it to finish. Whether the log shows a warning about `env.preview` (it did in a dry run) is **unverified**; it does not stop a normal deploy as far as the code shows.
+   - The **database** (`DB`) is made for you. The description shown is the one in `package.json`: "Your club's booking database. Cloudflare creates it for you, so the suggested name is fine."
+   - **`SETUP_CODE`**: type your phrase. The description shown is the one in `package.json`. A code under 12 characters is accepted by the form but then `/setup` refuses it (see Troubleshooting).
+   - The form also shows toggles for "Enable Preview builds" and "Protect with Cloudflare Access", and an Advanced settings section. This guide does not use them.
+5. **Deploy.** Cloudflare creates the database and replaces the placeholder database id in your copy of `wrangler.jsonc`, then builds the copy with Workers Builds. That runs `npm run deploy`, which applies all 14 migrations to the database through its `DB` binding and publishes the Worker. Wait for it to finish. Both scripts pass `--env=""`, which targets the top-level environment explicitly: without it Wrangler warned that several environments are defined and none was chosen (`env.preview` exists). A dry run of the current scripts shows no such warning.
 6. **Find your address.** In the Cloudflare dashboard, open **Workers & Pages**, then the Worker (`slot-booker` by default). Its page shows its `workers.dev` address. These labels are **unverified**. A new account may have to pick a `workers.dev` subdomain first: also unverified.
 7. **Make your admin secret.** Open `https://<worker-name>.<your-workers-subdomain>.workers.dev/setup` and:
    1. Type your `SETUP_CODE` and press **Continue**.
@@ -141,7 +142,7 @@ You need Node 24 and Git. Every step below uses a command that exists in `packag
    npm run deploy
    ```
 
-   `apply` asks for confirmation and takes a backup first. Wrangler prints the Worker's address. With `env.preview` defined and no `--env`, `wrangler deploy` may print a warning: how it behaves is **unverified**.
+   `apply` asks for confirmation and takes a backup first. Wrangler prints the Worker's address. Both commands in `npm run deploy` pass `--env=""`, so the top-level environment is targeted explicitly and Wrangler does not warn about `env.preview`.
 
 6. **Set the setup code.** It prompts for the value, so nothing secret goes on the command line:
 

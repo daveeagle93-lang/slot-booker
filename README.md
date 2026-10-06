@@ -7,18 +7,20 @@ A slot-booking app for small clubs that run a few events a year, such as a trial
 
 It is a template. Each club gets its own copy in its own Cloudflare account, on the free tier. The copy is one Cloudflare Worker (it serves the website and the booking API) plus one D1 database, written in TypeScript with a vanilla JavaScript front end and no build step.
 
-Status: work in progress. The button has not been run end to end against a public copy of this repository, so the deploy steps below follow Cloudflare's documentation and this repository's code, and the points that are not confirmed are marked **unverified**.
+Status: work in progress. The button has now been run end to end once, against the public copy of this repository (6 October 2026): it created the database, applied all 14 migrations, deployed the Worker to `workers.dev`, and `/setup`, sign-in, event creation and booking all worked on the deployed copy. That was one run; the points it did not cover are marked **unverified**.
 
 ## What the button will ask you for
 
 Press the button, sign in to Cloudflare (a free account is enough) and connect your GitHub or GitLab account. Cloudflare then asks for:
 
-- **Names:** a repository name, a Worker name and the database name. The suggested ones are fine. The Worker name becomes part of your site's address.
+- **Your Git account** (GitHub or GitLab), with a toggle for whether your copy of the repository is private.
+- **Names:** a project (Worker) name. The suggested one is fine. The Worker name becomes part of your site's address.
+- **Database:** a new D1 database, shown with the description from `package.json`. The suggested name is fine.
 - **`SETUP_CODE`:** a private phrase you choose, at least 12 characters. You type it once, on your new site, to create your admin sign-in. Keep it to yourself and write it down somewhere safe.
 
-That is all. Cloudflare creates the database, runs the migrations (the `deploy` script in `package.json`) and publishes the Worker. Cloudflare's docs say the button copies the code into your own GitHub or GitLab account and builds it there with Workers Builds.
+The form also has toggles for "Enable Preview builds" and "Protect with Cloudflare Access", and an Advanced settings section; this guide does not use them. Cloudflare creates the database, builds the copy with Workers Builds, which runs `npm run deploy` (the `deploy` script in `package.json`: it applies the migrations, then publishes the Worker). Cloudflare's docs say the button copies the code into your own GitHub or GitLab account.
 
-What is **unverified** here: how the button treats the placeholder database id in `wrangler.jsonc`, whether the database prompt is keyed by `DB` in `package.json`'s `cloudflare.bindings`, whether the empty `SETUP_CODE=` line in `.dev.vars.example` shows as a prompt, and how `wrangler deploy` behaves inside Workers Builds when `env.preview` is defined and no `--env` is given (a warning appeared in a dry run). Step-by-step, with what you should see: [docs/deploying.md](docs/deploying.md).
+In that run the button replaced the placeholder database id in `wrangler.jsonc` and applied the migrations through the `DB` binding. Step-by-step, with what you should see: [docs/deploying.md](docs/deploying.md).
 
 ## First run: `/setup`
 

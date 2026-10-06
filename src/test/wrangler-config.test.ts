@@ -51,6 +51,12 @@ it("turns off per-version preview URLs, in production and preview", () => {
   for (const env of [undefined, "preview"]) expect(config(env).preview_urls, String(env)).toBe(false);
 });
 
+// Explicit so Wrangler does not warn that workers_dev is missing, and so the button's workers.dev URL keeps working.
+it("sets workers_dev explicitly to true at the top level", () => {
+  expect(readFileSync(join(import.meta.dirname, "../../wrangler.jsonc"), "utf8")).toMatch(/^\s*"workers_dev": true,/m);
+  expect(config().workers_dev).toBe(true);
+});
+
 it("does not publish test files from public/ as static assets", () => {
   const ignore = readFileSync(join(import.meta.dirname, "../../public/.assetsignore"), "utf8").split("\n").map((l) => l.trim());
   expect(ignore).toContain("*.test.ts");

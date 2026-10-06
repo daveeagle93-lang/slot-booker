@@ -197,7 +197,7 @@ So the `workers.dev` hostname is not an authentication bypass, but:
 
 #### Optional: closing the `workers.dev` hostname
 
-This is not needed for the admin to work or be secure. `wrangler.jsonc` has a `workers_dev` setting (in Wrangler's config schema: "Whether we use <name>.<subdomain>.workers.dev to test and deploy your Worker"), so setting it to `false` in the club's copy should turn that hostname off once the custom domain works. I haven't tried it, and `wrangler.jsonc` does not set it today.
+This is not needed for the admin to work or be secure. `wrangler.jsonc` sets `workers_dev` explicitly to `true` (in Wrangler's config schema: "Whether we use <name>.<subdomain>.workers.dev to test and deploy your Worker"), which is what keeps the button's `workers.dev` address working. Setting it to `false` in the club's copy should turn that hostname off once the custom domain works. I haven't tried turning it off.
 
 ### How the Worker checks the token
 
