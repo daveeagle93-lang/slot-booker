@@ -88,7 +88,7 @@ textarea[readonly], input[readonly] { color: var(--muted); }
 
 .field-row > * { min-width: 0; }
 @media (min-width: 360px) {
-  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--gap); }
+  .field-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 var(--gap); }
   /* Labels that wrap to different heights still leave the inputs level. */
   .field-row > .field { display: flex; flex-direction: column; }
   .field-row > .field > label { flex: 1; }

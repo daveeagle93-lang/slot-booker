@@ -175,6 +175,8 @@ a { color: var(--accent); }
 form .button { width: 100%; margin-top: 0.5rem; }
 
 .field { margin-bottom: 1rem; }
+/* Grid and flex items default to min-width: auto, which lets a wide child (a date or time input) push them past the card. */
+form, .field, .break-row { min-width: 0; max-width: 100%; }
 label { display: block; font-weight: 600; margin-bottom: 0.25rem; }
 input {
   display: block;
@@ -186,6 +188,22 @@ input {
   border: 2px solid var(--border);
   border-radius: 8px;
 }
+/* iOS Safari gives date and time inputs an intrinsic minimum width and its own appearance, so on a narrow screen they
+   overflow the card and neighbours overlap. Dropping the native appearance lets width and height apply like any input;
+   without an explicit height an empty one collapses on iOS. The line-height fills the content box (48px less the borders),
+   which centres the value; the value is centred by default and must be left-aligned like the other fields. */
+input[type="date"], input[type="time"] {
+  -webkit-appearance: none;
+  appearance: none;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  height: 48px;
+  min-height: 48px;
+  padding-block: 0;
+  line-height: 44px;
+}
+input[type="date"]::-webkit-date-and-time-value, input[type="time"]::-webkit-date-and-time-value { text-align: left; }
 input[aria-invalid="true"] { border-color: var(--danger-text); }
 
 .field-error:not(:empty), .form-error:not(:empty) {

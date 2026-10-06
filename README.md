@@ -122,6 +122,10 @@ npm run dev                      # Wrangler prints the local address
 
 Open `/setup` on the local address to make a local admin secret, as in "First run" above.
 
+`npm run test:webkit` is an opt-in layout check for the date and time inputs on the create and edit event pages. iOS Safari gives those inputs a minimum width of their own, which once made them overflow the card and overlap on a phone, and Chromium never shows it. The script serves `public/` locally, stubs the API, loads `/admin/new` and `/admin/edit` at 320 and 390 px wide in Playwright's WebKit, and fails if an input leaves its field or card, a Start/End pair overlaps, or the page scrolls sideways.
+
+It needs a machine where Playwright supports WebKit (`npx playwright-core install webkit` fetches the browser; Linux also needs its system libraries). Where WebKit can't launch, it prints `SKIPPED` and exits 2, so a skip is never mistaken for a pass; add `--allow-skip` to exit 0 instead. `--engine chromium` runs the same checks in Chromium, as a sanity check of the script only. It is not part of `npm test`.
+
 To deploy from the command line instead of the button, see [docs/deploying.md](docs/deploying.md#advanced-deploy-from-the-command-line).
 
 ## Documentation
