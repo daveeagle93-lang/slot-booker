@@ -179,6 +179,13 @@ export const MAX_ICON_BYTES: Record<IconSize, number> = { 32: 16 * 1024, 180: 96
 /** "32", "180" or "512" exactly (no sign, no leading zeros, no whitespace), else null. */
 export const parseIconSize = (text: string): IconSize | null => ICON_SIZES.find((size) => String(size) === text) ?? null;
 
+/**
+ * What an icon drawn from the default mark (the club has no logo) stores as the digest of the logo it was drawn from:
+ * 64 zeros, which no SHA-256 of a real logo can be in practice. saveIcon accepts it only while there is no logo.
+ * DEFAULT_MARK_SOURCE in public/admin/icon-image.js is the same; a test keeps the two equal.
+ */
+export const DEFAULT_MARK_SOURCE = "0".repeat(64);
+
 export interface IconInfo { sha256: string; bytes: number }
 
 /** What a stored icon is, without reading its bytes. */
@@ -198,8 +205,9 @@ export async function loadIcon(db: D1Database, size: IconSize): Promise<{ info: 
 
 /**
  * Stores one icon, in place of any earlier one for that size, only if the logo it was drawn from is still the stored
- * logo and its background is still the main colour (the stored one, else the default). One statement, so a logo or
- * colour change between a check and the write can't leave an out-of-date icon.
+ * logo (or, for DEFAULT_MARK_SOURCE, there is still no logo) and its background is still the main colour (the stored
+ * one, else the default). One statement, so a logo or colour change between a check and the write can't leave an
+ * out-of-date icon.
  * Returns the icon's SHA-256, or null when nothing was stored because one of them changed. The caller has already checked the PNG.
  */
 export async function saveIcon(db: D1Database, size: IconSize, data: Uint8Array, from: { background: string; logoSha256: string }): Promise<string | null> {
@@ -207,12 +215,14 @@ export async function saveIcon(db: D1Database, size: IconSize, data: Uint8Array,
   const result = await db
     .prepare(
       `INSERT INTO site_icons (size, content_type, bytes, width, height, sha256, background, logo_sha256)
-       SELECT ?1, 'image/png', ?2, ?1, ?1, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM site_logo WHERE id = 1 AND sha256 = ?5)
+       SELECT ?1, 'image/png', ?2, ?1, ?1, ?3, ?4, ?5
+       WHERE (EXISTS (SELECT 1 FROM site_logo WHERE id = 1 AND sha256 = ?5)
+           OR (?5 = ?7 AND NOT EXISTS (SELECT 1 FROM site_logo WHERE id = 1)))
          AND COALESCE((SELECT theme_primary FROM site_settings WHERE id = 1), ?6) = ?4
        ON CONFLICT (size) DO UPDATE SET bytes = excluded.bytes, sha256 = excluded.sha256, background = excluded.background,
          logo_sha256 = excluded.logo_sha256, updated_at = ${NOW_SQL}`,
     )
-    .bind(size, data, sha256, from.background, from.logoSha256, DEFAULT_THEME.primary)
+    .bind(size, data, sha256, from.background, from.logoSha256, DEFAULT_THEME.primary, DEFAULT_MARK_SOURCE)
     .run();
   return result.meta.changes > 0 ? sha256 : null;
 }

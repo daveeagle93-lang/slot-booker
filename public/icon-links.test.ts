@@ -54,7 +54,7 @@ describe("the icon, touch icon and manifest links in every page", () => {
       ]);
     });
 
-    it("has no static SVG icon (browsers would prefer it to the club's own icon; branding.js adds it only when there is no logo)", () => {
+    it("has no static SVG icon (browsers would prefer it to the generated PNG icon, and branding.js adds none either)", () => {
       expect(html).not.toMatch(/image\/svg\+xml|\.svg/);
     });
 

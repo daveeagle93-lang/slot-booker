@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyBranding, brandPage, loadSettings, pageTitle, safeWebsite, setDefaultIconLink } from "./branding.js";
+import { applyBranding, brandPage, loadSettings, pageTitle, safeWebsite } from "./branding.js";
 
 const reply = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -135,59 +135,35 @@ describe("applyBranding", () => {
   });
 });
 
-describe("the default icon", () => {
+describe("the page icon links", () => {
   const setup = () => {
     document.head.innerHTML = '<link rel="icon" type="image/png" sizes="32x32" href="/api/icon/32" />';
     document.body.innerHTML = '<main id="app"></main>';
   };
   const icons = () => [...document.head.querySelectorAll("link[rel~='icon']")].map((l) => [l.getAttribute("type"), l.getAttribute("href")]);
   const opts = { pageTitle: "x", home: "/" };
+  const PNG_ONLY = [["image/png", "/api/icon/32"]];
 
-  it("adds the SVG icon when the settings loaded and there is no logo, keeping the PNG link", () => {
-    setup();
-    applyBranding(document, { clubName: null, website: null, privacyContact: null, logo: null, loaded: true } as never, opts);
-    expect(icons()).toEqual([["image/png", "/api/icon/32"], ["image/svg+xml", "/icons/default.svg"]]);
-    expect(document.head.querySelector("link[type='image/svg+xml']")!.getAttribute("rel")).toBe("icon");
+  it("adds no SVG icon, with or without a logo, so the generated PNG is the one the browser uses", () => {
+    for (const settings of [{ clubName: null, website: null, privacyContact: null, logo: null, loaded: true }, { ...ALL, loaded: true }]) {
+      setup();
+      applyBranding(document, settings as never, opts);
+      expect(icons()).toEqual(PNG_ONLY);
+    }
   });
 
-  it("adds nothing when there is a logo, so the club's own icon is the one the browser uses", () => {
+  it("adds none when the settings could not be loaded, or through brandPage", async () => {
     setup();
-    applyBranding(document, { ...ALL, loaded: true } as never, opts);
-    expect(icons()).toEqual([["image/png", "/api/icon/32"]]);
-  });
-
-  it("adds nothing when the settings could not be loaded (it isn't known that there is no logo)", async () => {
-    setup();
-    const failed = await loadSettings(async () => { throw new TypeError("offline"); });
-    applyBranding(document, failed, opts);
-    expect(icons()).toEqual([["image/png", "/api/icon/32"]]);
+    applyBranding(document, await loadSettings(async () => { throw new TypeError("offline"); }), opts);
     applyBranding(document, null, opts);
-    expect(icons()).toEqual([["image/png", "/api/icon/32"]]);
-  });
-
-  it("adds it through brandPage for a loaded, logo-less answer, and not for one with a logo", async () => {
+    expect(icons()).toEqual(PNG_ONLY);
     setup();
     await brandPage(document, loadSettings(asFetch(async () => reply(200, { ...ALL, logo: null }))), opts);
-    expect(icons()).toHaveLength(2);
-    setup();
-    await brandPage(document, loadSettings(asFetch(async () => reply(200, ALL))), opts);
-    expect(icons()).toHaveLength(1);
+    expect(icons()).toEqual(PNG_ONLY);
   });
 
-  it("setDefaultIconLink adds the SVG link once and removes only that link, whatever the number of calls", () => {
-    setup();
-    setDefaultIconLink(document, true);
-    setDefaultIconLink(document, true);
-    expect(icons()).toEqual([["image/png", "/api/icon/32"], ["image/svg+xml", "/icons/default.svg"]]);
-    setDefaultIconLink(document, false);
-    setDefaultIconLink(document, false);
-    expect(icons()).toEqual([["image/png", "/api/icon/32"]]);
-  });
-
-  it("never takes its address from the settings", () => {
-    setup();
-    applyBranding(document, { clubName: "//evil.example/x.svg", website: null, privacyContact: null, logo: null, loaded: true } as never, opts);
-    expect(icons()[1]).toEqual(["image/svg+xml", "/icons/default.svg"]);
+  it("no longer exports setDefaultIconLink", async () => {
+    expect(await import("./branding.js")).not.toHaveProperty("setDefaultIconLink");
   });
 });
 

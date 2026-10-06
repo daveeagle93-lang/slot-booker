@@ -233,7 +233,7 @@ All data is in one Cloudflare D1 database, `slot-booker-db` by default (the main
 | `login_attempts` | Attempt counting (every attempt, right or wrong) for the admin sign-in and for `/setup`: a keyed hash of the client's network address, a count and a time. Never used with Access. |
 | `site_settings` | One row: club name, privacy contact name and email, website address and theme colours. |
 | `site_logo` | At most one row: the club logo as an image, with its type, size and checksum. |
-| `site_icons` | Up to three rows (32, 180 and 512 pixels): the app icons drawn from the logo and theme colour, as PNG images. None means the bundled default icons are used. |
+| `site_icons` | Up to three rows (32, 180 and 512 pixels): the app icons drawn from the logo (or with no logo, the default mark) and theme colour, as PNG images. None means the bundled fallback icons are used. |
 | `admin_credentials` | At most one row, made on `/setup`: `secret_hash` (a hash of the admin secret, never the secret), `session_secret`, `created_at` and `first_login_at`. Used only when neither `ADMIN_PASSWORD_HASH` nor `ADMIN_SESSION_SECRET` is set. |
 
 **Personal data.** Dog and handler names and the times of their slots in `bookings`; the privacy contact's name and email in `site_settings`; and the pseudonymous address hashes in `login_attempts`, which the app treats as personal data too (`admin-auth.md`, "Rate limiting"). Exports hold all of it.

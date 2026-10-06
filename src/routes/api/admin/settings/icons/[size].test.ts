@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { AppEnv } from "../../../../../server/env";
-import { deleteLogo, resetTheme, saveLogo, saveTheme } from "../../../../../server/settings";
+import { deleteLogo, DEFAULT_MARK_SOURCE, resetTheme, saveLogo, saveTheme } from "../../../../../server/settings";
 import { createTestEnv, type TestEnv } from "../../../../../test/db";
 import {
   makeApng, makeJpeg, makePng, pngOfSize, toBase64, webpLossless, withTrailing,
@@ -109,11 +109,47 @@ describe("PUT /api/admin/settings/icons/[size]: what must match", () => {
     expect(await iconRows()).toEqual([]);
   });
 
+  it("refuses with 409 stale_logo when there is no logo and the digest is a real logo's, not the default mark's", async () => {
+    await deleteLogo(t.env.DB);
+    for (const logoSha256 of ["a".repeat(64), logoSha]) {
+      const res = await send(32, makePng(32, 32), { logoSha256 });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("stale_logo");
+    }
+    expect(await iconRows()).toEqual([]);
+  });
+
   it("refuses with 409 stale_logo when the digest is not the stored logo's", async () => {
-    const res = await send(32, makePng(32, 32), { logoSha256: "0".repeat(64) });
+    const res = await send(32, makePng(32, 32), { logoSha256: "f".repeat(64) });
     expect(res.status).toBe(409);
     expect(((await res.json()) as ErrorBody).error.code).toBe("stale_logo");
     expect(await iconRows()).toEqual([]);
+  });
+
+  describe("the default mark's source id", () => {
+    it("is accepted while there is no logo, and stored as the icon's source", async () => {
+      await deleteLogo(t.env.DB);
+      const res = await send(32, makePng(32, 32), { logoSha256: DEFAULT_MARK_SOURCE });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { icon: { logoSha256: string } }).icon.logoSha256).toBe(DEFAULT_MARK_SOURCE);
+      expect((await iconRows()).map((r) => [r.size, r.logo_sha256])).toEqual([[32, DEFAULT_MARK_SOURCE]]);
+    });
+
+    it("is accepted on the stored colour only", async () => {
+      await deleteLogo(t.env.DB);
+      await saveTheme(t.env.DB, { primary: "#1b6b3a", accent: "#1b6b3a" });
+      const stale = await send(32, makePng(32, 32), { logoSha256: DEFAULT_MARK_SOURCE });
+      expect(stale.status).toBe(409);
+      expect(((await stale.json()) as ErrorBody).error.code).toBe("stale_theme");
+      expect((await send(32, makePng(32, 32), { logoSha256: DEFAULT_MARK_SOURCE, background: "#1b6b3a" })).status).toBe(200);
+    });
+
+    it("is refused with 409 stale_logo, like any other wrong digest, while a logo is stored", async () => {
+      const res = await send(32, makePng(32, 32), { logoSha256: DEFAULT_MARK_SOURCE });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("stale_logo");
+      expect(await iconRows()).toEqual([]);
+    });
   });
 
   it("refuses with 409 stale_logo when the logo was replaced after the icon was drawn", async () => {
@@ -146,6 +182,23 @@ describe("PUT /api/admin/settings/icons/[size]: what must match", () => {
 
     it("refuses with 409 stale_logo when the logo changed, and stores nothing", async () => {
       const o = changingBefore(() => saveLogo(t.env.DB, makePng(11, 11), { type: "image/png", width: 11, height: 11 }));
+      const res = await send(32, makePng(32, 32), {}, o);
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("stale_logo");
+      expect(await iconRows()).toEqual([]);
+    });
+
+    it("refuses a default-mark icon with 409 stale_logo when a logo was uploaded after the checks, and stores nothing", async () => {
+      await deleteLogo(t.env.DB);
+      const o = changingBefore(() => saveLogo(t.env.DB, makePng(11, 11), { type: "image/png", width: 11, height: 11 }));
+      const res = await send(32, makePng(32, 32), { logoSha256: DEFAULT_MARK_SOURCE }, o);
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("stale_logo");
+      expect(await iconRows()).toEqual([]);
+    });
+
+    it("refuses a logo's icon with 409 stale_logo when the logo was removed after the checks, and stores nothing", async () => {
+      const o = changingBefore(() => deleteLogo(t.env.DB));
       const res = await send(32, makePng(32, 32), {}, o);
       expect(res.status).toBe(409);
       expect(((await res.json()) as ErrorBody).error.code).toBe("stale_logo");

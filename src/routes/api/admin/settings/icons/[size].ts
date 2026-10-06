@@ -5,7 +5,7 @@ import { invalidInput } from "../../../../../server/admin-events";
 import { noStore, readJsonObject } from "../../../../../server/bookings";
 import type { RouteHandler } from "../../../../../server/env";
 import { errorResponse, json } from "../../../../../server/http";
-import { decodeBase64, loadLogoInfo, loadTheme, MAX_ICON_BYTES, parseIconSize, saveIcon } from "../../../../../server/settings";
+import { decodeBase64, DEFAULT_MARK_SOURCE, loadLogoInfo, loadTheme, MAX_ICON_BYTES, parseIconSize, saveIcon } from "../../../../../server/settings";
 
 // What the base64 of a PNG at the size's cap needs, plus the JSON around it with room to spare.
 const base64Cap = (bytes: number): number => Math.ceil(bytes / 3) * 4;
@@ -22,7 +22,8 @@ const DIGEST = /^[0-9a-f]{64}$/;
  * per request on purpose: each request gets its own CPU budget. The body is JSON, `{ data: <base64 PNG>, background,
  * logoSha256 }`, so the admin CSRF checks apply unchanged. The bytes must be a still PNG exactly as wide and tall as
  * the size in the URL; nothing the client says about the file is used. `background` must be the current main colour
- * and `logoSha256` the current logo, so an icon from an out-of-date theme or logo is refused rather than stored.
+ * and `logoSha256` the current logo (DEFAULT_MARK_SOURCE while there is no logo, for the icon drawn from the default
+ * mark), so an icon from an out-of-date theme or logo is refused rather than stored.
  */
 export const onRequestPut: RouteHandler<"size"> = async ({ request, env, params, data }) => {
   const refused = refuseUnlessAdmin(data);
@@ -48,7 +49,7 @@ export const onRequestPut: RouteHandler<"size"> = async ({ request, env, params,
     if (background !== (await loadTheme(env.DB)).primary) {
       return stale("stale_theme", "The main colour has changed since that icon was drawn. Reload the page and try again.");
     }
-    if ((await loadLogoInfo(env.DB))?.sha256 !== logoSha256) {
+    if (((await loadLogoInfo(env.DB))?.sha256 ?? DEFAULT_MARK_SOURCE) !== logoSha256) {
       return stale("stale_logo", "The logo has changed since that icon was drawn. Reload the page and try again.");
     }
     const bytes = decodeBase64(base64);

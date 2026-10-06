@@ -112,19 +112,19 @@ Nothing is saved until you tap "Use this logo". You should then see "Logo saved.
 
 A picture over 20 MB is refused. Pick a smaller one.
 
-To take the logo away, tap "Remove logo", then "Yes, remove logo". The pages then show only the club name.
+To take the logo away, tap "Remove logo", then "Yes, remove logo". The pages then show only the club name, and the icons go back to a plain clock mark on your main colour.
 
 ### App icons and the home screen icon
 
-You do not make the icons yourself. When you save a logo, the page draws the little icons for browser tabs and phone home screens from it, on your main colour.
+You do not make the icons yourself. When you save a logo, the page draws the little icons for browser tabs and phone home screens from it, on your main colour. With no logo, the icons are a clock mark in the same colours, and they change when you save new colours or take the logo away.
 
 1. Save a logo.
 2. Stay on the page. You see "Updating app icons…".
 3. Wait for "App icons updated."
 
-If it says it couldn't update the icons, the logo itself is still saved. Open the Settings page again and it tries again by itself.
+If it says it couldn't update the icons, the logo (or the colours) are still saved. Open the Settings page again and it tries again by itself.
 
-If you leave early, it also tries again next time you open Settings.
+If you leave early, it also tries again next time you open Settings. Until then the icons may still be in your old colour.
 
 Browser tab icons can take a few minutes to change. An icon already on a home screen may keep the old picture. I'm not sure when phones refresh it.
 

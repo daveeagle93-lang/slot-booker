@@ -4,9 +4,9 @@ import { makePng } from "../test/images";
 import { createTestEnv, type TestEnv } from "../test/db";
 import {
   decodeBase64, deleteLogo, loadAdminSettings, loadIcon, loadIconInfo, loadLogo, loadLogoInfo, loadPublicSettings, loadSettings, loadTheme,
-  MAX_ICON_BYTES, MAX_LOGO_BASE64, parseSettingsInput, parseThemeInput, resetTheme, saveIcon, saveLogo, saveSettings, saveTheme,
+  DEFAULT_MARK_SOURCE, MAX_ICON_BYTES, MAX_LOGO_BASE64, parseSettingsInput, parseThemeInput, resetTheme, saveIcon, saveLogo, saveSettings, saveTheme,
 } from "./settings";
-import { MAX_ICON_BYTES as CLIENT_MAX_ICON_BYTES } from "../../public/admin/icon-image.js";
+import { DEFAULT_MARK_SOURCE as CLIENT_DEFAULT_MARK_SOURCE, MAX_ICON_BYTES as CLIENT_MAX_ICON_BYTES } from "../../public/admin/icon-image.js";
 import { DEFAULT_THEME } from "../../public/theme.js";
 
 let t: TestEnv;
@@ -276,6 +276,13 @@ describe("MAX_ICON_BYTES", () => {
   });
 });
 
+describe("DEFAULT_MARK_SOURCE", () => {
+  it("is the same in the browser's icon drawing as on the server, and has the shape of a SHA-256 digest (the table's CHECK)", () => {
+    expect(CLIENT_DEFAULT_MARK_SOURCE).toBe(DEFAULT_MARK_SOURCE);
+    expect(DEFAULT_MARK_SOURCE).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
 describe("the icons in D1", () => {
   const BG = "#0b5cad";
   const png = (size: number) => makePng(size, size);
@@ -318,6 +325,39 @@ describe("the icons in D1", () => {
     expect(await saveIcon(t.env.DB, 32, png(32), { background: BG, logoSha256: "b".repeat(64) })).toBeNull();
     expect(await iconCount()).toBe(0);
     expect(await saveIcon(t.env.DB, 32, png(32), { background: BG, logoSha256: sha })).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  describe("drawn from the default mark (DEFAULT_MARK_SOURCE)", () => {
+    it("is stored while there is no logo, and then reported as the icons' source by the admin settings", async () => {
+      expect(await loadLogoInfo(t.env.DB)).toBeNull();
+      await storeIcons(DEFAULT_MARK_SOURCE);
+      expect(await iconCount()).toBe(3);
+      expect((await loadAdminSettings(t.env.DB)).icons).toEqual({ background: BG, logoSha256: DEFAULT_MARK_SOURCE });
+    });
+
+    it("stores nothing while a logo is stored, and says so", async () => {
+      await storeLogo();
+      expect(await saveIcon(t.env.DB, 32, png(32), { background: BG, logoSha256: DEFAULT_MARK_SOURCE })).toBeNull();
+      expect(await iconCount()).toBe(0);
+    });
+
+    it("is not kept by an icon of a real logo's digest while there is no logo", async () => {
+      expect(await saveIcon(t.env.DB, 32, png(32), { background: BG, logoSha256: "a".repeat(64) })).toBeNull();
+      expect(await iconCount()).toBe(0);
+    });
+
+    it("still needs the main colour in force", async () => {
+      expect(await saveIcon(t.env.DB, 32, png(32), { background: "#112233", logoSha256: DEFAULT_MARK_SOURCE })).toBeNull();
+      await saveTheme(t.env.DB, { primary: "#1b6b3a", accent: "#1b6b3a" });
+      expect(await saveIcon(t.env.DB, 32, png(32), { background: BG, logoSha256: DEFAULT_MARK_SOURCE })).toBeNull();
+      expect(await saveIcon(t.env.DB, 32, png(32), { background: "#1b6b3a", logoSha256: DEFAULT_MARK_SOURCE })).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it("is dropped, all three sizes, when a logo is saved", async () => {
+      await storeIcons(DEFAULT_MARK_SOURCE);
+      await saveLogo(t.env.DB, makePng(5, 5), { type: "image/png", width: 5, height: 5 });
+      expect(await iconCount()).toBe(0);
+    });
   });
 
   it("stores nothing when the background is not the main colour in force now (the stored one, else the default)", async () => {

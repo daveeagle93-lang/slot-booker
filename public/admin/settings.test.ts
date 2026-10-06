@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_THEME, PAGE_COLOURS, themeTokens } from "../theme.js";
+import { DEFAULT_MARK_SOURCE } from "./icon-image.js";
 import { MAX_INPUT_BYTES } from "./logo-image.js";
 import { init } from "./settings.js";
 
@@ -31,7 +32,7 @@ function fakeImage() {
     createCanvas: (width: number, height: number) => ({
       width,
       height,
-      getContext: () => ({ drawImage: () => {}, fillRect: () => {} }),
+      getContext: () => ({ drawImage: () => {}, fillRect: () => {}, beginPath: () => {}, arc: () => {}, moveTo: () => {}, lineTo: () => {}, stroke: () => {} }),
       toBlob: (cb: (b: Blob) => void, type: string) => cb(new Blob([new Uint8Array(4096).fill(7)], { type })),
     }),
   };
@@ -695,42 +696,6 @@ describe("app icons", () => {
   };
   const FAILURE = (what: string) => `${what} app icons couldn't be updated. They'll be tried again next time you open this page.`;
 
-  describe("the default SVG icon link", () => {
-    const svgLinks = () => $$('link[rel="icon"][type="image/svg+xml"]');
-    const addSvgLink = () => document.head.insertAdjacentHTML("beforeend", '<link rel="icon" type="image/svg+xml" href="/icons/default.svg" />');
-
-    it("is removed once a first logo is saved, so the browser uses the club's own icon", async () => {
-      const page = await start({ "PUT /api/admin/settings/logo": () => reply(200, { logo: NEW_LOGO }) }, { settings: { ...SETTINGS, logo: null, icons: null } });
-      addSvgLink(); // what branding.js added at load, there being no logo
-      expect(svgLinks()).toHaveLength(1);
-      await choose(picture());
-      submit("logo");
-      await flush();
-      expect(page.iconWrites()).toHaveLength(3);
-      expect(svgLinks()).toHaveLength(0);
-      expect($$('link[rel="stylesheet"]')).toHaveLength(1); // nothing else was touched
-    });
-
-    it("is put back, once, when the logo is removed", async () => {
-      await start({ "DELETE /api/admin/settings/logo": () => reply(200, { logo: null }) });
-      expect(svgLinks()).toHaveLength(0);
-      button("Remove logo").click();
-      button("Yes, remove logo").click();
-      await flush();
-      expect(svgLinks()).toHaveLength(1);
-      expect(svgLinks()[0].getAttribute("href")).toBe("/icons/default.svg");
-    });
-
-    it("stays when the logo upload fails", async () => {
-      await start({ "PUT /api/admin/settings/logo": () => reply(422, { error: { code: "invalid_image", message: "Bad." } }) }, { settings: { ...SETTINGS, logo: null, icons: null } });
-      addSvgLink();
-      await choose(picture());
-      submit("logo");
-      await flush();
-      expect(svgLinks()).toHaveLength(1);
-    });
-  });
-
   it("has a polite live status line of its own, empty until something is drawn", async () => {
     await start();
     const status = $("#icon-status");
@@ -826,11 +791,53 @@ describe("app icons", () => {
       expect(iconStatus()).toBe("");
     });
 
-    it("does not redraw when there is no logo", async () => {
-      const { iconWrites } = await start({ "PUT /api/admin/settings/theme": () => reply(200, { theme: FOREST }) }, { settings: { ...SETTINGS, logo: null, icons: null } });
+    it("with no logo, draws the default mark on the saved main colour, with the default mark's source id and nothing fetched", async () => {
+      const { iconWrites, calls, image } = await start(
+        { "PUT /api/admin/settings/theme": () => reply(200, { theme: FOREST }) },
+        { settings: { ...SETTINGS, logo: null, icons: { background: "#0b5cad", logoSha256: DEFAULT_MARK_SOURCE } } },
+      );
+      expect(iconWrites()).toHaveLength(0); // current icons: nothing to heal
       await saveForest();
+      expect(sizes(iconWrites())).toEqual([32, 180, 512]);
+      for (const c of iconWrites()) expect(c.body).toMatchObject({ background: "#1b6b3a", logoSha256: DEFAULT_MARK_SOURCE });
+      expect(calls.filter((c) => c.url.startsWith("/api/logo"))).toHaveLength(0);
+      expect(image.createImageBitmap).not.toHaveBeenCalled();
+      expect(iconStatus()).toBe("App icons updated.");
+      expect($("#theme .form-status").textContent).toBe("Colours saved.");
+    });
+
+    it("with no logo, keeps the saved colours and says the icons will be tried again when the icons fail", async () => {
+      await start(
+        { "PUT /api/admin/settings/theme": () => reply(200, { theme: FOREST }), "PUT /api/admin/settings/icons/32": () => reply(409, {}) },
+        { settings: { ...SETTINGS, logo: null, icons: { background: "#0b5cad", logoSha256: DEFAULT_MARK_SOURCE } } },
+      );
+      await saveForest();
+      expect(iconStatus()).toBe(FAILURE("The colours were saved, but the"));
+      expect($("#icon-status").getAttribute("role")).toBe("status"); // not an alert: the default icons keep working
+      expect($("#theme .form-status").textContent).toBe("Colours saved.");
+    });
+
+    it("with no logo, does not redraw when only the accent changed", async () => {
+      const { iconWrites } = await start(
+        { "PUT /api/admin/settings/theme": () => reply(200, { theme: { primary: "#0b5cad", accent: "#1b6b3a", isDefault: false } }) },
+        { settings: { ...SETTINGS, logo: null, icons: { background: "#0b5cad", logoSha256: DEFAULT_MARK_SOURCE } } },
+      );
+      type("accent-colour", "#1b6b3a");
+      submit("theme");
+      await flush();
       expect(iconWrites()).toHaveLength(0);
-      expect(iconStatus()).toBe("");
+    });
+
+    it("with no logo, redraws the default mark on the default colour after a reset that changed the main colour", async () => {
+      const { iconWrites } = await start(
+        { "DELETE /api/admin/settings/theme": () => reply(200, { theme: { ...DEFAULT_THEME, isDefault: true } }) },
+        { settings: { ...SETTINGS, logo: null, theme: FOREST, icons: { background: "#1b6b3a", logoSha256: DEFAULT_MARK_SOURCE } } },
+      );
+      expect(iconWrites()).toHaveLength(0);
+      button("Reset to default colours").click();
+      await flush();
+      expect(sizes(iconWrites())).toEqual([32, 180, 512]);
+      for (const c of iconWrites()) expect(c.body).toMatchObject({ background: DEFAULT_THEME.primary, logoSha256: DEFAULT_MARK_SOURCE });
     });
 
     it("keeps the saved colours, and says so, when the icons fail", async () => {
@@ -890,32 +897,79 @@ describe("app icons", () => {
   });
 
   describe("when the logo is removed", () => {
-    it("sends nothing and clears the line", async () => {
-      const { iconWrites } = await uploadLogo({ "DELETE /api/admin/settings/logo": () => reply(200, { logo: null }) });
-      expect(iconStatus()).toBe("App icons updated.");
-      const before = iconWrites().length;
+    const remove = async () => {
       button("Remove logo").click();
       button("Yes, remove logo").click();
       await flush();
-      expect(iconStatus()).toBe("");
-      expect(iconWrites()).toHaveLength(before);
+    };
+
+    it("draws the default mark on the current main colour, without fetching or decoding a logo", async () => {
+      const { iconWrites, calls, image } = await start({ "DELETE /api/admin/settings/logo": () => reply(200, { logo: null }) });
+      await remove();
+      expect($("#logo [role=status]").textContent).toBe("Logo removed.");
+      expect(sizes(iconWrites())).toEqual([32, 180, 512]);
+      for (const c of iconWrites()) expect(c.body).toMatchObject({ background: "#0b5cad", logoSha256: DEFAULT_MARK_SOURCE });
+      expect(calls.filter((c) => c.url.startsWith("/api/logo"))).toHaveLength(0);
+      expect(image.createImageBitmap).not.toHaveBeenCalled();
+      expect(iconStatus()).toBe("App icons updated.");
     });
 
-    it("stops an update that is still going", async () => {
-      let release!: (r: Response) => void;
+    it("uses the main colour in force now (the one saved since the page loaded)", async () => {
       const { iconWrites } = await start({
         "PUT /api/admin/settings/theme": () => reply(200, { theme: FOREST }),
-        "PUT /api/admin/settings/icons/32": () => new Promise<Response>((r) => { release = r; }),
         "DELETE /api/admin/settings/logo": () => reply(200, { logo: null }),
       });
       await saveForest();
-      button("Remove logo").click();
-      button("Yes, remove logo").click();
+      await remove();
+      const defaults = iconWrites().filter((c) => c.body.logoSha256 === DEFAULT_MARK_SOURCE);
+      expect(sizes(defaults)).toEqual([32, 180, 512]);
+      for (const c of defaults) expect(c.body.background).toBe("#1b6b3a");
+    });
+
+    it("keeps the removal and says the icons will be tried again when they fail", async () => {
+      await start({
+        "DELETE /api/admin/settings/logo": () => reply(200, { logo: null }),
+        "PUT /api/admin/settings/icons/32": () => reply(500, {}),
+      });
+      await remove();
+      expect($("#logo [role=status]").textContent).toBe("Logo removed.");
+      expect(iconStatus()).toBe(FAILURE("The logo was removed, but the"));
+      expect($("#icon-status").getAttribute("role")).toBe("status");
+    });
+
+    it("stops a logo update that is still going and lets the default mark take over", async () => {
+      let release!: (r: Response) => void;
+      const { iconWrites } = await start({
+        "PUT /api/admin/settings/theme": () => reply(200, { theme: FOREST }),
+        "PUT /api/admin/settings/icons/32": (call) => (call.body.logoSha256 === SHA ? new Promise<Response>((r) => { release = r; }) : reply(200, { icon: {} })),
+        "DELETE /api/admin/settings/logo": () => reply(200, { logo: null }),
+      });
+      await saveForest(); // the logo run is now stuck on its 32 px request
+      await remove();
+      release(reply(200, { icon: {} }));
+      await flush();
+      expect(sizes(iconWrites().filter((c) => c.body.logoSha256 === SHA))).toEqual([32]);
+      expect(sizes(iconWrites().filter((c) => c.body.logoSha256 === DEFAULT_MARK_SOURCE))).toEqual([32, 180, 512]);
+      expect(iconStatus()).toBe("App icons updated.");
+    });
+  });
+
+  describe("when a logo is saved after the default mark", () => {
+    it("draws from the logo, and stops a default-mark run that is still going", async () => {
+      let release!: (r: Response) => void;
+      const { iconWrites } = await start({
+        "PUT /api/admin/settings/logo": () => reply(200, { logo: NEW_LOGO }),
+        "PUT /api/admin/settings/icons/32": (call) => (call.body.logoSha256 === DEFAULT_MARK_SOURCE ? new Promise<Response>((r) => { release = r; }) : reply(200, { icon: {} })),
+      }, { settings: { ...SETTINGS, logo: null, icons: null } });
+      await flush(); // the heal's default-mark run is stuck on its 32 px request
+      await choose(picture());
+      submit("logo");
       await flush();
       release(reply(200, { icon: {} }));
       await flush();
-      expect(sizes(iconWrites())).toEqual([32]);
-      expect(iconStatus()).toBe("");
+      expect(sizes(iconWrites().filter((c) => c.body.logoSha256 === DEFAULT_MARK_SOURCE))).toEqual([32]);
+      expect(sizes(iconWrites().filter((c) => c.body.logoSha256 === NEW_SHA))).toEqual([32, 180, 512]);
+      expect(iconStatus()).toBe("App icons updated.");
     });
   });
 
@@ -953,13 +1007,53 @@ describe("app icons", () => {
       expect(matching.iconWrites()).toHaveLength(0);
     });
 
-    it("does nothing without a logo, however the icons look", async () => {
-      for (const icons of [null, { background: "#1b6b3a", logoSha256: NEW_SHA }]) {
-        const { iconWrites } = await start({}, { settings: { ...SETTINGS, logo: null, icons } });
+    describe("with no logo (the default mark)", () => {
+      const NO_LOGO = { ...SETTINGS, logo: null };
+
+      it("does nothing when the stored icons are the default mark on the current main colour", async () => {
+        const { iconWrites, calls } = await start({}, { settings: { ...NO_LOGO, icons: { background: "#0b5cad", logoSha256: DEFAULT_MARK_SOURCE } } });
         await flush();
         expect(iconWrites()).toHaveLength(0);
+        expect(calls.filter((c) => c.url.startsWith("/api/logo"))).toHaveLength(0);
         expect(iconStatus()).toBe("");
-      }
+      });
+
+      it.each([
+        ["are missing", null],
+        ["were drawn on another background", { background: "#1b6b3a", logoSha256: DEFAULT_MARK_SOURCE }],
+        ["were drawn from a logo", { background: "#0b5cad", logoSha256: NEW_SHA }],
+      ])("draws the default mark when the stored icons %s", async (_name, icons) => {
+        const { iconWrites, calls } = await start({}, { settings: { ...NO_LOGO, icons } });
+        await flush();
+        expect(sizes(iconWrites())).toEqual([32, 180, 512]);
+        for (const c of iconWrites()) expect(c.body).toMatchObject({ background: "#0b5cad", logoSha256: DEFAULT_MARK_SOURCE });
+        expect(calls.filter((c) => c.url.startsWith("/api/logo"))).toHaveLength(0);
+        expect(iconStatus()).toBe("App icons updated.");
+      });
+
+      it("compares with the effective main colour the server reports", async () => {
+        const settings = { ...NO_LOGO, theme: FOREST, icons: { background: "#0b5cad", logoSha256: DEFAULT_MARK_SOURCE } };
+        const stale = await start({}, { settings });
+        await flush();
+        expect(stale.iconWrites()[0].body.background).toBe("#1b6b3a");
+        const current = await start({}, { settings: { ...settings, icons: { background: "#1b6b3a", logoSha256: DEFAULT_MARK_SOURCE } } });
+        await flush();
+        expect(current.iconWrites()).toHaveLength(0);
+      });
+
+      it("says the icons will be tried again, and leaves the page working, when it fails", async () => {
+        await start({ "PUT /api/admin/settings/icons/32": () => reply(500, {}) }, { settings: { ...NO_LOGO, icons: null } });
+        await flush();
+        expect(iconStatus()).toBe(FAILURE("The"));
+        expect(button("Save details").disabled).toBe(false);
+      });
+    });
+
+    it("draws from the logo, not the default mark, when there is a logo and the stored icons are the default mark's", async () => {
+      const { iconWrites } = await start({}, { settings: { ...SETTINGS, icons: { background: "#0b5cad", logoSha256: DEFAULT_MARK_SOURCE } } });
+      await flush();
+      expect(sizes(iconWrites())).toEqual([32, 180, 512]);
+      for (const c of iconWrites()) expect(c.body.logoSha256).toBe(SHA);
     });
 
     it("says the icons will be tried again, and leaves the page working, when it fails", async () => {

@@ -1,7 +1,7 @@
-import { brandPage, DEFAULT_CLUB, isLogoUrl, loadSettings, setDefaultIconLink } from "../branding.js";
+import { brandPage, DEFAULT_CLUB, isLogoUrl, loadSettings } from "../branding.js";
 import { checkTheme, DEFAULT_THEME, normaliseHex, PAGE_COLOURS, PRESETS, themeTokens } from "../theme.js";
 import { createApi, makeH } from "./api.js";
-import { updateIcons } from "./icon-image.js";
+import { DEFAULT_MARK_SOURCE, updateDefaultIcons, updateIcons } from "./icon-image.js";
 import { browserImage, bytesToBase64, LogoError, prepareLogo } from "./logo-image.js";
 
 const OFFLINE = "We couldn't reach the server. Check your connection and try again.";
@@ -187,10 +187,11 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
   const ICON_RETRY = "app icons couldn't be updated. They'll be tried again next time you open this page.";
 
   /**
-   * Keeps the app icons (browser tab, home screen, manifest) drawn from the current logo on the current main colour.
-   * It has no form: it runs after a logo upload, after a colour save that changed the main colour, and when the page
-   * loads and the stored icons are missing or out of date. A failure is reported on its own status line and never
-   * undoes or blocks the save that triggered it: until the icons are redrawn the server serves the default ones.
+   * Keeps the app icons (browser tab, home screen, manifest) drawn from the current logo, or with no logo from the
+   * default mark, on the current main colour. It has no form: it runs after a logo upload or removal, after a colour
+   * save that changed the main colour, and when the page loads and the stored icons are missing or out of date. A
+   * failure is reported on its own status line and never undoes or blocks the save that triggered it: until the icons
+   * are redrawn the server serves the ones it has (for a changed logo, the bundled default ones).
    */
   function iconsSection(initial) {
     const status = h("p", { class: "form-status", id: "icon-status", role: "status", "aria-live": "polite" });
@@ -209,17 +210,15 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
     async function update(because) {
       const mine = ++latest;
       const { logo, primary } = state;
-      if (!logo) {
-        status.textContent = "";
-        return;
-      }
       status.textContent = "Updating app icons…";
       try {
-        await updateIcons({
-          logo: await logoBlob(logo), background: primary, logoSha256: logo.sha256, image,
+        const run = {
+          background: primary, image,
           isCurrent: () => mine === latest,
           put: async (size, body) => (await api.request("PUT", `${SETTINGS_URL}/icons/${size}`, body)).status === 200,
-        });
+        };
+        if (logo) await updateIcons({ ...run, logo: await logoBlob(logo), logoSha256: logo.sha256 });
+        else await updateDefaultIcons(run);
         if (mine === latest) status.textContent = "App icons updated.";
       } catch {
         if (mine === latest) status.textContent = `${because} ${ICON_RETRY}`;
@@ -228,25 +227,22 @@ export async function init({ document, fetch, navigate, image, now = Date.now })
 
     return {
       status,
-      /** A new logo (with its decoded-ready bytes, so it needn't be fetched back) or none. */
+      /** A new logo (with its decoded-ready bytes, so it needn't be fetched back) or none (the default mark). */
       logoChanged(logo, blob = null) {
         state.logo = logo;
         state.blob = blob;
-        // Browsers prefer an SVG icon link, so the default one must go while the club has a logo of its own.
-        setDefaultIconLink(document, !logo);
-        if (logo) return update("The logo was saved, but the");
-        latest++; // the server dropped the icons with the logo; stop anything still drawing
-        status.textContent = "";
+        return update(logo ? "The logo was saved, but the" : "The logo was removed, but the");
       },
       /** The main colour after a save or reset. Only a different colour needs new icons. */
       primaryChanged(primary) {
         if (primary === state.primary) return;
         state.primary = primary;
-        if (state.logo) return update("The colours were saved, but the");
+        return update("The colours were saved, but the");
       },
-      /** The page has just loaded: redraw if there is a logo and the stored icons are missing or were drawn from something else. */
+      /** The page has just loaded: redraw if the stored icons are missing or were drawn from something else (the logo, or with none the default mark). */
       heal(stored) {
-        if (state.logo && (!stored || stored.background !== state.primary || stored.logoSha256 !== state.logo.sha256)) return update("The");
+        const source = state.logo?.sha256 ?? DEFAULT_MARK_SOURCE;
+        if (!stored || stored.background !== state.primary || stored.logoSha256 !== source) return update("The");
       },
     };
   }
