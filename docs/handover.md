@@ -49,22 +49,22 @@ I couldn't find any documented way to transfer a Worker or a D1 database from on
 
 ### Step B: deploy the app in the club's account
 
-Follow [deploying.md](deploying.md), "Deploy with the button", logged in to the **club's** Cloudflare and GitHub or GitLab accounts, so the club owns the copy. Choose a new `SETUP_CODE`: it is the club's own, not the maintainer's. The deploy creates an empty database with all 14 migrations applied. Do not copy anything from the maintainer's account except the data in Step C.
+Follow [deploying.md](deploying.md), "Deploy with the button", logged in to the **club's** Cloudflare and GitHub or GitLab accounts, so the club owns the copy. Choose a new `SETUP_CODE`: it is the club's own, not the maintainer's. The deploy creates an empty database with all 17 migrations applied. Do not copy anything from the maintainer's account except the data in Step C.
 
 Do **not** copy the old admin secret across. It is not in the exported tables below, and the club makes its own on `/setup` (do it now, so you can test the site).
 
 ### Step C: copy the data across
 
-The data lives in eight tables: `events`, `breaks`, `bookings`, `event_templates`, `event_template_breaks`, `site_settings`, `site_logo`, `site_icons`. Do **not** copy `admin_credentials` (the old admin secret's hash) or `login_attempts`.
+The data lives in twelve tables: `events`, `event_layout`, `event_lanes`, `breaks`, `bookings`, `event_templates`, `event_template_layout`, `event_template_lanes`, `event_template_breaks`, `site_settings`, `site_logo`, `site_icons`. Do **not** copy `admin_credentials` (the old admin secret's hash) or `login_attempts`.
 
-The club's new database already has its tables, because the deploy ran the migrations. So export the old database's **data only**, for those tables, and import it into the new one. The old database must be on the same migrations (all 14): check with `npx wrangler d1 migrations list DB --remote`, and apply any missing ones to the old database first (`npm run db:migrations:apply`), with the old account's login and ids configured.
+The club's new database already has its tables, because the deploy ran the migrations. So export the old database's **data only**, for those tables, and import it into the new one. The old database must be on the same migrations (all 17): check with `npx wrangler d1 migrations list DB --remote`, and apply any missing ones to the old database first (`npm run db:migrations:apply`), with the old account's login and ids configured.
 
 Wrangler finds the database by the binding in `wrangler.json`, which `npm run configure` writes from `account.local.json`. So the export needs the **old** database's id in that file and the old account's login, and the import needs the **new** ones. Do them one after the other and run `npm run configure` each time you change the file ([deploying.md](deploying.md), step 4 of the command-line path).
 
 1. **Export, with the old account's login and old ids configured** (`--table` takes several names; put it last):
 
    ```sh
-   npx wrangler d1 export slot-booker-db --remote --no-schema --output=./backup.sql --table events breaks bookings event_templates event_template_breaks site_settings site_logo site_icons
+   npx wrangler d1 export slot-booker-db --remote --no-schema --output=./backup.sql --table events event_layout event_lanes breaks bookings event_templates event_template_layout event_template_lanes event_template_breaks site_settings site_logo site_icons
    ```
 
    Whether a data-only export of several tables imports cleanly, and in what order it writes the tables, is **unverified**: this is the reason for the scratch round trip in step 3. The flags are from `npx wrangler d1 export --help` (Wrangler 4.147.0).
@@ -231,7 +231,10 @@ All data is in one Cloudflare D1 database, `slot-booker-db` by default (the main
 | `breaks` | Periods within an event with no slots (for example lunch), each with an optional label. |
 | `event_templates` | The saved templates (at most 20) an admin starts a new event from: name, whether it is the default, details, postcode, cost, start and end time (London, `HH:MM`), session length, gap and share message. Events keep their own copy, so deleting a template changes no event. |
 | `event_template_breaks` | The breaks of a template (start, end, optional name); removed with their template. |
-| `bookings` | One row per booked slot: slot start time, **dog name, handler name**, when it was booked, plus a private token for the booking's calendar link and technical keys that stop double bookings. |
+| `event_layout` | One row per event: how many places each lane has at each time (`capacity`, 1 to 50), how many bookings one dog and handler may hold in the event (`identity_limit`, 1 to 20) and `config_rev`, a counter that every edit of the lanes, capacity or limit must increase so a booking made at the same moment notices the change. Every event has one; existing events have capacity 1 and limit 1. |
+| `event_lanes` | The lanes (parallel rings) of an event, in order, each with an optional name (a single lane may have none). Every event has at least one; existing events have one unnamed lane. A lane that still has bookings cannot be deleted. |
+| `event_template_layout`, `event_template_lanes` | The same for each template. An event keeps its own copy, as with the rest of a template. |
+| `bookings` | One row per booking: the event, its **lane**, slot start time and **place** (1 up to the capacity), the booking form's fields (**dog name in `value_1`, handler name in `value_2`**; `value_3` and `value_4` are for later), the identity key and its number (what stops the same dog and handler booking more than the limit allows: the keys of the identity fields joined with U+001F, numbered from 1), when it was booked, the booking's private token (for its calendar link) and the booking form's idempotency key. The database refuses a second booking of the same place, of the same identity number, or with the same token or idempotency key. |
 | `login_attempts` | Attempt counting (every attempt, right or wrong) for the admin sign-in and for `/setup`: a keyed hash of the client's network address, a count and a time. Never used with Access. |
 | `site_settings` | One row: club name, privacy contact name and email, website address and theme colours. |
 | `site_logo` | At most one row: the club logo as an image, with its type, size and checksum. |
@@ -242,7 +245,7 @@ All data is in one Cloudflare D1 database, `slot-booker-db` by default (the main
 
 **Secrets.** `SETUP_CODE` is a Worker secret in the Cloudflare account. So are `ADMIN_PASSWORD_HASH` and `ADMIN_SESSION_SECRET`, if the override is used. None is in the repository, and an export does not contain them or carry them to a new account. The admin secret itself is nowhere: only its hash is in `admin_credentials`. `ADMIN_AUTH`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are plain settings in the deployment's configuration (the `vars` in the club's `wrangler.jsonc`), not secrets.
 
-**Retention.** Nothing is deleted automatically, except old `login_attempts` rows, which are removed as a side effect of later login attempts. Bookings and events are only removed by an admin (checked in `src/server/admin-event-lifecycle.ts`): **Archive** hides the event and keeps all its data; **Delete** removes an event with its bookings and breaks, permanently; **Clear out past events** (`src/routes/api/admin/events/clear-past.ts`) does the same for the past events you pick, and asks you to type `DELETE`. The booking form's privacy notice says details are kept until an organiser deletes the event, which matches this. Delete old events when you no longer need them.
+**Retention.** Nothing is deleted automatically, except old `login_attempts` rows, which are removed as a side effect of later login attempts. Bookings and events are only removed by an admin (checked in `src/server/admin-event-lifecycle.ts`): **Archive** hides the event and keeps all its data; **Delete** removes an event with its bookings, breaks, lanes and layout, permanently; **Clear out past events** (`src/routes/api/admin/events/clear-past.ts`) does the same for the past events you pick, and asks you to type `DELETE`. The booking form's privacy notice says details are kept until an organiser deletes the event, which matches this. Delete old events when you no longer need them.
 
 **Backups.** D1 Time Travel can restore a database to an earlier moment: 7 days back on the Workers Free plan and 30 on Paid ([Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)). `npx wrangler d1 time-travel info <DB>` shows the available range. A restore overwrites the database in place, so use it with care, and it is not a replacement for exports.
 
