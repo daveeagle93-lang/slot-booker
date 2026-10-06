@@ -63,6 +63,16 @@ describe("list page", () => {
     expect(open.getAttribute("href")).toBe("/e/abc123");
   });
 
+  it("counts places where the event has more places than times, and slots otherwise (as before)", async () => {
+    await start([
+      { ...EVENT, laneCount: 3, capacity: 2, placeCount: 72 },
+      { ...EVENT, slug: "def", path: "/e/def", name: "Plain", laneCount: 1, capacity: 1, placeCount: 12 },
+      { ...EVENT, slug: "ghi", path: "/e/ghi", name: "Old data" },
+    ]);
+    const lines = [...document.querySelectorAll(".event-card .booked")].map((p) => p.textContent);
+    expect(lines).toEqual(["3 of 72 places booked", "3 of 12 slots booked", "3 of 12 slots booked"]);
+  });
+
   it("tags an unlisted event Not listed, and only that one", async () => {
     await start([{ ...EVENT, listed: true }, { ...EVENT, slug: "def", path: "/e/def", name: "Hidden", listed: false }, { ...EVENT, slug: "ghi", path: "/e/ghi", name: "Old data" }]);
     const badges = [...document.querySelectorAll(".event-card")].map((c) => [...c.querySelectorAll(".badge")].map((b) => b.textContent));
@@ -735,6 +745,18 @@ describe("Share", () => {
     shareButtonOf("Second").click();
     expect(sent(navigator.share, 0)).toBe("Own: Trial Day, Bring water\nhttps://club.example/e/abc123");
     expect(sent(navigator.share, 1)).toBe("Default: Second\nhttps://club.example/e/def");
+  });
+
+  it("fills {lanes} from the lanes the list gives for each event, and drops the line for one unnamed lane", async () => {
+    const navigator = withShare();
+    await start([
+      { ...SHARE_EVENT, lanes: [{ name: "Ring 1" }, { name: "Ring 2" }] },
+      { ...SHARE_EVENT, slug: "def", path: "/e/def", name: "Second", lanes: [{ name: "" }] },
+    ], { navigator, extra: { defaultShareMessage: "{event}\n{lanes}" } });
+    shareButtonOf("Trial Day").click();
+    shareButtonOf("Second").click();
+    expect(sent(navigator.share, 0)).toBe("Trial Day\nRing 1, Ring 2\nhttps://club.example/e/abc123");
+    expect(sent(navigator.share, 1)).toBe("Second\nhttps://club.example/e/def");
   });
 
   it("ignores a defaultShareMessage that isn't a string", async () => {

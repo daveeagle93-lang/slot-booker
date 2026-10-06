@@ -712,6 +712,13 @@ describe("listAdminEvents: lanes and places", () => {
   beforeAll(async () => { t = await createTestEnv(); });
   afterAll(async () => { await t.dispose(); });
 
+  it("names each upcoming event's lanes, in lane order and without their ids", async () => {
+    const { insertEvent } = await import("../test/db");
+    const e = await insertEvent(t.env.DB, { startUtc: "2026-10-25T08:00:00Z", endUtc: "2026-10-25T08:30:00Z", lanes: ["Ring 1", "Ring 2"] });
+    const listed = (await listAdminEvents(t.env.DB, NOW, 0)).events.find((x) => x.slug === e.slug)!;
+    expect(listed.lanes).toEqual([{ name: "Ring 1" }, { name: "Ring 2" }]);
+  });
+
   it("adds laneCount, capacity and placeCount, and is full only when every place is booked", async () => {
     const { insertBooking, insertEvent } = await import("../test/db");
     const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:30:00Z", capacity: 2, lanes: ["A", "B"] });

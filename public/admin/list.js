@@ -341,7 +341,8 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
     const children = [
       h("h2", {}, ev.name),
       h("p", { class: "when" }, `${formatDate(ev.startUtc)}, ${formatTimeRange(ev.startUtc, ev.endUtc)}`),
-      h("p", { class: "booked" }, `${ev.bookedCount} of ${ev.slotCount} slots booked`),
+      h("p", { class: "booked" }, ev.placeCount !== undefined && ev.placeCount !== ev.slotCount
+        ? `${ev.bookedCount} of ${ev.placeCount} places booked` : `${ev.bookedCount} of ${ev.slotCount} slots booked`),
       h("p", {}, h("span", { class: ev.bookings?.open ? "badge open" : "badge closed" },
         ev.bookings?.open ? "Bookings open" : "Bookings closed"),
       ...(ev.full ? [" ", h("span", { class: "badge full" }, "Full")] : []),

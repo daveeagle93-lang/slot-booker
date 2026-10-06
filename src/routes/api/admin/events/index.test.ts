@@ -511,7 +511,7 @@ describe("GET /api/admin/events", () => {
     expect(events[0]).toEqual({
       slug, name: "Show", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z", costPence: 900,
       venuePostcode: "ZZ9 9ZZ", details: "private notes", shareMessage: "", slotCount: 10, bookedCount: 2, archived: false, listed: true, full: false,
-      laneCount: 1, capacity: 1, placeCount: 10, bookings: { open: true, closesAt: "2026-06-13T07:00:00Z" }, path: `/e/${slug}`,
+      laneCount: 1, lanes: [{ name: "" }], capacity: 1, placeCount: 10, bookings: { open: true, closesAt: "2026-06-13T07:00:00Z" }, path: `/e/${slug}`,
     });
     expect(events[1]).toMatchObject({ slotCount: 4, bookedCount: 0 });
     vi.setSystemTime(new Date("2026-06-13T07:00:00Z"));

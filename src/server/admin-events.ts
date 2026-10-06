@@ -566,7 +566,7 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
       slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc, costPence: e.cost_pence,
       venuePostcode: e.venue_postcode, details: e.details, shareMessage: e.share_message, slotCount, bookedCount, archived: false,
       listed: e.listed === 1,
-      laneCount: row.lanes.length, capacity: row.capacity, placeCount,
+      laneCount: row.lanes.length, lanes: row.lanes.map(({ name }) => ({ name })), capacity: row.capacity, placeCount,
       full: slotCount > 0 && bookedCount >= placeCount,
       bookings: bookingWindow(row, cutoffOffsetMinutes, now),
       path: `/e/${e.slug}`,

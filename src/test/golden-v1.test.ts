@@ -40,6 +40,7 @@ const ALLOWED_ADDITIONS: Allowed[] = [
   { files: /^public-api\/post-(bookings|slot-started)\.json$/, path: "*.body.freeSlots[].places", why: "the free slots in a slot_taken or slot_started answer carry their places, as the public event's slots do" },
   // Admin side: lanes and capacity are described next to the event, and every booking the admin API shows names its lane.
   { files: /^admin-api\/events-list\.json$/, path: "body.events[].laneCount", why: "the admin list says how many lanes each upcoming event has" },
+  { files: /^admin-api\/events-list\.json$/, path: "body.events[].lanes", why: "the admin list names each upcoming event's lanes so Share can fill {lanes}" },
   { files: /^admin-api\/events-list\.json$/, path: "body.events[].capacity", why: "the admin list says how many places each lane has at each time" },
   { files: /^admin-api\/events-list\.json$/, path: "body.events[].placeCount", why: "the admin list says how many places the event has in all (times x lanes x places per lane)" },
   { files: /^admin-api\/detail-/, path: "body.event.lanes", why: "the admin detail lists the event's lanes (id and name) for the edit form" },
