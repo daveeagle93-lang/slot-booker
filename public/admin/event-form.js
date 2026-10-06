@@ -4,6 +4,10 @@ const DEBOUNCE_MS = 300;
 const PLACEHOLDER = "Fill in the highlighted fields to see the schedule.";
 const PREVIEW_FAILED = "We couldn't update the preview. Check your connection and keep editing to try again.";
 const SAVE_FAILED = "We couldn't save the event. Check your connection and try again.";
+const TEMPLATES_URL = "/api/admin/templates";
+const TEMPLATES_FAILED = "Templates couldn't be loaded. You can still fill the form in by hand.";
+const TEMPLATE_NOTE = "Choosing a template replaces the details, times, cost, breaks and share message below. The event name and date stay as they are. The event keeps its own copy: changing a template later never changes events already made.";
+const SHARE_NOTE = "Used when you share this event. Leave it blank to use your default template's message. Placeholders such as {event} and {date} are filled in when you share. ";
 const SAVED_EARLIER = "We'd already saved an event from this page, so we haven't changed it. Here it is as saved. Any changes you made since weren't applied.";
 const AFFECTED_APPEARED = "Another booking has appeared since you checked, so please check the list again.";
 // The preview endpoint validates a whole draft but only the schedule fields matter to it.
@@ -28,8 +32,11 @@ export const bookingLine = (b) => `${formatTime(b.slotStart)} â€” ${b.dogName} â
  * draft would orphan, and Save asks for confirmation when there are any. `done({ data, notice, confirmed })`
  * is called once the event is saved (the form is then dead: the page shows its own result); `confirmed` is
  * the list of bookings the admin agreed to remove.
+ *
+ * Create also has a template picker: `templates` is the (optional) promise of the GET /api/admin/templates response, else
+ * the form asks itself. The default template fills the form when it arrives, if nothing has been typed yet.
  */
-export function mountEventForm({ document, root, api, h, mode, slug, initial, done }) {
+export function mountEventForm({ document, root, api, h, mode, slug, initial, done, templates }) {
   const editing = mode === "edit";
 
   // One key per page load, sent with every Save so a retry can't create the event twice, even after edits to
@@ -51,6 +58,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
   let controller = null;
   let seq = 0; // bumped whenever a pending or in-flight preview stops being wanted
   let affected = []; // edit: the bookings the last preview said the draft would remove
+  let edited = false; // create: the user has changed something, so a template arriving late must not overwrite it
   let previewCurrent = false; // edit: whether `affected` answers the form as it is now
 
   // ---- form ----
@@ -78,7 +86,11 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
       control("input", "postcode", { type: "text", autocapitalize: "characters", autocomplete: "off", required: true })),
     details: field("details", "details", "Details (optional)",
       control("textarea", "details", { rows: "4", maxlength: "2000" })),
+    share: field("shareMessage", "share-message", "Share message (optional)",
+      control("textarea", "share-message", { rows: "5", maxlength: "1000", "aria-describedby": "share-message-hint share-message-error" })),
   };
+  f.share.lastElementChild.before(h("p", { class: "note", id: "share-message-hint" }, SHARE_NOTE,
+    h("a", { href: "/admin/templates" }, "Manage your templates")));
   const value = (key) => fields.get(key).input.value.trim();
 
   // Not in `fields`: it has no error of its own and isn't part of the schedule, so it never triggers a preview.
@@ -95,8 +107,16 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
   const progress = h("p", { class: "progress", "aria-live": "polite" });
   const saveButton = h("button", { type: "submit", class: "button primary" }, editing ? "Save changes" : "Save event");
 
+  // Create only: fills the template-held fields. Hidden until the templates arrive, and left hidden if there are none or they failed.
+  const picker = h("select", { id: "template", name: "template", "aria-describedby": "template-hint" });
+  const pickerField = h("div", { class: "field", hidden: true },
+    h("label", { for: "template" }, "Template"), picker, h("p", { class: "note", id: "template-hint" }, TEMPLATE_NOTE));
+  const templateNote = h("div", { class: "note", hidden: true });
+  const templateStatus = h("p", { class: "form-status", "aria-live": "polite" });
+
   const form = h("form", { id: "event-form", novalidate: true },
     h("h1", {}, editing ? "Edit event" : "Create event"),
+    ...(editing ? [] : [pickerField, templateNote, templateStatus]),
     formError,
     f.name,
     f.date,
@@ -105,7 +125,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     h("fieldset", { class: "breaks-group" },
       h("legend", {}, "Breaks (optional)"),
       breakList, breaksError, addBreak),
-    f.cost, f.postcode, f.details, listedField,
+    f.cost, f.postcode, f.details, f.share, listedField,
     h("p", { class: "note" }, editing
       ? "Changing the times can remove booked slots. You'll see who is affected and be asked to confirm before anything is removed."
       : "You can edit the event after saving, so you can fix any slip later."),
@@ -135,12 +155,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     const remove = h("button", { type: "button", class: "button remove" }, "Remove");
     const row = { id, legend, startInput: times.start, endInput: times.end, labelInput };
     remove.addEventListener("click", () => {
-      rows.splice(rows.indexOf(row), 1);
-      fields.delete(`breaks.${id}.start`);
-      fields.delete(`breaks.${id}.end`);
-      fields.delete(`breaks.${id}.label`);
-      row.el.remove();
-      numberRows();
+      removeRow(row);
       addBreak.focus();
       onScheduleChange();
     });
@@ -151,6 +166,14 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     numberRows();
     if (focus) row.startInput.focus();
     return row;
+  }
+
+  /** Takes the row and its `fields` entries out (the Remove button, and a template replacing the breaks). */
+  function removeRow(row) {
+    rows.splice(rows.indexOf(row), 1);
+    for (const which of ["start", "end", "label"]) fields.delete(`breaks.${row.id}.${which}`);
+    row.el.remove();
+    numberRows();
   }
 
   function numberRows() {
@@ -195,6 +218,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
   }
 
   form.addEventListener("input", (e) => {
+    edited = true;
     const fld = [...fields.values()].find((x) => x.input === e.target);
     if (!fld) return;
     fld.touched = true;
@@ -208,7 +232,10 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     fld.touched = true;
     renderErrors();
   });
-  addBreak.addEventListener("click", () => addRow());
+  addBreak.addEventListener("click", () => {
+    edited = true;
+    addRow();
+  });
   form.addEventListener("submit", onSubmit);
 
   // ---- live preview ----
@@ -369,7 +396,8 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
       payload: {
         name: value("name"), date: value("date"), start: value("start"), end: value("end"),
         sessionMinutes: wholeNumber(value("sessionMinutes")), gapMinutes: wholeNumber(value("gapMinutes")),
-        costPence: cost.pence, venuePostcode: value("venuePostcode"), details: value("details"), listed: listed.checked,
+        costPence: cost.pence, venuePostcode: value("venuePostcode"), details: value("details"), shareMessage: value("shareMessage"),
+        listed: listed.checked,
         breaks: used.map((r) => ({ start: r.startInput.value, end: r.endInput.value, label: r.labelInput.value })),
       },
     };
@@ -513,6 +541,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     f.cost.querySelector("input").value = poundsText(initial.costPence);
     f.postcode.querySelector("input").value = initial.venuePostcode;
     f.details.querySelector("textarea").value = initial.details;
+    f.share.querySelector("textarea").value = initial.shareMessage ?? "";
     listed.checked = initial.listed !== false;
     for (const b of initial.breaks) {
       const row = addRow(false);
@@ -523,4 +552,64 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     if (readSchedule()) runPreview();
   }
   renderErrors();
+
+  // ---- templates (create) ----
+  let templateList = [];
+
+  /** One request after mount, never blocking the form: it works as before without templates. */
+  async function loadTemplates() {
+    let res = null;
+    try {
+      res = await (templates ?? api.request("GET", TEMPLATES_URL));
+    } catch { /* reported below */ }
+    if (res?.status === 401) return;
+    if (res?.status !== 200 || !Array.isArray(res.data?.templates)) {
+      templateNote.textContent = TEMPLATES_FAILED;
+      templateNote.hidden = false;
+      return;
+    }
+    templateList = res.data.templates;
+    if (templateList.length === 0) {
+      templateNote.replaceChildren(h("a", { class: "back", href: "/admin/templates" }, "Create a template to save time"));
+      templateNote.hidden = false;
+      return;
+    }
+    picker.replaceChildren(h("option", { value: "" }, "No template"),
+      ...templateList.map((t) => h("option", { value: String(t.id) }, t.isDefault ? `${t.name} (default)` : t.name)));
+    pickerField.hidden = false;
+    const def = templateList.find((t) => t.isDefault);
+    if (def && !edited) {
+      picker.value = String(def.id);
+      applyTemplate(def);
+    }
+  }
+
+  picker.addEventListener("change", () => applyTemplate(templateList.find((t) => String(t.id) === picker.value) ?? null));
+
+  /** Fills (or, with null, clears) exactly the template-held fields: never the name, date or "listed". */
+  function applyTemplate(t) {
+    const held = {
+      details: t?.details, venuePostcode: t?.venuePostcode, costPence: t ? poundsText(t.costPence) : undefined, start: t?.start, end: t?.end,
+      sessionMinutes: t ? String(t.sessionMinutes) : undefined, gapMinutes: t ? String(t.gapMinutes) : undefined, shareMessage: t?.shareMessage,
+    };
+    for (const [key, text] of Object.entries(held)) {
+      const fld = fields.get(key);
+      fld.input.value = text ?? "";
+      fld.touched = t !== null; // a filled field validates as usual; a cleared one starts fresh
+      delete serverErrors[key];
+    }
+    for (const row of [...rows]) removeRow(row);
+    for (const b of t?.breaks ?? []) {
+      const row = addRow(false);
+      row.startInput.value = b.start;
+      row.endInput.value = b.end;
+      row.labelInput.value = b.label;
+      for (const which of ["start", "end", "label"]) fields.get(`breaks.${row.id}.${which}`).touched = true;
+    }
+    renderErrors();
+    onScheduleChange();
+    templateStatus.textContent = t ? `Filled in from the template ${t.name}.` : "Cleared the template fields.";
+  }
+
+  if (!editing) loadTemplates();
 }

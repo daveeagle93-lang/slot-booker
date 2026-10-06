@@ -26,15 +26,17 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
     return;
   }
 
-  // Not awaited either: the default template's share message, for an event with none of its own. Without it, the built-in one.
+  // Not awaited: one request serves the form's template picker and, for an event with none of its own, the default
+  // template's share message. Without it, the built-in message.
+  const templatesRequest = api.request("GET", "/api/admin/templates");
   let defaultShareMessage = "";
-  api.request("GET", "/api/admin/templates").then((res) => {
+  templatesRequest.then((res) => {
     const found = Array.isArray(res.data?.templates) ? res.data.templates.find((t) => t.isDefault) : null;
     if (res.status === 200 && typeof found?.shareMessage === "string") defaultShareMessage = found.shareMessage;
   }, () => {});
 
   mountEventForm({
-    document, root, api, h, mode: "create",
+    document, root, api, h, mode: "create", templates: templatesRequest,
     done: ({ data, notice }) => showCreated(data, notice),
   });
 

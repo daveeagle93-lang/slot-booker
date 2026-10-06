@@ -69,12 +69,11 @@ describe("list page", () => {
     expect(badges).toEqual([["Bookings open"], ["Bookings open", "Not listed"], ["Bookings open"]]);
   });
 
-  it("links to the settings page from the header, before Sign out", async () => {
+  it("has no Settings button in the admin bar any more (the navigation has it), only the signed-in line and Sign out", async () => {
     await start([]);
     const bar = [...$(".admin-bar").children];
-    const settings = bar.find((n) => n.textContent === "Settings") as HTMLAnchorElement;
-    expect(settings.getAttribute("href")).toBe("/admin/settings");
-    expect(bar.indexOf(settings)).toBeLessThan(bar.indexOf(buttonNamed("Sign out")));
+    expect(bar.map((n) => n.textContent)).toEqual(["Signed in as ann@example.com", "Sign out"]);
+    expect(bar.some((n) => n.getAttribute("href") === "/admin/settings")).toBe(false);
   });
 
   it("gives each card a Schedule link to the schedule page, right after Edit, with the slug escaped", async () => {

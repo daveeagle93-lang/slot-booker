@@ -98,8 +98,8 @@ describe("form", () => {
     await start();
     const labels = $$("label").map((l) => l.textContent);
     expect(labels).toEqual([
-      "Event name", "Date", "Start time", "End time", "Session length (minutes)", "Gap between sessions (minutes)",
-      "Cost (£)", "Venue postcode", "Details (optional)", "Listed on the home page",
+      "Template", "Event name", "Date", "Start time", "End time", "Session length (minutes)", "Gap between sessions (minutes)",
+      "Cost (£)", "Venue postcode", "Details (optional)", "Share message (optional)", "Listed on the home page",
     ]);
     for (const label of $$("label")) expect(document.getElementById(label.getAttribute("for")!)).not.toBeNull();
     expect(input("date").type).toBe("date");
@@ -587,7 +587,7 @@ describe("saving", () => {
     expect(create.body).toEqual({
       name: "Trial Day", date: "2026-06-13", start: "09:00", end: "16:00", sessionMinutes: 15, gapMinutes: 5,
       costPence: 1250, venuePostcode: "SW1A 1AA", details: "Bring water.", breaks: [{ start: "12:00", end: "12:20", label: "" }],
-      listed: true, idempotencyKey: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+      shareMessage: "", listed: true, idempotencyKey: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
     });
   });
 
@@ -1119,5 +1119,303 @@ describe("created view: Share", () => {
     expect($(".event-name").textContent).toBe(HOSTILE);
     expect(shareButton()!.getAttribute("aria-label")).toBe(`Share "${HOSTILE}"`);
     expect($$("a").find((a) => a.textContent === "Open in WhatsApp")!.getAttribute("href")).toBe(`https://wa.me/?text=${encodeURIComponent(message())}`);
+  });
+});
+
+describe("template picker and share message", () => {
+  const SATURDAY = {
+    id: 1, name: "Saturday trial", isDefault: true, details: "Bring water", venuePostcode: "AB1 2CD", costPence: 1500,
+    start: "09:00", end: "12:00", sessionMinutes: 15, gapMinutes: 5, breaks: [{ start: "10:30", end: "10:45", label: "Tea" }],
+    shareMessage: "Book {event} on {date}",
+  };
+  const EVENING = {
+    id: 2, name: "Evening", isDefault: false, details: "", venuePostcode: "EF3 4GH", costPence: 1250,
+    start: "18:00", end: "20:00", sessionMinutes: 20, gapMinutes: 0,
+    breaks: [{ start: "18:50", end: "19:00", label: "" }, { start: "19:20", end: "19:30", label: "Water" }], shareMessage: "",
+  };
+  const BOTH = () => reply(200, { templates: [SATURDAY, EVENING] });
+  const picker = () => document.getElementById("template") as HTMLSelectElement;
+  const area = (id: string) => document.getElementById(id) as HTMLTextAreaElement;
+  const choose = (value: string) => {
+    picker().value = value;
+    picker().dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  const status = () => $(".form-status").textContent;
+  const breakValues = () => $$(".break-row").map((r) => [...r.querySelectorAll("input")].map((i) => i.value));
+  const created = (calls: Call[]) => calls.find((c) => c.url === CREATE)!.body;
+  const gate = () => {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    return { release, promise };
+  };
+
+  it("is a labelled select with No template first, the default marked, and a note", async () => {
+    await start({ templates: BOTH });
+    await tick();
+    expect($("label[for='template']").textContent).toBe("Template");
+    expect([...picker().options].map((o) => o.textContent)).toEqual(["No template", "Saturday trial (default)", "Evening"]);
+    expect([...picker().options].map((o) => o.value)).toEqual(["", "1", "2"]);
+    expect(document.getElementById("template-hint")!.textContent).toBe(
+      "Choosing a template replaces the details, times, cost, breaks and share message below. The event name and date stay as they are. The event keeps its own copy: changing a template later never changes events already made.");
+    expect(picker().getAttribute("aria-describedby")).toBe("template-hint");
+    expect(picker().closest(".field")!.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("applies the default template when it arrives and nothing has been touched, and says so", async () => {
+    await start({ templates: BOTH });
+    await tick();
+    expect(picker().value).toBe("1");
+    expect(input("details").value).toBe("Bring water");
+    expect(input("postcode").value).toBe("AB1 2CD");
+    expect(input("cost").value).toBe("15");
+    expect(input("start").value).toBe("09:00");
+    expect(input("end").value).toBe("12:00");
+    expect(input("session").value).toBe("15");
+    expect(input("gap").value).toBe("5");
+    expect(area("share-message").value).toBe("Book {event} on {date}");
+    expect(breakValues()).toEqual([["10:30", "10:45", "Tea"]]);
+    expect(input("name").value).toBe("");
+    expect(input("date").value).toBe("");
+    expect(input("listed").checked).toBe(true);
+    expect(status()).toBe("Filled in from the template Saturday trial.");
+    expect($(".form-status").getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("does not apply it when something was typed before the templates arrived, and leaves the picker on No template", async () => {
+    const g = gate();
+    await start({ templates: async () => { await g.promise; return BOTH(); } });
+    expect(picker()).not.toBeNull();
+    expect(picker().closest(".field")!.hasAttribute("hidden")).toBe(true);
+    set("name", "My own event");
+    set("postcode", "ZZ1 1ZZ");
+    g.release();
+    await tick();
+    expect(picker().closest(".field")!.hasAttribute("hidden")).toBe(false);
+    expect(picker().value).toBe("");
+    expect(input("name").value).toBe("My own event");
+    expect(input("postcode").value).toBe("ZZ1 1ZZ");
+    expect(input("details").value).toBe("");
+    expect(input("cost").value).toBe("");
+    expect(breakValues()).toEqual([]);
+    expect(status()).toBe("");
+  });
+
+  it("does not apply it after a break row was added by hand either", async () => {
+    const g = gate();
+    await start({ templates: async () => { await g.promise; return BOTH(); } });
+    buttonNamed("Add break").click();
+    g.release();
+    await tick();
+    expect(picker().value).toBe("");
+    expect(breakValues()).toEqual([["", "", ""]]);
+  });
+
+  it("works before the templates arrive: the form can be filled in and saved", async () => {
+    const g = gate();
+    const { calls } = await start({ templates: async () => { await g.promise; return BOTH(); } });
+    fillAll();
+    submit();
+    await tick();
+    expect(created(calls)).toMatchObject({ name: "Trial Day", shareMessage: "" });
+    g.release();
+    await tick();
+  });
+
+  it("switching replaces the template fields, breaks and message but never the name, date or Listed", async () => {
+    await start({ templates: BOTH });
+    await tick();
+    set("name", "Spring Scent Trial");
+    set("date", "2026-06-13");
+    input("listed").click();
+    choose("2");
+    expect(input("details").value).toBe("");
+    expect(input("postcode").value).toBe("EF3 4GH");
+    expect(input("cost").value).toBe("12.50");
+    expect(input("start").value).toBe("18:00");
+    expect(input("end").value).toBe("20:00");
+    expect(input("session").value).toBe("20");
+    expect(input("gap").value).toBe("0");
+    expect(area("share-message").value).toBe("");
+    expect(breakValues()).toEqual([["18:50", "19:00", ""], ["19:20", "19:30", "Water"]]);
+    expect(input("name").value).toBe("Spring Scent Trial");
+    expect(input("date").value).toBe("2026-06-13");
+    expect(input("listed").checked).toBe(false);
+    expect(status()).toBe("Filled in from the template Evening.");
+    choose("1");
+    expect(breakValues()).toEqual([["10:30", "10:45", "Tea"]]);
+    expect(input("name").value).toBe("Spring Scent Trial");
+  });
+
+  it("replaces what the user typed in those fields when a template is chosen", async () => {
+    await start({ templates: BOTH });
+    await tick();
+    set("postcode", "typed 1AA");
+    set("details", "typed details");
+    choose("2");
+    expect(input("postcode").value).toBe("EF3 4GH");
+    expect(input("details").value).toBe("");
+  });
+
+  it("No template clears exactly the template-held fields and removes the breaks", async () => {
+    await start({ templates: BOTH });
+    await tick();
+    set("name", "Spring Scent Trial");
+    set("date", "2026-06-13");
+    choose("");
+    for (const id of ["details", "postcode", "cost", "start", "end", "session", "gap", "share-message"]) expect(area(id).value, id).toBe("");
+    expect(breakValues()).toEqual([]);
+    expect($$(".break-row")).toHaveLength(0);
+    expect(input("name").value).toBe("Spring Scent Trial");
+    expect(input("date").value).toBe("2026-06-13");
+    expect(status()).toBe("Cleared the template fields.");
+    // cleared fields start fresh: no cost error until the user touches it or tries to save
+    expect(errorOf("cost")).toBe("");
+  });
+
+  it("shows a free template's cost as 0", async () => {
+    await start({ templates: () => reply(200, { templates: [{ ...SATURDAY, costPence: 0 }] }) });
+    await tick();
+    expect(input("cost").value).toBe("0");
+    expect(errorOf("cost")).toBe("");
+  });
+
+  it("previews the filled schedule once the date is there, with the template's breaks", async () => {
+    const { calls } = await start({ templates: BOTH });
+    await tick();
+    set("date", "2026-06-13");
+    await settle();
+    expect(previewCalls(calls).at(-1)!.body).toMatchObject({
+      date: "2026-06-13", start: "09:00", end: "12:00", sessionMinutes: 15, gapMinutes: 5,
+      breaks: [{ start: "10:30", end: "10:45", label: "Tea" }],
+    });
+    const before = previewCalls(calls).length;
+    choose("2");
+    await settle();
+    expect(previewCalls(calls)).toHaveLength(before + 1);
+    expect(previewCalls(calls).at(-1)!.body).toMatchObject({ start: "18:00", end: "20:00", sessionMinutes: 20, gapMinutes: 0 });
+    expect(chips()).toEqual(["09:00", "09:20", "09:40"]);
+  });
+
+  it("rebuilds the break rows with their names, and each can be removed afterwards", async () => {
+    const { calls } = await start({ templates: BOTH });
+    await tick();
+    choose("2");
+    expect($$(".break-row legend").map((l) => l.textContent)).toEqual(["Break 1", "Break 2"]);
+    const ids = $$(".break-row input[id$='-label']").map((i) => i.id);
+    expect(ids).toHaveLength(2);
+    expect(input(ids[1]).value).toBe("Water");
+    // the old row's fields are gone from the form's bookkeeping: none of the earlier ids is left in the page
+    expect(document.getElementById("break-1-label")).toBeNull();
+    $("button[aria-label='Remove break 1']").click();
+    expect(breakValues()).toEqual([["19:20", "19:30", "Water"]]);
+    expect($$(".break-row legend").map((l) => l.textContent)).toEqual(["Break 1"]);
+    set("name", "Trial Day"); set("date", "2026-06-13");
+    submit();
+    await tick();
+    expect(created(calls).breaks).toEqual([{ start: "19:20", end: "19:30", label: "Water" }]);
+  });
+
+  it("can switch templates repeatedly without leaving stale rows or errors behind", async () => {
+    const { calls } = await start({ templates: BOTH });
+    await tick();
+    for (const v of ["2", "1", "2", "", "1"]) choose(v);
+    expect(breakValues()).toEqual([["10:30", "10:45", "Tea"]]);
+    set("name", "Trial Day"); set("date", "2026-06-13");
+    submit();
+    await tick();
+    expect(created(calls).breaks).toEqual([{ start: "10:30", end: "10:45", label: "Tea" }]);
+  });
+
+  it("sends the filled-in values and the share message, still with one idempotency key", async () => {
+    const { calls } = await start({ templates: BOTH });
+    await tick();
+    set("name", "Spring Scent Trial");
+    set("date", "2026-06-13");
+    submit();
+    await tick();
+    expect(created(calls)).toEqual({
+      name: "Spring Scent Trial", date: "2026-06-13", start: "09:00", end: "12:00", sessionMinutes: 15, gapMinutes: 5,
+      costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water", shareMessage: "Book {event} on {date}",
+      breaks: [{ start: "10:30", end: "10:45", label: "Tea" }], listed: true, idempotencyKey: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+    });
+  });
+
+  it("sends a share message typed by hand, and never previews because of it", async () => {
+    const { calls } = await start();
+    fillAll();
+    await settle();
+    const before = previewCalls(calls).length;
+    set("share-message", "  Come along to {event}!  ");
+    await settle();
+    expect(previewCalls(calls)).toHaveLength(before);
+    submit();
+    await tick();
+    expect(created(calls).shareMessage).toBe("Come along to {event}!");
+  });
+
+  it("has the share message field with its note and a link to the templates page", async () => {
+    await start();
+    const field = area("share-message");
+    expect(field.maxLength).toBe(1000);
+    expect($("label[for='share-message']").textContent).toBe("Share message (optional)");
+    const hint = document.getElementById("share-message-hint")!;
+    expect(hint.textContent).toContain("Used when you share this event. Leave it blank to use your default template's message.");
+    expect(hint.textContent).toContain("Placeholders such as {event} and {date} are filled in when you share.");
+    expect(hint.querySelector("a")!.getAttribute("href")).toBe("/admin/templates");
+  });
+
+  it("shows the server's shareMessage error on the field", async () => {
+    await start({ create: () => reply(400, { error: { code: "invalid_input" }, fields: { shareMessage: "Too long." } }) });
+    fillAll();
+    submit();
+    await tick();
+    expect(errorOf("share-message")).toBe("Too long.");
+    expect(area("share-message").getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(area("share-message"));
+    set("share-message", "Shorter");
+    expect(errorOf("share-message")).toBe("");
+  });
+
+  it("hides the picker with a quiet note when the templates can't be loaded, and the form still works", async () => {
+    for (const templates of [() => reply(500, null), () => Promise.reject(new TypeError("offline")), () => reply(200, { templates: "nope" })]) {
+      const { calls } = await start({ templates });
+      await tick();
+      expect(picker().closest(".field")!.hasAttribute("hidden")).toBe(true);
+      expect(text()).toContain("Templates couldn't be loaded. You can still fill the form in by hand.");
+      fillAll();
+      submit();
+      await tick();
+      expect(created(calls)).toMatchObject({ name: "Trial Day", shareMessage: "" });
+    }
+  });
+
+  it("hides the picker and offers a link to the templates page when there are none", async () => {
+    await start({ templates: () => reply(200, { templates: [] }) });
+    await tick();
+    expect(picker().closest(".field")!.hasAttribute("hidden")).toBe(true);
+    const link = $$("a").find((a) => a.textContent === "Create a template to save time") as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("/admin/templates");
+    expect(text()).not.toContain("couldn't be loaded");
+  });
+
+  it("asks for the templates once, and does not show them to a signed-out visitor", async () => {
+    const { calls } = await start({ templates: BOTH });
+    await tick();
+    expect(calls.filter((c) => c.url === TEMPLATES)).toHaveLength(1);
+    const { navigate } = await start({ templates: () => reply(401, { error: { code: "unauthenticated" } }) });
+    await tick();
+    expect(navigate).toHaveBeenCalledWith("/admin/login");
+    expect(text()).not.toContain("couldn't be loaded");
+  });
+
+  it("treats template text as text: names, details and messages never become elements", async () => {
+    const hostile = { ...SATURDAY, name: HOSTILE, details: HOSTILE, shareMessage: HOSTILE, breaks: [{ start: "10:30", end: "10:45", label: HOSTILE.slice(0, 40) }] };
+    await start({ templates: () => reply(200, { templates: [hostile] }) });
+    await tick();
+    expect([...picker().options].map((o) => o.textContent)).toEqual(["No template", `${HOSTILE} (default)`]);
+    expect(input("details").value).toBe(HOSTILE);
+    expect(area("share-message").value).toBe(HOSTILE);
+    expect(status()).toBe(`Filled in from the template ${HOSTILE}.`);
+    expect(document.querySelector("img, [onerror]")).toBeNull();
   });
 });

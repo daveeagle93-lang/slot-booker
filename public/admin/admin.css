@@ -2,6 +2,39 @@
 
 main.admin { max-width: 40rem; }
 
+/* Navigation between the admin pages: above <main>, under the club header band. It wraps rather than overflowing, and the
+   current page is marked by a thicker underline and bold text as well as colour. */
+.admin-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.25rem;
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 0 0.5rem;
+}
+.admin-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  min-width: 48px;
+  padding: 0 0.75rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 3px solid transparent;
+}
+.admin-nav a[aria-current="page"] {
+  font-weight: 700;
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 6px;
+  border-bottom-color: var(--text);
+}
+@media (min-width: 56rem) {
+  body:has(.new-layout) .admin-nav { max-width: 60rem; }
+}
+
 .admin-bar {
   display: flex;
   flex-wrap: wrap;
@@ -293,3 +326,17 @@ input[type="color"] { flex: none; width: 4.5rem; padding: 4px; cursor: pointer; 
 .contrast ul { margin: 0 0 0.5rem; padding-left: 1.25rem; }
 .contrast > :last-child { margin-bottom: 0; }
 .contrast.fail { color: var(--danger-text); background: var(--danger-bg); border-color: currentColor; }
+
+/* Templates page: the share message preview. Plain text only, wrapped rather than scrolled sideways. */
+.share-preview-box { margin: 0 0 1rem; }
+.share-preview {
+  margin: 0 0 0.5rem;
+  padding: 0.75rem;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 8px;
+}
+.facts dt { overflow-wrap: anywhere; }

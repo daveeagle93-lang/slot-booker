@@ -69,7 +69,7 @@ function el(document, tag, attrs, ...children) {
 }
 
 /**
- * Adds the header band before <main>, sets the title, and adds the website footer when there is one.
+ * Adds the header band at the start of <body> (above the admin navigation and <main>), sets the title, and adds the website footer when there is one.
  * `home` is where the club name links to; `pageTitle` may be null for the club name alone. Call once per page.
  */
 export function applyBranding(document, settings, { pageTitle: page, home }) {
@@ -82,9 +82,7 @@ export function applyBranding(document, settings, { pageTitle: page, home }) {
     }));
   }
   header.append(el(document, "a", { href: home }, clubOrDefault(s)));
-  const main = document.querySelector("main");
-  if (main) main.before(header);
-  else document.body.prepend(header);
+  document.body.prepend(header);
 
   document.title = pageTitle(page, s.clubName);
 

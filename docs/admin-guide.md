@@ -4,18 +4,21 @@ Setting up or moving the site is covered in [deploying.md](deploying.md) and [ha
 
 It is written for a club organiser using a phone. Every button name below is in "quotes", exactly as it appears on screen. All times are London time, whatever your phone is set to.
 
+Every admin page except the sign-in page has a row of links under the club's header: "Events", "Templates" and "Settings". The page you are on is underlined and in bold. Use them to get between the pages. On a narrow phone the row wraps onto a second line rather than running off the side. I haven't tried this on a real phone, only in tests that read the page files and in a simulated browser.
+
 ## Contents
 
 1. [Signing in](#1-signing-in)
 2. [Club settings and branding](#2-club-settings-and-branding)
 3. [Creating an event](#3-creating-an-event)
-4. [Sharing to WhatsApp](#4-sharing-to-whatsapp)
-5. [Fixing bookings](#5-fixing-bookings)
-6. [Editing an event](#6-editing-an-event)
-7. [The lineup](#7-the-lineup)
-8. [Exporting bookings](#8-exporting-bookings)
-9. [Archiving, deleting and clearing out old events](#9-archiving-deleting-and-clearing-out-old-events)
-10. [If something looks wrong](#10-if-something-looks-wrong)
+4. [Templates](#4-templates)
+5. [Sharing to WhatsApp](#5-sharing-to-whatsapp)
+6. [Fixing bookings](#6-fixing-bookings)
+7. [Editing an event](#7-editing-an-event)
+8. [The lineup](#8-the-lineup)
+9. [Exporting bookings](#9-exporting-bookings)
+10. [Archiving, deleting and clearing out old events](#10-archiving-deleting-and-clearing-out-old-events)
+11. [If something looks wrong](#11-if-something-looks-wrong)
 
 ## 1. Signing in
 
@@ -82,7 +85,7 @@ Ask whoever looks after the site's setup. A lost secret can't be looked up, and 
 
 ## 2. Club settings and branding
 
-This part is for the club name, contact details, logo, colours and icons. Tap "Settings" at the top of the events page. Each part has its own save button.
+This part is for the club name, contact details, logo, colours and icons. Tap "Settings" in the row of links at the top of any admin page. Each part has its own save button.
 
 ### Club details
 
@@ -160,8 +163,9 @@ Under the previews you see either "All contrast checks pass." or a list.
 This part walks through the form for a new event.
 
 1. On the events page, tap "Create event".
-2. Fill in the form, using the notes below.
-3. Tap "Save event".
+2. If you have templates, the form may already be filled in from your default one. Pick a different one, or "No template", under "Template". See [Templates](#4-templates).
+3. Fill in the form, using the notes below.
+4. Tap "Save event".
 
 You can edit the event afterwards, so a slip is easy to fix.
 
@@ -175,6 +179,7 @@ You can edit the event afterwards, so a slip is easy to fix.
 - "Cost (£)". Type 12 or 12.50. Type 0 if it's free. People then see "Free".
 - "Venue postcode". 2 to 10 letters and numbers. People see it as a link to a map.
 - "Details (optional)". Up to 2000 characters. People see it on the booking page and after they book. A good place to say how to contact you to change a booking.
+- "Share message (optional)". Up to 1000 characters. The wording used when you share this event, with placeholders such as {event} and {date}. Leave it blank to use your default template's message. See [Templates](#4-templates).
 - "Listed on the home page". Ticked by default. See below.
 
 An event can have at most 500 slots.
@@ -225,11 +230,93 @@ An event that is not listed shows a "Not listed" label in your admin pages.
 
 ### After you save
 
-You see "Event created", with the event name and the sharing tools in the next section.
+You see "Event created", with the event name and the sharing tools described in [Sharing to WhatsApp](#5-sharing-to-whatsapp).
 
 On the events page, the event now appears under "Upcoming events". It shows a "Bookings open" label and how many slots are booked.
 
-## 4. Sharing to WhatsApp
+## 4. Templates
+
+A template is a saved set of answers for the event form, so you don't type the same details for every event. This part covers making them, how the form uses them, and the share message.
+
+### What a template holds
+
+- A name (up to 60 characters, and no two templates may have the same name, ignoring capital letters).
+- "Details (optional)", "Venue postcode" and "Cost (£)", as in the event form.
+- "Start time", "End time", "Session length (minutes)" and "Gap between sessions (minutes)".
+- Breaks, each with a start, an end and an optional name.
+- A share message (see below).
+
+It holds no event name and no date. You choose those for each event. You can have at most 20 templates.
+
+### Making a template
+
+1. Tap "Templates" in the row of links at the top.
+2. Tap "New template". At 20 templates the button is greyed out, with a note saying why. Delete one to make room.
+3. Fill in the form. It uses the same boxes and rules as the event form, so see [Creating an event](#3-creating-an-event). Tap "Add break" for breaks.
+4. Tap "Create template". You go back to the list, which says "Created" and the name.
+
+A box that the server doesn't accept shows its message under it, and the page moves to the first one. For breaks, the message appears under the break it is about.
+
+The list shows each template's name, "Default" on the default one, and a line such as "09:00–16:00, 20 min sessions, £12.00". Each has "Edit" and "Delete", and every template except the default has "Make default".
+
+### The default template
+
+One template is the default. The first one you make becomes the default. To make another one the default, tap "Make default" on it, or tick "Use as the default for new events" when you make or edit it. There is always one default while you have any template. On the default template that box is ticked and greyed out, with the note "To change the default, make another template the default". If you delete the default, the oldest remaining template becomes the default.
+
+The default is used in two ways: it fills in the create-event form, and its share message is used for events that have no message of their own.
+
+### Using a template when you create an event
+
+On the create-event page, a "Template" box at the top lists "No template" and each of your templates, with "(default)" after the default one.
+
+- When the page opens, your default template fills the form in by itself, but only if you haven't typed anything by then. If you had already started, nothing is replaced and the box stays on "No template".
+- Choosing a template fills in the details, postcode, cost, start and end times, session length, gap, breaks and share message. It replaces what is in those boxes now, including anything you typed there. It never changes the event name, the date or "Listed on the home page". The page says "Filled in from the template" and its name, and the schedule preview updates.
+- Choosing "No template" empties exactly those boxes and removes the breaks. It says "Cleared the template fields."
+- You can still change anything afterwards.
+
+If the templates can't be loaded, the box is hidden and the page says so; the form still works by hand. If you have no templates yet, there is a link "Create a template to save time".
+
+### Events keep their own copy
+
+An event stores its own copy of what it was made with. Changing or deleting a template later never changes events you have already made. To change an event's wording, edit the event.
+
+### The share message
+
+The share message is the text that "Share", "Copy message" and the "Event created" page build for an event. You can write one on a template and on each event ("Share message (optional)", on both the create and the edit page). Placeholders in curly brackets are replaced with the event's details each time someone shares:
+
+| Placeholder | Becomes |
+| --- | --- |
+| {event} | The event name |
+| {date} | The date, for example Saturday 13 June 2026 |
+| {start} | The start time, for example 09:00 |
+| {end} | The end time, for example 16:00 |
+| {cost} | The cost, for example £12.00, or Free |
+| {postcode} | The venue postcode |
+| {details} | The event's details text |
+| {club} | Your club name |
+| {link} | The booking link |
+
+Which message is used when you share an event: the event's own message if it has one; otherwise the default template's message; otherwise the built-in wording described under [The message](#the-message).
+
+The values go in as they are. If an event's name contains something that looks like a placeholder, it appears as typed and isn't filled in again. A line with a placeholder that comes out empty (a blank club name, say) is left out. Other lines are kept as you typed them.
+
+- **Unknown placeholders** are left exactly as typed. Typing {Event} with a capital letter, or {name}, doesn't work: it appears in the message as those letters. The template form lists them under the preview, as "These will appear as typed:".
+- **Without {link}** the booking link is added on its own last line, so the message always has it. With {link} you choose where it goes. The built-in message ends with the link, and I haven't checked whether WhatsApp shows its preview card when the link is somewhere else.
+
+### The preview
+
+Under the share message, "Preview" shows the message as it would be shared, and updates as you type. It uses a sample event called Spring Scent Trial on a Saturday in January 2027, with this form's own details, postcode, cost, times and your club name, and a sample link ending /e/example. A cost, times or postcode left blank show an example instead. If the share message is blank, the preview shows the built-in wording and says so. Remember that an event made from a template with a blank message is shared with the default template's message, or the built-in one if that is blank too.
+
+The preview is plain text. Nothing you type is ever treated as page markup.
+
+### Changing and deleting a template
+
+- Tap "Edit", change the boxes and tap "Save changes".
+- Tap "Delete" and a panel asks you to confirm. It names the template and says "Events already made from it are not changed." Tap "Delete template" to go ahead or "Cancel" to keep it.
+
+I haven't tried the Templates page or the template box on a real phone. The tests cover it in a simulated browser only: the layout, the keyboard that appears and the phone's own time and date boxes are unchecked.
+
+## 5. Sharing to WhatsApp
 
 This part is for getting the booking link to your members.
 
@@ -253,7 +340,7 @@ If "Share" fails on a phone, the same two Copy buttons appear, with a note sayin
 
 The message is made fresh every time you tap. It uses the event's details as they are now, so if you edit the event and share again, the new details are used. Nothing is saved in the button.
 
-Unless you have set your own wording, it has these lines:
+Unless the event or your default template has its own wording (see [Templates](#4-templates)), it has these lines:
 
 1. Your club name, if you have set one.
 2. The event name.
@@ -298,7 +385,7 @@ They then see "You're booked in", with "Copy booking" and "Add to calendar". The
 
 People can't change or cancel a booking online. The page tells them to contact the organiser. You do it for them, as in the next section.
 
-## 5. Fixing bookings
+## 6. Fixing bookings
 
 This part is for adding, moving, swapping and removing bookings yourself.
 
@@ -352,7 +439,7 @@ The person is not told. The page says "They won't be told. You need to let them 
 
 If an edit leaves a booking on a time that is no longer a slot, a list called "Not in the schedule" appears. The page says "Move them to a free slot or clear them." These bookings have "Move" and "Clear" only.
 
-## 6. Editing an event
+## 7. Editing an event
 
 This part covers changing an event, and what you are warned about when bookings would be removed.
 
@@ -388,7 +475,7 @@ You see "Saved." If bookings were removed, you also see "Removed bookings: tell 
 
 There are also "Back to events" and "Open the booking page" buttons.
 
-## 7. The lineup
+## 8. The lineup
 
 This part is for sharing the running order with names.
 
@@ -412,7 +499,7 @@ Names appear as typed. If a name has star, underscore or tilde characters, Whats
 
 Bookings that are not in the schedule are left out.
 
-## 8. Exporting bookings
+## 9. Exporting bookings
 
 This part gives you a spreadsheet of one event's bookings.
 
@@ -427,7 +514,7 @@ Some names may start with a mark like an apostrophe. That happens when a name be
 
 The file holds people's names. Keep it private. Do not post it in a chat or email it around. Delete it when you have finished.
 
-## 9. Archiving, deleting and clearing out old events
+## 10. Archiving, deleting and clearing out old events
 
 This part is for tidying up. Save an export first if you may need the names later.
 
@@ -473,7 +560,7 @@ Archived events are not part of this. This is a known limit. Delete archived eve
 
 The booking form's usual privacy note says details are kept until an organiser deletes the event. Nothing is deleted automatically. So delete old events once you no longer need them.
 
-## 10. If something looks wrong
+## 11. If something looks wrong
 
 This part lists what you might see and what to do.
 

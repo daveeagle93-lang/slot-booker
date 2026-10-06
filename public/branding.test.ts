@@ -100,6 +100,12 @@ describe("applyBranding", () => {
     expect(document.querySelector("footer")).toBeNull();
   });
 
+  it("puts the header first in the body, above an admin nav that sits before main", () => {
+    document.body.innerHTML = '<nav class="admin-nav"></nav><main id="app"></main>';
+    applyBranding(document, { ...ALL, website: null }, { pageTitle: "Events", home: "/admin/" });
+    expect([...document.body.children].map((n) => n.tagName)).toEqual(["HEADER", "NAV", "MAIN"]);
+  });
+
   it("uses the default name, no image and the page title alone when nothing is set", () => {
     setup();
     applyBranding(document, null, { pageTitle: "Events", home: "/" });

@@ -230,7 +230,7 @@ describe("saving with nothing affected", () => {
     expect(put.init?.headers).toEqual({ "Content-Type": "application/json", "X-CSRF-Token": "tok" });
     expect(put.body).toEqual({
       name: "Trial Day, renamed", date: "2026-06-13", start: "09:00", end: "16:00", sessionMinutes: 15, gapMinutes: 5,
-      costPence: 1500, venuePostcode: "SW1A 1AA", details: "Bring water",
+      costPence: 1500, venuePostcode: "SW1A 1AA", details: "Bring water", shareMessage: "",
       breaks: [{ start: "12:00", end: "12:20", label: "Lunch" }], listed: true, removeBookingIds: [],
     });
     expect(document.querySelector(".confirm")).toBeNull();
@@ -700,5 +700,77 @@ describe("near-miss suggestions in edit", () => {
     set("gap", "5");
     await settle();
     expect($$(".suggestion")).toHaveLength(0);
+  });
+});
+
+describe("the share message", () => {
+  const MESSAGE_FIELD = () => document.getElementById("share-message") as HTMLTextAreaElement;
+  const edit = (event: Record<string, unknown>) => start({ get: () => reply(200, { ...DETAIL, event: { ...EVENT, ...event } }) });
+
+  it("has no template picker and asks for no templates", async () => {
+    const { calls } = await start();
+    await tick();
+    expect(document.getElementById("template")).toBeNull();
+    expect(calls.some((c) => c.url === "/api/admin/templates")).toBe(false);
+  });
+
+  it("is a labelled textarea after Details, with a note and a link to the templates page, prefilled from the event", async () => {
+    await edit({ shareMessage: "Book {event} at {postcode}\n{link}" });
+    expect(MESSAGE_FIELD().tagName).toBe("TEXTAREA");
+    expect(MESSAGE_FIELD().maxLength).toBe(1000);
+    expect(MESSAGE_FIELD().value).toBe("Book {event} at {postcode}\n{link}");
+    expect($("label[for='share-message']").textContent).toBe("Share message (optional)");
+    expect(MESSAGE_FIELD().getAttribute("aria-describedby")).toContain("share-message-hint");
+    const hint = document.getElementById("share-message-hint")!;
+    expect(hint.textContent).toContain("Used when you share this event. Leave it blank to use your default template's message.");
+    expect(hint.textContent).toContain("Placeholders such as {event} and {date} are filled in when you share.");
+    expect(hint.querySelector("a")!.getAttribute("href")).toBe("/admin/templates");
+    const order = $$("label").map((l) => l.textContent);
+    expect(order.indexOf("Share message (optional)")).toBe(order.indexOf("Details (optional)") + 1);
+  });
+
+  it("is empty when the event has none, and an old response without the field also gives an empty box", async () => {
+    await edit({ shareMessage: "" });
+    expect(MESSAGE_FIELD().value).toBe("");
+    await start();
+    expect(MESSAGE_FIELD().value).toBe("");
+  });
+
+  it("is sent with the save, as typed (trimmed), and does not trigger a preview", async () => {
+    const { calls } = await edit({ shareMessage: "Old" });
+    await tick();
+    const before = previewCalls(calls).length;
+    MESSAGE_FIELD().value = "  New {event}  ";
+    MESSAGE_FIELD().dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(previewCalls(calls)).toHaveLength(before);
+    submit();
+    await tick();
+    expect(puts(calls)[0].body.shareMessage).toBe("New {event}");
+  });
+
+  it("sends an emptied message as an empty string", async () => {
+    const { calls } = await edit({ shareMessage: "Old" });
+    await tick();
+    MESSAGE_FIELD().value = "";
+    submit();
+    await tick();
+    expect(puts(calls)[0].body.shareMessage).toBe("");
+  });
+
+  it("shows the server's shareMessage error on the field and focuses it", async () => {
+    await start({ put: () => reply(400, { error: { code: "invalid_input" }, fields: { shareMessage: "The share message can be at most 1000 characters." } }) });
+    await tick();
+    submit();
+    await tick();
+    expect(document.getElementById("share-message-error")!.textContent).toBe("The share message can be at most 1000 characters.");
+    expect(MESSAGE_FIELD().getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(MESSAGE_FIELD());
+  });
+
+  it("keeps hostile text as text", async () => {
+    await edit({ shareMessage: HOSTILE });
+    expect(MESSAGE_FIELD().value).toBe(HOSTILE);
+    expect(document.querySelector("img")).toBeNull();
   });
 });
