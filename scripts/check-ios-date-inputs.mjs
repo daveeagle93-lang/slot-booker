@@ -1,4 +1,4 @@
-// Opt-in layout check for the admin pages on a phone (npm run test:webkit).
+// Opt-in layout check for the admin pages, and the public booking page, on a phone (npm run test:webkit).
 //
 // iOS Safari (WebKit) gives input[type=date|time] an intrinsic minimum width, which made the Date field run past
 // the card and the Start/End pairs overlap on a phone. This loads the real pages at phone widths and checks that no
@@ -12,13 +12,21 @@
 // the break rows) and checks that the other cell's label and input stay level with the first cell's (within 1px). Under 360px the cells stack (one
 // column), so that check applies at 390px only; at 320px the rows are checked for stacking, not alignment.
 //
+// The public booking page (/e/<slug>, event.html with the booking API stubbed) is checked in these states: one lane with
+// one place (the v1.0 look), one lane with two places, one named lane, three lanes with two places each (all open; one
+// lane full and a started time; long lane names; a lane chosen with the form open; the confirmation with its Lane row).
+// There it checks: no sideways scroll, nothing past the right edge, every time and lane button at least 48px tall, text
+// not clipped in them (scrollWidth within clientWidth), lane buttons inside their card and not overlapping each other, and
+// at 390px (normal lane names) the three lane buttons of a card on one row (at 320px they may wrap).
+//
 //   node scripts/check-ios-date-inputs.mjs [--engine webkit|chromium] [--allow-skip] [--break-css]
 //                                          [--shots] [--shots-dir <dir>]
 //
 // --engine      webkit (default) or chromium. Chromium never showed the bug, so it is only a sanity check of the
 //               script and the page; only a WebKit run says anything about iOS.
 // --allow-skip  exit 0 instead of 2 when WebKit can't launch here (Playwright supports a limited set of systems).
-// --break-css   self-test: forces a wide min-width on the inputs, so the run must FAIL.
+// --break-css   self-test: forces a wide min-width on the inputs, and wide, short lane buttons on the booking page, so
+//               the run must FAIL.
 // --shots       also writes full-page PNGs of the main states (<name>-<width>-<scheme>.png) to --shots-dir (default:
 //               slot-booker-layout in the system temp folder), for looking at.
 // Every state runs at both widths in light and dark.
@@ -58,6 +66,7 @@ function startServer() {
   const server = createServer((req, res) => {
     let path = decodeURIComponent(new URL(req.url, "http://x").pathname);
     if (path.endsWith("/")) path += "index";
+    if (/^\/e\/[A-Za-z0-9_-]+$/.test(path)) path = "/event"; // the booking page, as the Worker serves it
     let file = resolve(join(PUBLIC_DIR, path));
     if (!extname(file)) file += ".html";
     if (!file.startsWith(PUBLIC_DIR + sep) || !existsSync(file) || !statSync(file).isFile()) {
@@ -93,6 +102,26 @@ const LIST_EVENTS = [
   { slug: SLUG, path: `/e/${SLUG}`, name: "Saturday agility", startUtc: EVENT.startUtc, endUtc: EVENT.endUtc, bookedCount: 3, slotCount: 12, full: false, listed: true, bookings: { open: true } },
   { slug: `${SLUG}2`, path: `/e/${SLUG}2`, name: "Extraordinarily-long-event-name-without-any-spaces-at-all-to-test-wrapping", startUtc: EVENT.startUtc, endUtc: EVENT.endUtc, bookedCount: 12, slotCount: 12, full: true, listed: false, bookings: { open: false } },
 ];
+
+// The public booking page (GET /api/events/:slug, as the Worker answers it). Times are in the future, so only a status of
+// "past" makes a slot started. Slots are 09:00 to 10:20 London time (BST), every 20 minutes.
+const PUBLIC_EVENT = { slug: SLUG, name: "Saturday agility", startUtc: EVENT.startUtc, endUtc: EVENT.endUtc, costPence: 1200, venuePostcode: "AB1 2CD", details: "Bring water.", archived: false };
+const SLOT_STARTS = ["08:00", "08:20", "08:40", "09:00", "09:20"].map((t) => `2030-06-15T${t}:00Z`);
+const PUBLIC_END = (start) => new Date(Date.parse(start) + 15 * 60_000).toISOString();
+const publicSlot = (n, status, ...free) => ({ start: SLOT_STARTS[n], end: PUBLIC_END(SLOT_STARTS[n]), status, places: free.map((f, i) => ({ laneId: i + 1, free: f })) });
+const laneList = (...names) => names.map((name, i) => ({ id: i + 1, name }));
+const PRIVACY = "We store your name, your dog's name and the slot you choose so the club can run the event.\n\nThe details are kept until an organiser deletes the event.";
+/** The public states: what the page is given, and what the form is told when a booking is made (lane 1 at the first open time). */
+const PUBLIC_STATES = {
+  single: { event: { ...PUBLIC_EVENT, lanes: laneList(""), capacity: 1 }, slots: [publicSlot(0, "past", 1), publicSlot(1, "free", 1), publicSlot(3, "free", 1), publicSlot(4, "free", 1)] },
+  singleTwoPlaces: { event: { ...PUBLIC_EVENT, lanes: laneList(""), capacity: 2 }, slots: [publicSlot(0, "past", 1), publicSlot(1, "free", 2), publicSlot(2, "free", 1), publicSlot(3, "free", 2)] },
+  singleNamed: { event: { ...PUBLIC_EVENT, lanes: laneList("Main ring"), capacity: 1 }, slots: [publicSlot(0, "past", 1), publicSlot(1, "free", 1), publicSlot(2, "free", 1)] },
+  // 08:00 started; 08:20 all open; 08:40 Ring 2 full; 09:00 only Ring 3 has a place; 09:20 full (hidden)
+  lanes: { event: { ...PUBLIC_EVENT, lanes: laneList("Ring 1", "Ring 2", "Ring 3"), capacity: 2 },
+    slots: [publicSlot(0, "past", 2, 2, 2), publicSlot(1, "free", 2, 2, 2), publicSlot(2, "free", 2, 0, 1), publicSlot(3, "free", 0, 0, 1), publicSlot(4, "taken", 0, 0, 0)] },
+  longLanes: { event: { ...PUBLIC_EVENT, lanes: laneList("Extraordinarily-long-lane-name-without-any-spaces-at-all", "Novice and intermediate scent work", "Ring 3"), capacity: 2 },
+    slots: [publicSlot(1, "free", 2, 1, 0), publicSlot(2, "free", 0, 2, 2)] },
+};
 const ADMIN_SETTINGS = {
   clubName: "Test club", website: "https://example.org", privacyContact: { name: "Pat", email: "pat@example.org" },
   logo: null, theme: { primary: "#0b5cad", accent: "#0b5cad", isDefault: true }, icons: null,
@@ -121,6 +150,12 @@ async function stubApi(page, stub) {
   await page.route(/\/api\//, (route) => {
     const { pathname } = new URL(route.request().url());
     const method = route.request().method();
+    if (pathname === `/api/events/${SLUG}`) return json(route, { event: stub.public.event, slots: stub.public.slots, bookings: { open: true, closesAt: EVENT.startUtc }, privacyNotice: PRIVACY });
+    if (pathname === `/api/events/${SLUG}/bookings` && method === "POST") {
+      const lane = stub.public.event.lanes[0];
+      return json(route, { booking: { slot: { start: SLOT_STARTS[1], end: PUBLIC_END(SLOT_STARTS[1]) }, lane, dogName: "Bartholomew-Maximilian", handlerName: "Alexandria Featherstonehaugh" }, event: stub.public.event, icsUrl: `/api/events/${SLUG}/bookings/tok0123456789abcdef01/ics` }, 201);
+    }
+    if (pathname === "/api/admin/session" && stub.public) return json(route, { error: { code: "unauthorized", message: "Sign in" } }, 401);
     if (pathname === "/api/admin/session") return json(route, { identity: "admin", provider: "password", csrfToken: "test-token" });
     if (pathname === "/api/settings") return json(route, { clubName: "Test club", website: null, privacyContact: null, logo: null });
     if (pathname === "/api/admin/settings") return json(route, ADMIN_SETTINGS);
@@ -313,6 +348,54 @@ function check(label, m, { ids: expectedIds = [], breakInputs }) {
   return failures;
 }
 
+/** The public booking page's facts: sideways scroll, anything past the right edge, and every time and lane button. */
+// `width` is the screen width asked for: on an emulated phone the layout viewport grows to fit overflowing content, so window.innerWidth can't be trusted.
+const measurePublic = (width) => {
+  const box = (el) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  const overflowing = [];
+  for (const el of document.body.querySelectorAll("*")) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue;
+    if (r.right > width + 0.5) overflowing.push({ what: `${el.tagName.toLowerCase()}${typeof el.className === "string" && el.className ? `.${el.className.trim().split(/\s+/).join(".")}` : ""}`, right: r.right });
+  }
+  const buttons = [...document.querySelectorAll("button.slot")].map((b) => ({
+    text: b.textContent, lane: b.classList.contains("lane"), rect: box(b), scrollWidth: b.scrollWidth, clientWidth: b.clientWidth,
+    scrollHeight: b.scrollHeight, clientHeight: b.clientHeight, card: b.closest(".slot-group") ? box(b.closest(".slot-group")) : null,
+    group: [...document.querySelectorAll(".slot-group")].indexOf(b.closest(".slot-group")),
+  }));
+  return { scrollWidth: document.documentElement.scrollWidth, innerWidth: width, overflowing, buttons, groups: document.querySelectorAll(".slot-group").length };
+};
+
+/** The failures for one state of the public booking page. `o.oneRow`: the lane buttons of a card must share a row. */
+function checkPublic(label, m, o) {
+  const failures = [];
+  const round = (n) => Math.round(n * 10) / 10;
+  if (m.scrollWidth > m.innerWidth) failures.push(`${label}: the page scrolls sideways (scrollWidth ${m.scrollWidth} > innerWidth ${m.innerWidth})`);
+  for (const x of m.overflowing.slice(0, 5)) failures.push(`${label}: ${x.what} ends at ${round(x.right)}, past the screen edge (${m.innerWidth})`);
+  if (m.overflowing.length > 5) failures.push(`${label}: ... and ${m.overflowing.length - 5} more elements past the screen edge`);
+  if (o.lanes !== undefined && m.buttons.filter((b) => b.lane).length !== o.lanes) failures.push(`${label}: expected ${o.lanes} lane buttons, found ${m.buttons.filter((b) => b.lane).length}`);
+  for (const b of m.buttons) {
+    const name = `${b.lane ? "lane" : "time"} button "${b.text}"`;
+    if (b.rect.height < 48 - TOLERANCE) failures.push(`${label}: ${name} is ${round(b.rect.height)}px tall, under 48`);
+    if (b.scrollWidth > b.clientWidth + TOLERANCE || b.scrollHeight > b.clientHeight + TOLERANCE) failures.push(`${label}: ${name} clips its text (scroll ${b.scrollWidth}x${b.scrollHeight}, client ${b.clientWidth}x${b.clientHeight})`);
+    if (b.card && !inside(b.rect, b.card)) failures.push(`${label}: ${name} leaves its card`);
+  }
+  const lanes = m.buttons.filter((b) => b.lane);
+  for (const [a, b] of lanes.flatMap((a, n) => lanes.slice(n + 1).map((b) => [a, b]))) {
+    if (overlap(a.rect, b.rect)) failures.push(`${label}: lane buttons "${a.text}" and "${b.text}" overlap`);
+  }
+  if (o.oneRow) {
+    for (let g = 0; g < m.groups; g++) {
+      const row = lanes.filter((b) => b.group === g);
+      if (row.length > 1 && row.some((b) => Math.abs(b.rect.top - row[0].rect.top) > 1)) failures.push(`${label}: the lane buttons of card ${g + 1} are not on one row`);
+    }
+  }
+  return failures;
+}
+
 async function main() {
   let browser;
   try {
@@ -332,12 +415,13 @@ async function main() {
   let checked = 0;
   let loads = 0;
   let pairedChecked = 0;
+  let publicChecked = 0;
   try {
     for (const width of WIDTHS) {
       for (const scheme of schemes) {
         const context = await browser.newContext({ ...phone, viewport: { width, height: 844 }, colorScheme: scheme });
         const page = await context.newPage();
-        const stub = { templates: [], slots: [] };
+        const stub = { templates: [], slots: [], public: null };
         await stubApi(page, stub);
 
         /** Checks the page as it is now; `o.shot` names its screenshot. */
@@ -424,6 +508,44 @@ async function main() {
             await page.waitForSelector("#tpl-break-2-end");
           },
         });
+
+        /** Loads the public booking page with `state` stubbed, runs `o.act`, then checks it and takes `o.shot`. */
+        const runPublic = async (label, state, o) => {
+          stub.public = PUBLIC_STATES[state];
+          await page.goto(`${origin}/e/${SLUG}`);
+          await page.waitForSelector(o.ready ?? ".slot-grid button");
+          loads++;
+          if (o.act) await o.act();
+          await page.waitForTimeout(300); // the buttons' colour transition (0.15s), so a shot shows the settled state
+          if (flag("break-css")) {
+            await page.addStyleTag({ content: ".lane-grid { grid-template-columns: repeat(3, 160px) !important; } .slot.lane { min-height: 20px !important; padding: 0 !important; line-height: 1 !important; }" });
+          }
+          const m = await page.evaluate(measurePublic, width);
+          failures.push(...checkPublic(`booking ${label} @${width}px ${scheme}`, m, { ...o, oneRow: o.oneRow && width >= 390 }));
+          checked++;
+          publicChecked++;
+          if (flag("shots")) await page.screenshot({ path: join(shotsDir, `booking-${o.shot}-${width}-${scheme}.png`), fullPage: true });
+        };
+        const choose = (time, lane) => async () => {
+          await page.click(lane ? `.slot-group[aria-label="${time}"] button:has-text("${lane}")` : `.slot-grid button:has-text("${time}")`);
+          await page.waitForSelector("#booking-form:not([hidden])");
+        };
+        await runPublic("single lane, one place (v1.0)", "single", { shot: "single", lanes: 0 });
+        await runPublic("single lane, two places", "singleTwoPlaces", { shot: "single-two-places", lanes: 0 });
+        await runPublic("one named lane", "singleNamed", { shot: "single-named", act: choose("09:20"), lanes: 0 });
+        await runPublic("three lanes, two places", "lanes", { shot: "lanes", lanes: 9, oneRow: true });
+        await runPublic("three lanes, long names", "longLanes", { shot: "lanes-long", lanes: 6 });
+        await runPublic("three lanes, a lane chosen", "lanes", { shot: "lanes-selected", lanes: 9, oneRow: true, act: choose("09:20", "Ring 3") });
+        await runPublic("three lanes, confirmation", "lanes", {
+          shot: "lanes-confirmed", lanes: 0, ready: ".slot-grid button",
+          act: async () => {
+            await choose("09:20", "Ring 1")();
+            await page.fill("#dog-name", "Bartholomew-Maximilian");
+            await page.fill("#handler-name", "Alexandria Featherstonehaugh");
+            await page.click("#booking-form button[type=submit]");
+            await page.waitForSelector(".confirmation");
+          },
+        });
         await context.close();
       }
     }
@@ -437,7 +559,7 @@ async function main() {
     for (const f of failures) console.log(`  ${f}`);
     process.exit(1);
   }
-  console.log(`PASS (${engineName}): ${loads} page loads (${checked} checks) at ${WIDTHS.join(" and ")}px in light and dark, every date and time input fits its field, row and card, no overlaps, nothing past the screen edge, no sideways scroll; an error under one cell of a paired row leaves the other cell level (${pairedChecked} cases); the admin nav is whole and under the header band${flag("shots") ? `; screenshots in ${shotsDir}` : ""}`);
+  console.log(`PASS (${engineName}): ${loads} page loads (${checked} checks) at ${WIDTHS.join(" and ")}px in light and dark, every date and time input fits its field, row and card, no overlaps, nothing past the screen edge, no sideways scroll; an error under one cell of a paired row leaves the other cell level (${pairedChecked} cases); the admin nav is whole and under the header band; the public booking page in ${publicChecked / (WIDTHS.length * schemes.length)} states: no sideways scroll, time and lane buttons at least 48px tall with their text whole, lane buttons inside their card and apart, three on one row at 390px${flag("shots") ? `; screenshots in ${shotsDir}` : ""}`);
 }
 
 await main();
