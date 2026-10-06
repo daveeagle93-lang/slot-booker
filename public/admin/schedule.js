@@ -57,6 +57,9 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
   const person = (b) => `${b.dogName} (${b.handlerName})`;
   const orphanTime = (iso) => `${formatDate(iso)}, ${formatTime(iso)}`;
   const takenText = (b) => `That slot is already taken by ${person(b)}.`;
+  /** "10:30", or "10:30 · Ring 2" when the lane has a name. */
+  const where = (time, lane) => (lane ? `${time} · ${lane}` : time);
+  const fullText = (time, lane) => `${lane ? `${lane} at ${time}` : time} is full.`;
 
   function setBusy(on) {
     busy = on;
@@ -67,9 +70,9 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
    * One request at a time. `done(data)` says what to announce and where focus goes on success; `rejected(res)`
    * may handle a refusal inline (and return true). A change made by someone else (including an edit that
    * removed the slot: `invalid_slot`), or a slot that has just been taken, refreshes the page instead, so
-   * what is shown is what the server has.
+   * what is shown is what the server has. A full lane (`slot_taken` without the v1.0 `booking` key) says `full`.
    */
-  async function perform(method, url, body, { done, rejected }) {
+  async function perform(method, url, body, { done, rejected, full }) {
     if (busy) return;
     setBusy(true);
     let res;
@@ -91,6 +94,7 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
     if (res.status === 409 && code === "slot_taken" && res.data?.booking) {
       return refresh({ message: takenText(res.data.booking), focus: "status" });
     }
+    if (res.status === 409 && code === "slot_taken" && full) return refresh({ message: full, focus: "status" });
     say(res.data?.error?.message ?? "Something went wrong. Try again.");
   }
 
@@ -130,6 +134,12 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
   /** `focus`: "status", { key } for a row, { key, action } for a row's button, or { panel } for the open form. */
   function render(focus) {
     const { event } = detail;
+    // One lane with one place per time is the v1.0 page (a named lane is only named in each row). Anything else lists each
+    // time's places: a header row per time, then one row per booking and one per lane that still has room.
+    const laneCount = event.lanes?.length ?? 1;
+    const plain = laneCount === 1 && (event.capacity ?? 1) === 1;
+    const singleLane = plain && event.lanes?.[0]?.name ? event.lanes[0].name : "";
+    const placesOf = (slot) => slot.places ?? [];
     const freeSlots = detail.slots.filter((s) => !s.booking);
     const bookedSlots = detail.slots.filter((s) => s.booking);
 
@@ -188,10 +198,11 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
     };
     const panelIf = (key, build) => (panel?.key === key ? [build()] : []);
 
-    function clearPanel(b, key, when) {
+    /** `landing` is where focus goes once the booking is cleared: the row, or in the multi layout the time's header. */
+    function clearPanel(b, key, when, landing = key) {
       const confirmButton = h("button", { type: "button", class: "button danger" }, "Clear booking");
       confirmButton.addEventListener("click", () => perform("DELETE", `${base}/bookings/${b.id}`, { confirm: true }, {
-        done: () => ({ message: `Cleared ${person(b)} from ${when}.`, focus: { key } }),
+        done: () => ({ message: `Cleared ${person(b)} from ${when}.`, focus: { key: landing } }),
       }));
       return h("div", { class: "sched-panel confirm", role: "group", "aria-label": "Confirm clearing the booking" },
         h("h3", {}, "Clear this booking?"),
@@ -200,11 +211,11 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
         h("div", { class: "actions" }, confirmButton, cancel(key, "clear", true)));
     }
 
-    /** A form with one select of slots and a submit button; `choices` are { start, text }. */
-    function pickPanel({ key, kind, title, label, choices, submitLabel, empty, send }) {
+    /** A form with one select and a submit button; `choices` are { value, text, ... } and `send` gets the one chosen. */
+    function pickPanel({ key, kind, title, label, choices, submitLabel, empty, send, chooseText = "Choose a slot." }) {
       if (choices.length === 0) return h("div", { class: "sched-panel", role: "group", "aria-label": title }, h("h3", {}, title), h("p", { class: "note" }, empty), h("div", { class: "actions" }, cancel(key, kind)));
       const select = h("select", { id: `pick-${kind}`, "data-autofocus": true },
-        h("option", { value: "" }, "Choose…"), ...choices.map((c) => h("option", { value: c.start }, c.text)));
+        h("option", { value: "" }, "Choose…"), ...choices.map((c) => h("option", { value: c.value }, c.text)));
       const error = h("p", { class: "field-error", role: "alert" });
       const form = h("form", { class: "sched-panel", "aria-label": title },
         h("h3", {}, title),
@@ -214,42 +225,53 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
         e.preventDefault();
         if (busy) return;
         if (select.value === "") {
-          error.textContent = "Choose a slot.";
+          error.textContent = chooseText;
           select.setAttribute("aria-invalid", "true");
           select.focus();
           return;
         }
-        send(select.value);
+        send(choices.find((c) => c.value === select.value));
       });
       return form;
     }
 
-    function movePanel(b, key, fromSlot, when) {
+    /** `from` is where the booking is now: { slot, laneId }. The v1.0 page (one lane, one place) sends no lane at all. */
+    function movePanel(b, key, from, when) {
+      const choices = plain
+        ? freeSlots.map((s) => ({ value: s.start, toSlot: s.start, laneName: singleLane, text: where(formatTime(s.start), singleLane) }))
+        : detail.slots.flatMap((s) => placesOf(s)
+          .filter((p) => p.free > 0 && !(s.start === from.slot && p.laneId === from.laneId))
+          .map((p) => ({ value: `${s.start}|${p.laneId}`, toSlot: s.start, toLane: p.laneId, laneName: p.laneName, text: `${where(formatTime(s.start), p.laneName)} (${p.free} left)` })));
       return pickPanel({
-        key, kind: "move", title: "Move booking", label: "New slot", submitLabel: "Move booking", empty: "There are no free slots to move it to.",
-        choices: freeSlots.map((s) => ({ start: s.start, text: formatTime(s.start) })),
-        send: (toSlot) => perform("POST", `${base}/bookings/${b.id}/move`, { fromSlot, toSlot }, {
-          done: () => ({ message: `Moved ${person(b)} from ${when} to ${formatTime(toSlot)}.`, focus: { key: toSlot } }),
-        }),
+        key, kind: "move", title: "Move booking", label: plain ? "New slot" : "New place", submitLabel: "Move booking",
+        empty: plain ? "There are no free slots to move it to." : "There are no free places to move it to.",
+        chooseText: plain ? "Choose a slot." : "Choose a time and lane.",
+        choices,
+        send: (c) => perform("POST", `${base}/bookings/${b.id}/move`,
+          plain ? { fromSlot: from.slot, toSlot: c.toSlot } : { fromSlot: from.slot, fromLane: from.laneId, toSlot: c.toSlot, toLane: c.toLane }, {
+            done: () => ({ message: `Moved ${person(b)} from ${when} to ${where(formatTime(c.toSlot), c.laneName)}.`, focus: { key: c.toSlot } }),
+            full: fullText(formatTime(c.toSlot), c.laneName),
+          }),
       });
     }
 
     function swapPanel(b, key, fromSlot, when) {
-      const others = bookedSlots.filter((s) => s.start !== fromSlot);
+      const others = plain
+        ? bookedSlots.filter((s) => s.start !== fromSlot).map((s) => ({ value: s.start, slot: s.start, laneName: singleLane, booking: s.booking }))
+        : detail.slots.flatMap((s) => placesOf(s).flatMap((p) => p.bookings.filter((x) => x.id !== b.id)
+          .map((x) => ({ value: String(x.id), slot: s.start, laneName: p.laneName, booking: x }))));
       return pickPanel({
         key, kind: "swap", title: "Swap bookings", label: "Swap with", submitLabel: "Swap bookings", empty: "There's no other booking to swap with.",
-        choices: others.map((s) => ({ start: s.start, text: `${formatTime(s.start)}: ${person(s.booking)}` })),
-        send: (otherSlot) => {
-          const other = others.find((s) => s.start === otherSlot);
-          return perform("POST", `${base}/bookings/swap`, { a: { id: b.id, slot: fromSlot }, b: { id: other.booking.id, slot: otherSlot } }, {
-            done: () => ({ message: `Swapped ${b.dogName} (${when}) with ${other.booking.dogName} (${formatTime(otherSlot)}).`, focus: { key: otherSlot } }),
-          });
-        },
+        choices: others.map((o) => ({ ...o, text: `${where(formatTime(o.slot), o.laneName)}: ${person(o.booking)}` })),
+        send: (o) => perform("POST", `${base}/bookings/swap`, { a: { id: b.id, slot: fromSlot }, b: { id: o.booking.id, slot: o.slot } }, {
+          done: () => ({ message: `Swapped ${b.dogName} (${when}) with ${o.booking.dogName} (${where(formatTime(o.slot), o.laneName)}).`, focus: { key: o.slot } }),
+        }),
       });
     }
 
-    function addPanel(slotStart, key) {
-      const when = formatTime(slotStart);
+    /** `lane` is { id, name } of the lane the booking goes in, or null on the v1.0 page, which sends no lane. */
+    function addPanel(slotStart, key, lane) {
+      const when = where(formatTime(slotStart), lane ? lane.name : singleLane);
       const dog = h("input", { id: "add-dog", type: "text", autocomplete: "off", "data-autofocus": true });
       const handler = h("input", { id: "add-handler", type: "text", autocomplete: "off" });
       const dogError = h("p", { class: "field-error", id: "add-dog-error" });
@@ -272,20 +294,21 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
         formError.textContent = "";
         mark(dog, dogError, "");
         mark(handler, handlerError, "");
-        perform("POST", `${base}/bookings`, { slot: slotStart, dogName: dog.value, handlerName: handler.value }, {
-          done: (data) => ({ message: `Added ${person(data.booking)} at ${when}.`, focus: { key } }),
+        perform("POST", `${base}/bookings`, { slot: slotStart, ...(lane ? { laneId: lane.id } : {}), dogName: dog.value, handlerName: handler.value }, {
+          done: (data) => ({ message: `Added ${person(data.booking)} at ${when}.`, focus: { key: slotStart } }),
+          full: fullText(formatTime(slotStart), lane ? lane.name : singleLane),
           rejected: (res, code) => {
             if (res.status === 400 && code === "invalid_input") {
               const fields = res.data?.fields ?? {};
               mark(dog, dogError, fields.dogName);
               mark(handler, handlerError, fields.handlerName);
-              formError.textContent = fields.slot ?? "";
+              formError.textContent = fields.slot ?? fields.laneId ?? "";
               (fields.dogName ? dog : handler).focus();
               return true;
             }
             if (res.status === 409 && code === "duplicate_booking" && res.data?.booking) {
               const b = res.data.booking;
-              formError.textContent = `${b.dogName} and ${b.handlerName} already have a booking at ${formatTime(b.slotStart)}.`;
+              formError.textContent = `${b.dogName} and ${b.handlerName} already have a booking at ${where(formatTime(b.slotStart), b.lane?.name)}.`;
               dog.focus();
               return true;
             }
@@ -296,22 +319,61 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
       return form;
     }
 
+    const laneSpan = (name) => (name ? [h("span", { class: "sched-lane" }, name)] : []);
+
     function slotRow({ start, booking }) {
       const b = booking && { id: booking.id, dogName: booking.dogName, handlerName: booking.handlerName };
-      const when = formatTime(start);
+      const when = where(formatTime(start), singleLane);
+      const time = formatTime(start);
       const buttons = b
         ? [openers(start, "move", "Move", `Move booking at ${when}`), openers(start, "swap", "Swap", `Swap booking at ${when}`), openers(start, "clear", "Clear", `Clear booking at ${when}`)]
         : [openers(start, "add", "Add booking", `Add booking at ${when}`)];
       const open = panel?.key === start
-        ? [panel.kind === "clear" ? clearPanel(b, start, when) : panel.kind === "move" ? movePanel(b, start, start, when)
-          : panel.kind === "swap" ? swapPanel(b, start, start, when) : addPanel(start, start)]
+        ? [panel.kind === "clear" ? clearPanel(b, start, when) : panel.kind === "move" ? movePanel(b, start, { slot: start }, when)
+          : panel.kind === "swap" ? swapPanel(b, start, start, when) : addPanel(start, start, null)]
         : [];
       return h("li", { class: b ? "sched-row booked" : "sched-row free", "data-key": start, tabindex: "-1" },
         h("div", { class: "sched-line" },
-          h("span", { class: "sched-time" }, when),
+          h("span", { class: "sched-time" }, time),
+          ...laneSpan(singleLane),
           h("span", { class: "sched-who" }, b ? person(b) : "Free")),
         h("div", { class: "sched-actions" }, ...buttons),
         ...open);
+    }
+
+    /** A time with several places: its header, then a row per booking and, for each lane with room, a row to add one. */
+    function groupRow(slot) {
+      const time = formatTime(slot.start);
+      const free = placesOf(slot).reduce((n, p) => n + p.free, 0);
+      const subs = placesOf(slot).flatMap((p) => {
+        const when = where(time, p.laneName);
+        const rows = p.bookings.map((x) => {
+          const key = `b${x.id}`;
+          const b = { id: x.id, dogName: x.dogName, handlerName: x.handlerName };
+          const open = panel?.key === key
+            ? [panel.kind === "clear" ? clearPanel(b, key, when, slot.start) : panel.kind === "move" ? movePanel(b, key, { slot: slot.start, laneId: p.laneId }, when)
+              : swapPanel(b, key, slot.start, when)]
+            : [];
+          return h("li", { class: "sched-place booked", "data-key": key, tabindex: "-1" },
+            h("div", { class: "sched-line" }, ...laneSpan(p.laneName), h("span", { class: "sched-who" }, person(b))),
+            h("div", { class: "sched-actions" },
+              openers(key, "move", "Move", `Move ${x.dogName} at ${when}`), openers(key, "swap", "Swap", `Swap ${x.dogName} at ${when}`), openers(key, "clear", "Clear", `Clear ${x.dogName} at ${when}`)),
+            ...open);
+        });
+        if (p.free > 0) {
+          const key = `a${slot.start}|${p.laneId}`;
+          rows.push(h("li", { class: "sched-place free", "data-key": key, tabindex: "-1" },
+            h("div", { class: "sched-line" }, ...laneSpan(p.laneName), h("span", { class: "sched-who" }, `${p.free} free`)),
+            h("div", { class: "sched-actions" }, openers(key, "add", "Add booking", `Add booking at ${when}`)),
+            ...(panel?.key === key ? [addPanel(slot.start, key, { id: p.laneId, name: p.laneName })] : [])));
+        }
+        return rows;
+      });
+      return h("li", { class: "sched-group", "data-key": slot.start, tabindex: "-1" },
+        h("div", { class: "sched-line" },
+          h("span", { class: "sched-time" }, time),
+          h("span", { class: "sched-who" }, free > 0 ? `${free} free` : "Full")),
+        h("ul", { class: "sched-places" }, ...subs));
     }
 
     function breakRow(b) {
@@ -322,13 +384,13 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
 
     function orphanRow(o) {
       const key = `orphan-${o.id}`;
-      const when = orphanTime(o.slotStart);
+      const when = where(orphanTime(o.slotStart), o.lane?.name);
       const b = { id: o.id, dogName: o.dogName, handlerName: o.handlerName };
       const open = panel?.key === key
-        ? [panel.kind === "clear" ? clearPanel(b, key, when) : movePanel(b, key, o.slotStart, when)]
+        ? [panel.kind === "clear" ? clearPanel(b, key, when) : movePanel(b, key, { slot: o.slotStart, laneId: o.lane?.id }, when)]
         : [];
       return h("li", { class: "sched-row booked orphan", "data-key": key, tabindex: "-1" },
-        h("div", { class: "sched-line" }, h("span", { class: "sched-time" }, when), h("span", { class: "sched-who" }, person(b))),
+        h("div", { class: "sched-line" }, h("span", { class: "sched-time" }, orphanTime(o.slotStart)), ...laneSpan(o.lane?.name), h("span", { class: "sched-who" }, person(b))),
         h("div", { class: "sched-actions" },
           openers(key, "move", "Move", `Move booking from ${when}`), openers(key, "clear", "Clear", `Clear booking from ${when}`)),
         ...open);
@@ -343,7 +405,7 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
       h("div", { class: "actions" }, ...links, copy),
       status,
       fallback,
-      h("ol", { class: "sched" }, ...items.map((i) => (i.slot ? slotRow(i.slot) : breakRow(i.brk)))),
+      h("ol", { class: "sched" }, ...items.map((i) => (i.slot ? (plain ? slotRow(i.slot) : groupRow(i.slot)) : breakRow(i.brk)))),
     ];
     if (detail.orphans.length > 0) {
       children.push(h("section", { class: "sched-orphans" },

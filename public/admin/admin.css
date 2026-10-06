@@ -224,7 +224,7 @@ legend { padding: 0; font-weight: 600; }
 /* Schedule page */
 .sched-date { margin: 0 0 1rem; font-weight: 600; }
 .sched { list-style: none; margin: 0 0 1rem; padding: 0; }
-.sched-row, .sched-break {
+.sched-row, .sched-break, .sched-group {
   margin-bottom: 0.5rem;
   padding: 0.75rem;
   background: var(--surface);
@@ -236,6 +236,11 @@ legend { padding: 0; font-weight: 600; }
 .sched-time { font-weight: 700; font-variant-numeric: tabular-nums; }
 .sched-who { min-width: 0; overflow-wrap: anywhere; }
 .sched-row.free .sched-who { color: var(--muted); }
+.sched-lane { min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+/* A time with several places: the header line, then one row per booking and one per lane with room, each under a rule. */
+.sched-group > .sched-line .sched-who, .sched-place.free .sched-who { color: var(--muted); }
+.sched-places { list-style: none; margin: 0; padding: 0; }
+.sched-place { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
 .sched-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
 .sched-actions .button { min-height: 48px; min-width: 48px; padding: 0.25rem 1rem; }
 .sched-panel { margin: 0.75rem 0 0; }

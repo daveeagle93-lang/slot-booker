@@ -652,3 +652,375 @@ describe("Share", () => {
     expect(sent(navigator.share)).toBe(`${HOSTILE} ${HOSTILE}\nhttps://club.example/e/${SLUG}`);
   });
 });
+
+// ---- lanes and places ----
+type Held = { id: number; dogName: string; handlerName: string };
+const RING = [{ id: 1, name: "Ring 1" }, { id: 2, name: "Ring 2" }, { id: 3, name: "Ring 3" }];
+const CY = { id: 14, dogName: "Cy", handlerName: "Dee" };
+/** A detail for `lanes` with `capacity` places each: `held` says who is where, as "slotIndex:laneIndex" -> bookings. */
+function laneDetail(lanes: { id: number; name: string }[], capacity: number, held: Record<string, Held[]> = {}, orphans: unknown[] = [], extra: object = {}) {
+  return {
+    event: { ...EVENT, lanes, capacity, ...extra }, orphans, lineup: LINEUP,
+    slots: S.map((start, i) => ({
+      start, end: start, booking: null,
+      places: lanes.map((l, j) => {
+        const bookings = held[`${i}:${j}`] ?? [];
+        return { laneId: l.id, laneName: l.name, bookings, free: capacity - bookings.length };
+      }),
+    })),
+  };
+}
+const HELD = { "1:0": [REX, FLO], "3:1": [CY] }; // 09:15 Ring 1 is full; 10:15 Ring 2 has Cy
+const threeByTwo = (o: Record<string, Held[]> = HELD, orphans: unknown[] = []) => laneDetail(RING, 2, o, orphans);
+const group = (time: string) => $$(".sched-group").find((g) => g.querySelector(".sched-time")!.textContent === time)!;
+const subs = (g: HTMLElement) => [...g.querySelectorAll<HTMLElement>(".sched-place")];
+const subText = (li: Element) => [...li.querySelectorAll(".sched-line > span")].map((s) => s.textContent);
+const subRow = (g: HTMLElement, lane: string, who: string) => subs(g).find((li) => subText(li).join("|") === `${lane}|${who}`)!;
+
+describe("lanes and places: one lane with one place", () => {
+  it("is the v1.0 DOM byte for byte when the one lane is unnamed (whether or not the event lists it)", async () => {
+    await start();
+    const v1 = $(".sched").innerHTML;
+    await start({ initial: { ...detail(), event: { ...EVENT, lanes: [{ id: 1, name: "" }], capacity: 1 } } });
+    expect($(".sched").innerHTML).toBe(v1);
+    expect($$(".sched-group")).toHaveLength(0);
+  });
+
+  it("names a single named lane in each row, and still sends no lane", async () => {
+    const { calls } = await start({
+      initial: { ...detail(), event: { ...EVENT, lanes: [{ id: 1, name: "Main ring" }], capacity: 1 } },
+      respond: (c) => (c.method === "POST" ? reply(200, { booking: { ...REX, slotStart: S[2] } }) : undefined),
+    });
+    expect(rows()[0].querySelector(".sched-lane")!.textContent).toBe("Main ring");
+    expect(rows()[1].textContent).toBe("09:15Main ringRex (Sam Smith)MoveSwapClear");
+    expect(button(row("09:15"), "Clear").getAttribute("aria-label")).toBe("Clear booking at 09:15 · Main ring");
+    button(row("09:15"), "Clear").click();
+    expect($(".sched-panel").textContent).toContain("09:15 · Main ring: Rex (Sam Smith)");
+    button($(".sched-panel"), "Cancel").click();
+    button(row("09:15"), "Move").click();
+    expect(options($("select"))).toEqual(["09:00 · Main ring", "09:30 · Main ring", "10:30 · Main ring"]);
+    ($("select") as HTMLSelectElement).value = S[2];
+    submit($(".sched-panel"));
+    await settle();
+    expect(writes(calls)).toEqual([{ url: `${BASE}/bookings/11/move`, method: "POST", body: { fromSlot: S[1], toSlot: S[2] } }]);
+  });
+});
+
+describe("lanes and places: the schedule with several lanes or places", () => {
+  it("draws each time as a header with a free count, a row per booking and an Add row for each lane with room", async () => {
+    await start({ initial: threeByTwo() });
+    expect($$(".sched-row")).toHaveLength(0);
+    expect(rows().map((r) => r.querySelector(".sched-time")!.textContent)).toEqual(["09:00", "09:15", "09:30", "09:45–10:15", "10:15", "10:30"]);
+    expect(group("09:00").querySelector(".sched-line")!.textContent).toBe("09:006 free");
+    expect(group("09:15").querySelector(".sched-line")!.textContent).toBe("09:154 free");
+    expect(subs(group("09:00")).map((li) => subText(li).join("|"))).toEqual(["Ring 1|2 free", "Ring 2|2 free", "Ring 3|2 free"]);
+    expect(subs(group("09:15")).map((li) => subText(li).join("|"))).toEqual([
+      "Ring 1|Rex (Sam Smith)", "Ring 1|Flo (Pat Jones)", "Ring 2|2 free", "Ring 3|2 free",
+    ]);
+    expect(subs(group("10:15")).map((li) => subText(li).join("|"))).toEqual(["Ring 1|2 free", "Ring 2|Cy (Dee)", "Ring 2|1 free", "Ring 3|2 free"]);
+    expect([...subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)").querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Move", "Swap", "Clear"]);
+    expect([...subs(group("09:15"))[2].querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Add booking"]);
+    expect(button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Move").getAttribute("aria-label")).toBe("Move Rex at 09:15 · Ring 1");
+    expect(button(subs(group("09:15"))[2], "Add booking").getAttribute("aria-label")).toBe("Add booking at 09:15 · Ring 2");
+  });
+
+  it("says Full for a time with no place left, and has no Add row there", async () => {
+    const all = Object.fromEntries(RING.flatMap((_, j) => [[`0:${j}`, [REX, FLO]]]));
+    await start({ initial: laneDetail(RING, 2, all) });
+    expect(group("09:00").querySelector(".sched-line")!.textContent).toBe("09:00Full");
+    expect(subs(group("09:00")).flatMap((li) => [...li.querySelectorAll("button")].map((b) => b.textContent))).toEqual(
+      ["Move", "Swap", "Clear", "Move", "Swap", "Clear", "Move", "Swap", "Clear", "Move", "Swap", "Clear", "Move", "Swap", "Clear", "Move", "Swap", "Clear"]);
+  });
+
+  it("uses the same layout, with no lane name, for one unnamed lane with more than one place", async () => {
+    await start({ initial: laneDetail([{ id: 1, name: "" }], 3, { "1:0": [REX] }) });
+    expect(subs(group("09:15")).map((li) => subText(li).join("|"))).toEqual(["Rex (Sam Smith)", "2 free"]);
+    expect(group("09:15").querySelector(".sched-line")!.textContent).toBe("09:152 free");
+    expect(button(subs(group("09:15"))[0], "Move").getAttribute("aria-label")).toBe("Move Rex at 09:15");
+  });
+
+  it("keeps names inert in the lane rows", async () => {
+    const hostile = { id: 21, dogName: HOSTILE, handlerName: HOSTILE };
+    await start({ initial: laneDetail([{ id: 1, name: HOSTILE }, { id: 2, name: "B" }], 1, { "1:0": [hostile] }) });
+    expect(document.querySelector("img")).toBeNull();
+    expect(subText(subs(group("09:15"))[0]).join("|")).toBe(`${HOSTILE}|${HOSTILE} (${HOSTILE})`);
+  });
+
+  it("opens one panel at a time, marking its button aria-expanded", async () => {
+    await start({ initial: threeByTwo() });
+    const rex = subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)");
+    button(rex, "Clear").click();
+    expect($$(".sched-panel")).toHaveLength(1);
+    expect(button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Clear").getAttribute("aria-expanded")).toBe("true");
+    expect(button(subRow(group("09:15"), "Ring 1", "Flo (Pat Jones)"), "Clear").getAttribute("aria-expanded")).toBe("false");
+    button(subRow(group("09:15"), "Ring 1", "Flo (Pat Jones)"), "Swap").click();
+    expect($$(".sched-panel")).toHaveLength(1);
+  });
+});
+
+describe("lanes and places: Clear", () => {
+  it("names the time and lane, sends the delete for that booking, and focuses the time's header afterwards", async () => {
+    const { calls, setDetail } = await start({
+      initial: threeByTwo(), respond: (c) => (c.method === "DELETE" ? reply(200, { removed: { ...FLO, slotStart: S[1] } }) : undefined),
+    });
+    button(subRow(group("09:15"), "Ring 1", "Flo (Pat Jones)"), "Clear").click();
+    expect($(".sched-panel").textContent).toContain("09:15 · Ring 1: Flo (Pat Jones)");
+    expect(document.activeElement).toBe(button($(".sched-panel"), "Cancel"));
+    setDetail(threeByTwo({ ...HELD, "1:0": [REX] }));
+    button($(".sched-panel"), "Clear booking").click();
+    await settle();
+    expect(writes(calls)).toEqual([{ url: `${BASE}/bookings/12`, method: "DELETE", body: { confirm: true } }]);
+    expect(statusText()).toBe("Cleared Flo (Pat Jones) from 09:15 · Ring 1.");
+    expect(document.activeElement).toBe(group("09:15"));
+  });
+
+  it("returns focus to the same row's Clear when cancelled", async () => {
+    await start({ initial: threeByTwo() });
+    button(subRow(group("09:15"), "Ring 1", "Flo (Pat Jones)"), "Clear").click();
+    button($(".sched-panel"), "Cancel").click();
+    expect(document.activeElement).toBe(button(subRow(group("09:15"), "Ring 1", "Flo (Pat Jones)"), "Clear"));
+  });
+});
+
+describe("lanes and places: Move", () => {
+  const moved = { booking: { ...REX, slotStart: S[0], lane: RING[1] } };
+
+  it("lists every place with room as 'time · lane (n left)', leaving out the booking's own place, but keeping the same time in another lane", async () => {
+    await start({ initial: threeByTwo() });
+    button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Move").click();
+    const list = options($("select"));
+    expect(list).toHaveLength(5 * 3 - 1); // every (time, lane) with room, minus the full Ring 1 at 09:15 itself
+    expect(list).toContain("09:15 · Ring 2 (2 left)");
+    expect(list).toContain("09:15 · Ring 3 (2 left)");
+    expect(list).not.toContain("09:15 · Ring 1 (0 left)");
+    expect(list.filter((t) => t!.startsWith("09:15 · Ring 1"))).toEqual([]);
+    expect(list).toContain("10:15 · Ring 2 (1 left)");
+    expect(list[0]).toBe("09:00 · Ring 1 (2 left)");
+  });
+
+  it("keeps the booking's own place out of the list even when it has a place to spare", async () => {
+    await start({ initial: threeByTwo() });
+    button(subRow(group("10:15"), "Ring 2", "Cy (Dee)"), "Move").click();
+    expect(options($("select")).filter((t) => t!.startsWith("10:15"))).toEqual(["10:15 · Ring 1 (2 left)", "10:15 · Ring 3 (2 left)"]);
+  });
+
+  it("sends fromSlot, fromLane, toSlot and toLane, then refreshes and says where it went", async () => {
+    const { calls, setDetail } = await start({ initial: threeByTwo(), respond: (c) => (c.method === "POST" ? reply(200, moved) : undefined) });
+    setDetail(threeByTwo({ "1:0": [FLO], "0:1": [REX], "3:1": [CY] }));
+    button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Move").click();
+    const choice = $$("option").find((o) => o.textContent === "09:00 · Ring 2 (2 left)") as HTMLOptionElement;
+    ($("select") as HTMLSelectElement).value = choice.value;
+    submit($(".sched-panel"));
+    await settle();
+    expect(writes(calls)).toEqual([{ url: `${BASE}/bookings/11/move`, method: "POST", body: { fromSlot: S[1], fromLane: 1, toSlot: S[0], toLane: 2 } }]);
+    expect(statusText()).toBe("Moved Rex (Sam Smith) from 09:15 · Ring 1 to 09:00 · Ring 2.");
+    expect(calls.at(-1)!.method).toBe("GET");
+    expect(document.activeElement).toBe(group("09:00"));
+  });
+
+  it("can move within the same time to another lane", async () => {
+    const { calls } = await start({ initial: threeByTwo(), respond: (c) => (c.method === "POST" ? reply(200, moved) : undefined) });
+    button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Move").click();
+    ($("select") as HTMLSelectElement).value = `${S[1]}|3`;
+    submit($(".sched-panel"));
+    await settle();
+    expect(writes(calls)[0].body).toEqual({ fromSlot: S[1], fromLane: 1, toSlot: S[1], toLane: 3 });
+  });
+
+  it("needs a choice before it sends anything", async () => {
+    const { calls } = await start({ initial: threeByTwo() });
+    button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Move").click();
+    submit($(".sched-panel"));
+    expect($(".sched-panel .field-error").textContent).toBe("Choose a time and lane.");
+    expect(writes(calls)).toEqual([]);
+  });
+
+  it("says so when no place has room", async () => {
+    const all = Object.fromEntries(S.flatMap((_, i) => RING.map((__, j) => [`${i}:${j}`, [REX, FLO]])));
+    await start({ initial: laneDetail(RING, 2, all) });
+    button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Move").click();
+    expect($(".sched-panel").textContent).toContain("There are no free places to move it to.");
+  });
+
+  it("says 'Ring 2 at 09:00 is full.' for a lane that filled meanwhile, and refreshes", async () => {
+    const { calls } = await start({
+      initial: threeByTwo(),
+      respond: (c) => (c.method === "POST" ? reply(409, { error: { code: "slot_taken" }, bookings: [{ ...CY, slotStart: S[0], lane: RING[1] }] }) : undefined),
+    });
+    button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Move").click();
+    ($("select") as HTMLSelectElement).value = `${S[0]}|2`;
+    submit($(".sched-panel"));
+    await settle();
+    expect(statusText()).toBe("Ring 2 at 09:00 is full.");
+    expect(calls.at(-1)!.method).toBe("GET");
+    expect($(".sched-panel")).toBeNull();
+    expect(document.activeElement).toBe($(".sched-status"));
+  });
+
+  it("moves an orphan out of a lane the event no longer has, naming the lane it was in", async () => {
+    const orphan = { ...LOST, lane: { id: 9, name: "Old ring" } };
+    const { calls } = await start({ initial: threeByTwo(HELD, [orphan]), respond: (c) => (c.method === "POST" ? reply(200, moved) : undefined) });
+    const li = $(".sched-orphans li");
+    expect(li.querySelector(".sched-lane")!.textContent).toBe("Old ring");
+    button(li, "Move").click();
+    expect(button(li, "Move").getAttribute("aria-label")).toBe("Move booking from Saturday 13 June 2026, 08:00 · Old ring");
+    ($("select") as HTMLSelectElement).value = `${S[0]}|1`;
+    submit($(".sched-panel"));
+    await settle();
+    expect(writes(calls)[0].body).toEqual({ fromSlot: LOST.slotStart, fromLane: 9, toSlot: S[0], toLane: 1 });
+  });
+});
+
+describe("lanes and places: Swap", () => {
+  it("lists the other bookings as 'time · lane: dog (handler)', whatever their lane", async () => {
+    await start({ initial: threeByTwo() });
+    button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Swap").click();
+    expect(options($("select"))).toEqual(["09:15 · Ring 1: Flo (Pat Jones)", "10:15 · Ring 2: Cy (Dee)"]);
+  });
+
+  it("sends both ids with the times the admin saw, as today, and announces with the lanes", async () => {
+    const { calls, setDetail } = await start({
+      initial: threeByTwo(),
+      respond: (c) => (c.method === "POST" ? reply(200, { a: { id: 11, slotStart: S[3], lane: RING[1] }, b: { id: 14, slotStart: S[1], lane: RING[0] } }) : undefined),
+    });
+    setDetail(threeByTwo({ "1:0": [CY, FLO], "3:1": [REX] }));
+    button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Swap").click();
+    ($("select") as HTMLSelectElement).value = "14";
+    submit($(".sched-panel"));
+    await settle();
+    expect(writes(calls)).toEqual([{ url: `${BASE}/bookings/swap`, method: "POST", body: { a: { id: 11, slot: S[1] }, b: { id: 14, slot: S[3] } } }]);
+    expect(statusText()).toBe("Swapped Rex (09:15 · Ring 1) with Cy (10:15 · Ring 2).");
+    expect(document.activeElement).toBe(group("10:15"));
+  });
+
+  it("swaps two bookings in the same lane and time, which are told apart by name", async () => {
+    const { calls } = await start({ initial: threeByTwo(), respond: (c) => (c.method === "POST" ? reply(200, { a: {}, b: {} }) : undefined) });
+    button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Swap").click();
+    ($("select") as HTMLSelectElement).value = "12";
+    submit($(".sched-panel"));
+    await settle();
+    expect(writes(calls)[0].body).toEqual({ a: { id: 11, slot: S[1] }, b: { id: 12, slot: S[1] } });
+  });
+
+  it("says so when there is nothing to swap with", async () => {
+    await start({ initial: threeByTwo({ "1:0": [REX] }) });
+    button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Swap").click();
+    expect($(".sched-panel").textContent).toContain("There's no other booking to swap with");
+  });
+});
+
+describe("lanes and places: Add booking", () => {
+  it("opens for that time and lane, sends laneId, and focuses the time's header afterwards", async () => {
+    const { calls, setDetail } = await start({
+      initial: threeByTwo(), respond: (c) => (c.method === "POST" ? reply(201, { booking: { id: 30, slotStart: S[0], dogName: "Newt", handlerName: "Nan Ng", lane: RING[2] } }) : undefined),
+    });
+    setDetail(threeByTwo({ ...HELD, "0:2": [{ id: 30, dogName: "Newt", handlerName: "Nan Ng" }] }));
+    button(subs(group("09:00"))[2], "Add booking").click();
+    expect($(".sched-panel h3").textContent).toBe("Add booking at 09:00 · Ring 3");
+    expect(document.activeElement).toBe($("#add-dog"));
+    ($("#add-dog") as HTMLInputElement).value = "Newt";
+    ($("#add-handler") as HTMLInputElement).value = "Nan Ng";
+    submit($(".sched-panel"));
+    await settle();
+    expect(writes(calls)).toEqual([{ url: `${BASE}/bookings`, method: "POST", body: { slot: S[0], laneId: 3, dogName: "Newt", handlerName: "Nan Ng" } }]);
+    expect(statusText()).toBe("Added Newt (Nan Ng) at 09:00 · Ring 3.");
+    expect(subs(group("09:00")).map((li) => subText(li).join("|"))).toContain("Ring 3|Newt (Nan Ng)");
+    expect(document.activeElement).toBe(group("09:00"));
+  });
+
+  it("returns focus to that lane's Add booking when cancelled", async () => {
+    await start({ initial: threeByTwo() });
+    button(subs(group("09:00"))[1], "Add booking").click();
+    button($(".sched-panel"), "Cancel").click();
+    expect(document.activeElement).toBe(button(subs(group("09:00"))[1], "Add booking"));
+  });
+
+  it("shows laneId and name errors against the form, keeping what was typed", async () => {
+    await start({
+      initial: threeByTwo(),
+      respond: (c) => (c.method === "POST"
+        ? reply(400, { error: { code: "invalid_input" }, fields: { laneId: "That isn't one of this event's lanes.", dogName: "Enter the dog's name." } })
+        : undefined),
+    });
+    button(subs(group("09:00"))[0], "Add booking").click();
+    ($("#add-handler") as HTMLInputElement).value = "x";
+    submit($(".sched-panel"));
+    await settle();
+    expect($(".sched-panel .form-error").textContent).toBe("That isn't one of this event's lanes.");
+    expect($("#add-dog-error").textContent).toBe("Enter the dog's name.");
+    expect(($("#add-handler") as HTMLInputElement).value).toBe("x");
+  });
+
+  it("names the lane in a duplicate_booking answer", async () => {
+    await start({
+      initial: threeByTwo(),
+      respond: (c) => (c.method === "POST"
+        ? reply(409, { error: { code: "duplicate_booking" }, booking: { ...REX, slotStart: S[1], lane: RING[0] } })
+        : undefined),
+    });
+    button(subs(group("09:00"))[0], "Add booking").click();
+    submit($(".sched-panel"));
+    await settle();
+    expect($(".sched-panel .form-error").textContent).toBe("Rex and Sam Smith already have a booking at 09:15 · Ring 1.");
+  });
+
+  it("says 'Ring 3 at 09:00 is full.' when the lane filled meanwhile, and refreshes", async () => {
+    const { calls } = await start({
+      initial: threeByTwo(), respond: (c) => (c.method === "POST" ? reply(409, { error: { code: "slot_taken" }, bookings: [] }) : undefined),
+    });
+    button(subs(group("09:00"))[2], "Add booking").click();
+    submit($(".sched-panel"));
+    await settle();
+    expect(statusText()).toBe("Ring 3 at 09:00 is full.");
+    expect(calls.at(-1)!.method).toBe("GET");
+  });
+
+  it("prefers the v1.0 'already taken by' text when the answer carries the v1.0 booking key", async () => {
+    await start({
+      initial: laneDetail([{ id: 1, name: "" }], 2),
+      respond: (c) => (c.method === "POST" ? reply(409, { error: { code: "slot_taken" }, booking: REX, bookings: [REX] }) : undefined),
+    });
+    button(subs(group("09:00"))[0], "Add booking").click();
+    submit($(".sched-panel"));
+    await settle();
+    expect(statusText()).toBe("That slot is already taken by Rex (Sam Smith).");
+  });
+
+  it("names the time alone when the one lane has no name", async () => {
+    await start({
+      initial: laneDetail([{ id: 1, name: "" }], 2),
+      respond: (c) => (c.method === "POST" ? reply(409, { error: { code: "slot_taken" }, bookings: [] }) : undefined),
+    });
+    button(subs(group("09:00"))[0], "Add booking").click();
+    submit($(".sched-panel"));
+    await settle();
+    expect(statusText()).toBe("09:00 is full.");
+  });
+
+  it("refreshes on event_changed with the plain message", async () => {
+    const { calls } = await start({
+      initial: threeByTwo(), respond: (c) => (c.method === "POST" ? reply(409, { error: { code: "event_changed" } }) : undefined),
+    });
+    button(subs(group("09:00"))[0], "Add booking").click();
+    submit($(".sched-panel"));
+    await settle();
+    expect(statusText()).toBe("That changed while you were working. The schedule has been refreshed.");
+    expect(calls.at(-1)!.method).toBe("GET");
+  });
+
+  it("disables every control while a request is in flight", async () => {
+    let release!: (r: Response) => void;
+    const pending = new Promise<Response>((r) => { release = r; });
+    const { calls } = await start({ initial: threeByTwo(), respond: (c) => (c.method === "DELETE" ? pending : undefined) });
+    button(subRow(group("09:15"), "Ring 1", "Rex (Sam Smith)"), "Clear").click();
+    button($(".sched-panel"), "Clear booking").click();
+    await settle();
+    expect($$<HTMLButtonElement>("button, select, input").every((el) => el.disabled)).toBe(true);
+    button(subs(group("09:00"))[0], "Add booking").click();
+    await settle();
+    expect(writes(calls)).toHaveLength(1);
+    release(reply(200, { removed: { ...REX, slotStart: S[1] } }));
+    await settle();
+    expect($$<HTMLButtonElement>("button").every((b) => !b.disabled)).toBe(true);
+  });
+});
