@@ -6,6 +6,9 @@ import { generateSchedule } from "./schedule";
 
 type Booked = Record<string, [string, string]>;
 
+/** A booking of the Dog and Handler form, as the event detail lists it (the values only: that is all the lineup reads). */
+const dogHandler = (dog: string, handler: string) => ({ fields: [{ value: dog }, { value: handler }] });
+
 /** The input the way the event detail has it: the generated schedule with the given bookings (by slot start). */
 function input(
   o: { name?: string; postcode?: string; start: string; end: string; session: number; gap?: number; breaks?: { start: string; end: string; label: string }[]; booked?: Booked },
@@ -16,7 +19,7 @@ function input(
     name: o.name ?? "Spring Trial", venuePostcode: o.postcode ?? "AB1 2CD", startUtc: o.start, breaks,
     slots: slots.map((s) => {
       const b = o.booked?.[s.start];
-      return { start: s.start, places: [{ laneName: "", bookings: b ? [{ dogName: b[0], handlerName: b[1] }] : [], free: b ? 0 : 1 }] };
+      return { start: s.start, places: [{ laneName: "", bookings: b ? [dogHandler(b[0], b[1])] : [], free: b ? 0 : 1 }] };
     }),
   };
 }
@@ -45,9 +48,9 @@ describe("buildLineup", () => {
     const text = buildLineup({
       name: "Spring Trial", venuePostcode: "AB1 2CD", startUtc: "2026-03-14T09:00:00Z",
       slots: [
-        { start: "2026-03-14T09:00:00Z", places: [{ laneName: "", bookings: [{ dogName: "Rex", handlerName: "Sam Smith" }], free: 0 }] },
+        { start: "2026-03-14T09:00:00Z", places: [{ laneName: "", bookings: [dogHandler("Rex", "Sam Smith")], free: 0 }] },
         { start: "2026-03-14T09:10:00Z", places: [{ laneName: "", bookings: [], free: 1 }] },
-        { start: "2026-03-14T12:45:00Z", places: [{ laneName: "", bookings: [{ dogName: "Bella", handlerName: "Alex Jones" }], free: 0 }] },
+        { start: "2026-03-14T12:45:00Z", places: [{ laneName: "", bookings: [dogHandler("Bella", "Alex Jones")], free: 0 }] },
       ],
       breaks: [{ start: "2026-03-14T12:00:00Z", end: "2026-03-14T12:45:00Z", label: "Lunch" }],
     });
@@ -216,7 +219,7 @@ describe("buildLineup with lanes and places", () => {
   const T1 = "2026-06-13T08:00:00Z"; // 09:00 BST
   const T2 = "2026-06-13T08:30:00Z";
   const slot = (start: string, places: Place[]) => ({
-    start, places: places.map((p) => ({ laneName: p.laneName, bookings: p.bookings.map(([dogName, handlerName]) => ({ dogName, handlerName })), free: p.free })),
+    start, places: places.map((p) => ({ laneName: p.laneName, bookings: p.bookings.map(([dog, handler]) => dogHandler(dog, handler)), free: p.free })),
   });
   const lineup = (slots: ReturnType<typeof slot>[], breaks: { start: string; end: string; label: string }[] = []) =>
     buildLineup({ name: "Trial", venuePostcode: "AB1 2CD", startUtc: T1, slots, breaks }).split("\n").slice(3);
@@ -291,5 +294,22 @@ describe("buildLineup with lanes and places", () => {
 
   it("names the lane at the London time in winter too (GMT)", () => {
     expect(lineup([slot("2026-12-12T09:00:00Z", [{ laneName: "A", bookings: [], free: 1 }])])[0]).toBe("09:00 A — free");
+  });
+});
+
+describe("buildLineup with configured booking forms", () => {
+  const T1 = "2026-06-13T08:00:00Z";
+  const lineup = (bookings: { fields: { value: string }[] }[]) =>
+    buildLineup({
+      name: "Trial", venuePostcode: "AB1 2CD", startUtc: T1, breaks: [],
+      slots: [{ start: T1, places: [{ laneName: "", bookings, free: 0 }] }],
+    }).split("\n").slice(3);
+
+  it("joins the values of every field given with \" — \", in the form's order", () => {
+    expect(lineup([{ fields: [{ value: "Ann Lee" }, { value: "Biscuit" }, { value: "Nervous of puddles" }] }])).toEqual(["09:00 — Ann Lee — Biscuit — Nervous of puddles"]);
+  });
+
+  it("is just the value for a form of one field", () => {
+    expect(lineup([{ fields: [{ value: "AB12 CDE" }] }])).toEqual(["09:00 — AB12 CDE"]);
   });
 });

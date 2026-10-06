@@ -30,9 +30,10 @@ export const isGuardFailure = (e: unknown): boolean => e instanceof Error && e.m
  * batch, which could otherwise put a booking on a slot the edit removed, or in a lane or place the edit removed.
  * The handler answers `event_changed` (or re-reads the event) when the batch fails on it.
  *
- * INVARIANT: every code path that edits an event's lanes, capacity or identity limit (and, later, its booking fields)
- * must increase event_layout.config_rev in the same batch as the edit. The revision is the only thing that tells a
- * booking request that those changed, because they are not part of the schedule. An event with no layout row counts
+ * INVARIANT: every code path that edits an event's lanes, capacity or identity limit, or the number of its booking fields,
+ * which of them identify a booking, which are required or how long each can be (not their labels), must increase
+ * event_layout.config_rev in the same batch as the edit. The revision is the only thing that tells a booking request
+ * that those changed, because they are not part of the schedule. An event with no layout row counts
  * as revision 0.
  *
  * The schedule depends only on the SET of (start, end) pairs: an identical duplicate break has the same effect

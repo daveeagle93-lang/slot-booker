@@ -128,12 +128,16 @@ const LIST_EVENTS = [
 
 // The public booking page (GET /api/events/:slug, as the Worker answers it). Times are in the future, so only a status of
 // "past" makes a slot started. Slots are 09:00 to 10:20 London time (BST), every 20 minutes.
-const PUBLIC_EVENT = { slug: SLUG, name: "Saturday agility", startUtc: EVENT.startUtc, endUtc: EVENT.endUtc, costPence: 1200, venuePostcode: "AB1 2CD", details: "Bring water.", archived: false };
+const field = (position, label, required = true, maxLength = 80) => ({ position, label, required, maxLength });
+const PUBLIC_EVENT = {
+  slug: SLUG, name: "Saturday agility", startUtc: EVENT.startUtc, endUtc: EVENT.endUtc, costPence: 1200, venuePostcode: "AB1 2CD", details: "Bring water.", archived: false,
+  fields: [field(1, "Dog"), field(2, "Handler")],
+};
 const SLOT_STARTS = ["08:00", "08:20", "08:40", "09:00", "09:20"].map((t) => `2030-06-15T${t}:00Z`);
 const PUBLIC_END = (start) => new Date(Date.parse(start) + 15 * 60_000).toISOString();
 const publicSlot = (n, status, ...free) => ({ start: SLOT_STARTS[n], end: PUBLIC_END(SLOT_STARTS[n]), status, places: free.map((f, i) => ({ laneId: i + 1, free: f })) });
 const laneList = (...names) => names.map((name, i) => ({ id: i + 1, name }));
-const PRIVACY = "We store your name, your dog's name and the slot you choose so the club can run the event.\n\nThe details are kept until an organiser deletes the event.";
+const PRIVACY = "We store the details you enter on this form (Dog, Handler) and the slot you choose so the club can run the event.\n\nThe details are kept until an organiser deletes the event.";
 /** The public states: what the page is given, and what the form is told when a booking is made (lane 1 at the first open time). */
 const PUBLIC_STATES = {
   single: { event: { ...PUBLIC_EVENT, lanes: laneList(""), capacity: 1 }, slots: [publicSlot(0, "past", 1), publicSlot(1, "free", 1), publicSlot(3, "free", 1), publicSlot(4, "free", 1)] },
@@ -142,6 +146,9 @@ const PUBLIC_STATES = {
   // 08:00 started; 08:20 all open; 08:40 Ring 2 full; 09:00 only Ring 3 has a place; 09:20 full (hidden)
   lanes: { event: { ...PUBLIC_EVENT, lanes: laneList("Ring 1", "Ring 2", "Ring 3"), capacity: 2 },
     slots: [publicSlot(0, "past", 2, 2, 2), publicSlot(1, "free", 2, 2, 2), publicSlot(2, "free", 2, 0, 1), publicSlot(3, "free", 0, 0, 1), publicSlot(4, "taken", 0, 0, 0)] },
+  // A form of four fields, two of them optional, with labels long enough to wrap.
+  fourFields: { event: { ...PUBLIC_EVENT, lanes: laneList(""), capacity: 1, fields: [field(1, "Rider's full name as on the entry form"), field(2, "Pony"), field(3, "Phone number for the day (optional details)", false, 20), field(4, "Notes", false, 40)] },
+    slots: [publicSlot(0, "past", 1), publicSlot(1, "free", 1), publicSlot(3, "free", 1), publicSlot(4, "free", 1)] },
   longLanes: { event: { ...PUBLIC_EVENT, lanes: laneList("Extraordinarily-long-lane-name-without-any-spaces-at-all", "Novice and intermediate scent work", "Ring 3"), capacity: 2 },
     slots: [publicSlot(1, "free", 2, 1, 0), publicSlot(2, "free", 0, 2, 2)] },
 };
@@ -177,7 +184,7 @@ async function stubApi(page, stub) {
     if (pathname === `/api/events/${SLUG}`) return json(route, { event: stub.public.event, slots: stub.public.slots, bookings: { open: true, closesAt: EVENT.startUtc }, privacyNotice: PRIVACY });
     if (pathname === `/api/events/${SLUG}/bookings` && method === "POST") {
       const lane = stub.public.event.lanes[0];
-      return json(route, { booking: { slot: { start: SLOT_STARTS[1], end: PUBLIC_END(SLOT_STARTS[1]) }, lane, dogName: "Bartholomew-Maximilian", handlerName: "Alexandria Featherstonehaugh" }, event: stub.public.event, icsUrl: `/api/events/${SLUG}/bookings/tok0123456789abcdef01/ics` }, 201);
+      return json(route, { booking: { slot: { start: SLOT_STARTS[1], end: PUBLIC_END(SLOT_STARTS[1]) }, lane, fields: [{ label: "Dog", value: "Bartholomew-Maximilian" }, { label: "Handler", value: "Alexandria Featherstonehaugh" }] }, event: stub.public.event, icsUrl: `/api/events/${SLUG}/bookings/tok0123456789abcdef01/ics` }, 201);
     }
     if (pathname === "/api/admin/session" && stub.public) return json(route, { error: { code: "unauthorized", message: "Sign in" } }, 401);
     if (pathname === "/api/admin/session") return json(route, { identity: "admin", provider: "password", csrfToken: "test-token" });
@@ -685,6 +692,7 @@ async function main() {
         };
         await runPublic("single lane, one place (v1.0)", "single", { shot: "single", lanes: 0 });
         await runPublic("single lane, two places", "singleTwoPlaces", { shot: "single-two-places", lanes: 0 });
+        await runPublic("four fields, two optional, long labels", "fourFields", { shot: "four-fields", act: choose("09:20"), lanes: 0 });
         await runPublic("one named lane", "singleNamed", { shot: "single-named", act: choose("09:20"), lanes: 0 });
         await runPublic("three lanes, two places", "lanes", { shot: "lanes", lanes: 9, oneRow: true });
         await runPublic("three lanes, long names", "longLanes", { shot: "lanes-long", lanes: 6 });
@@ -693,8 +701,8 @@ async function main() {
           shot: "lanes-confirmed", lanes: 0, ready: ".slot-grid button",
           act: async () => {
             await choose("09:20", "Ring 1")();
-            await page.fill("#dog-name", "Bartholomew-Maximilian");
-            await page.fill("#handler-name", "Alexandria Featherstonehaugh");
+            await page.fill("#field-1", "Bartholomew-Maximilian");
+            await page.fill("#field-2", "Alexandria Featherstonehaugh");
             await page.click("#booking-form button[type=submit]");
             await page.waitForSelector(".confirmation");
           },

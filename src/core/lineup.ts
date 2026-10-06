@@ -10,7 +10,8 @@ import { utcToLondon } from "./london";
  * can still make part of the message bold, italic or struck through when pasted into the chat. That is not
  * coded around. Lane names are user text too and are printed the same way, as stored.
  *
- * One line per place. An event with exactly one lane and that lane unnamed reads as in v1.0 (`10:00 — Rex — Sam`,
+ * One line per place: a booking shows the value of each of its fields, in the form's order, between " — " (`10:00 — Rex — Sam`).
+ * An event with exactly one lane and that lane unnamed reads as in v1.0 (`10:00 — Rex — Sam`,
  * `10:00 — free`; with several places in the lane, the bookings in place order and then a `free` line for each free
  * place). Any other event names the lane in every line (`10:00 Ring 1 — Rex — Sam`, `10:00 Ring 1 — free`), by time,
  * then lane order, then place.
@@ -26,7 +27,7 @@ export interface LineupInput {
    * Slots of the schedule, each with its lanes in lane order: the lane's bookings in place order, and how many of its places
    * are `free`. Every slot lists the same lanes. Bookings outside the schedule are not passed in.
    */
-  slots: { start: string; places: { laneName: string; bookings: { dogName: string; handlerName: string }[]; free: number }[] }[];
+  slots: { start: string; places: { laneName: string; bookings: { fields: { value: string }[] }[]; free: number }[] }[];
   breaks: { start: string; end: string; label: string }[];
 }
 
@@ -47,7 +48,7 @@ export function buildLineup(input: LineupInput): string {
       lines: s.places.flatMap((p) => {
         const at = `${utcToLondon(s.start).time}${naming ? ` ${p.laneName}` : ""}`;
         return [
-          ...p.bookings.map((b) => `${at} — ${b.dogName} — ${b.handlerName}`),
+          ...p.bookings.map((b) => `${at} — ${b.fields.map((f) => f.value).join(" — ")}`),
           ...Array.from({ length: p.free }, () => `${at} — free`),
         ];
       }),

@@ -1,8 +1,12 @@
 import { generateSchedule, type TimeRange } from "../core/schedule";
 import { isValidSlug } from "../core/slug";
+import { LEGACY_FIELDS } from "./fields";
 
 /** One lane (ring) of an event; lanes run in parallel, in `position` order. A single lane may have an empty name. */
 export interface EventLane { id: number; position: number; name: string }
+
+/** One field of an event's booking form: `position` (1 to 4) is also the number of the bookings column that holds its value. */
+export interface EventField { position: number; label: string; required: boolean; maxLength: number; identity: boolean }
 
 export interface EventRow {
   id: number;
@@ -24,9 +28,11 @@ export interface EventRow {
   lanes: EventLane[];
   /** Places per lane per time. */
   capacity: number;
-  /** How many bookings one identity (one dog and handler) may hold in the event. */
+  /** The booking form's fields in order (one to four). The identity fields together are what one booking is "by": see identityKeyOf. */
+  fields: EventField[];
+  /** How many bookings one identity (the values of the identity fields) may hold in the event. */
   identityLimit: number;
-  /** Counts the edits of lanes, capacity and identity limit, so a request can tell that they changed under it (db-guard.ts). */
+  /** Counts the edits of lanes, capacity, identity limit and the fields that matter to a booking, so a request can tell that they changed under it (db-guard.ts). */
   configRev: number;
 }
 
@@ -44,18 +50,24 @@ interface RawEvent {
   gap_minutes: number; cost_pence: number; venue_postcode: string; details: string; share_message: string; archived: number; listed: number;
 }
 
+/** The stored form of an event's or a template's field, as the queries select it. */
+export interface RawField { position: number; label: string; required: number; max_length: number; in_identity: number }
+export const fieldOf = (r: RawField): EventField =>
+  ({ position: r.position, label: r.label, required: r.required === 1, maxLength: r.max_length, identity: r.in_identity === 1 });
+
 /**
- * The event with its breaks, lanes and layout, from one batch (one round trip, one consistent snapshot). An event
- * without a layout row (inserted by hand, not by the app) gets capacity 1, limit 1 and revision 0, and with no lane
- * it can't be booked.
+ * The event with its breaks, lanes, fields and layout, from one batch (one round trip, one consistent snapshot). An
+ * event without a layout row (inserted by hand, not by the app) gets capacity 1, limit 1 and revision 0, and with no lane it
+ * can't be booked. One without field rows has the Dog and Handler form (LEGACY_FIELDS).
  */
 export async function loadEventBySlug(db: D1Database, slug: string): Promise<EventRow | null> {
   if (!isValidSlug(slug)) return null;
   const idOf = "(SELECT id FROM events WHERE slug = ?)";
-  const [event, breaks, lanes, layout] = await db.batch([
+  const [event, breaks, lanes, fields, layout] = await db.batch([
     db.prepare("SELECT * FROM events WHERE slug = ?").bind(slug),
     db.prepare(`SELECT start_utc, end_utc, label FROM breaks WHERE event_id = ${idOf} ORDER BY start_utc`).bind(slug),
     db.prepare(`SELECT id, position, name FROM event_lanes WHERE event_id = ${idOf} ORDER BY position`).bind(slug),
+    db.prepare(`SELECT position, label, required, max_length, in_identity FROM event_fields WHERE event_id = ${idOf} ORDER BY position`).bind(slug),
     db.prepare(`SELECT capacity, identity_limit, config_rev FROM event_layout WHERE event_id = ${idOf}`).bind(slug),
   ]);
   const e = (event.results as unknown as RawEvent[])[0];
@@ -67,16 +79,20 @@ export async function loadEventBySlug(db: D1Database, slug: string): Promise<Eve
     sessionMinutes: e.session_minutes, gapMinutes: e.gap_minutes, costPence: e.cost_pence,
     venuePostcode: e.venue_postcode, details: e.details, shareMessage: e.share_message, archived: e.archived === 1, listed: e.listed === 1,
     breaks: results.map((b) => ({ start: b.start_utc, end: b.end_utc, label: b.label })),
-    lanes: lanes.results as unknown as EventLane[],
+    lanes: lanes.results as unknown as EventLane[], fields: fields.results.length > 0 ? (fields.results as unknown as RawField[]).map(fieldOf) : [...LEGACY_FIELDS],
     capacity: rawLayout?.capacity ?? 1, identityLimit: rawLayout?.identity_limit ?? 1, configRev: rawLayout?.config_rev ?? 0,
   };
 }
 
-/** The public face of an event: no event id, no breaks, no share message. The lanes are the ones a booker chooses between. */
+/**
+ * The public face of an event: no event id, no breaks, no share message. The lanes are the ones a booker chooses between and
+ * the fields are what the form asks for (never which of them identify a booking: that is not the booker's business).
+ */
 export const eventSummary = (e: EventRow) => ({
   slug: e.slug, name: e.name, startUtc: e.startUtc, endUtc: e.endUtc,
   costPence: e.costPence, venuePostcode: e.venuePostcode, details: e.details, archived: e.archived,
   lanes: e.lanes.map((l) => ({ id: l.id, name: l.name })), capacity: e.capacity,
+  fields: e.fields.map((f) => ({ position: f.position, label: f.label, required: f.required, maxLength: f.maxLength })),
 });
 
 /**

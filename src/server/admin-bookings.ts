@@ -1,9 +1,9 @@
-import { identityKeyOf } from "../core/identity";
 import { generateBookingToken } from "../core/slug";
-import type { BookingRef } from "./admin-event-edit";
-import { checkName, chooseLane, findSlot, noStore } from "./bookings";
+import { bookingRefOf, type BookingRef, type ValueColumns } from "./admin-event-edit";
+import { checkFieldValues, chooseLane, findSlot, noStore } from "./bookings";
 import { guard, isGuardFailure, scheduleUnchanged } from "./db-guard";
 import { loadEventBySlug, type EventRow } from "./events";
+import { columnValues, duplicateMessage, identityKeyFor } from "./fields";
 import { errorResponse } from "./http";
 import { placeAtFreeSpot } from "./places";
 
@@ -23,13 +23,10 @@ const eventChanged = () => fail(409, "event_changed", "The event was edited whil
 /** Test seam: runs after the handler's reads and before the batch, where another request could change things. */
 export interface MutationHooks { afterRead?: () => Promise<void> }
 
-interface Row { id: number; slot_start_utc: string; lane_id: number; dog_name: string; handler_name: string }
-// The booking form's two fields are stored in value_1 and value_2; the aliases keep the names the rest of this file uses.
-const COLUMNS = "id, slot_start_utc, lane_id, value_1 AS dog_name, value_2 AS handler_name";
-const ref = (r: Row, event: Pick<EventRow, "lanes">): BookingRef => ({
-  id: r.id, slotStart: r.slot_start_utc, dogName: r.dog_name, handlerName: r.handler_name,
-  lane: { id: r.lane_id, name: event.lanes.find((l) => l.id === r.lane_id)?.name ?? "" },
-});
+type Row = ValueColumns & { id: number; slot_start_utc: string; lane_id: number };
+const COLUMNS = "id, slot_start_utc, lane_id, value_1, value_2, value_3, value_4";
+const ref = (r: Row, event: Pick<EventRow, "lanes" | "fields">): BookingRef =>
+  bookingRefOf({ ...r, slotStart: r.slot_start_utc, lane: { id: r.lane_id, name: event.lanes.find((l) => l.id === r.lane_id)?.name ?? "" } }, event.fields);
 
 /** A guard failure is either the event being edited or a booking having moved: say which. */
 async function guardFailed(db: D1Database, event: EventRow): Promise<Failure> {
@@ -48,16 +45,34 @@ const holdersOf = async (db: D1Database, eventId: number, laneId: number, slot: 
  * The extra payload of a slot_taken refusal: `bookings`, everyone in the lane at that time; and, for an event with one lane and
  * one place per time (as every event was before lanes), also the v1.0 `booking` key with the one holder.
  */
-function takenExtra(event: Pick<EventRow, "lanes" | "capacity">, holders: (Row & { identity_key: string })[]): object {
+function takenExtra(event: Pick<EventRow, "lanes" | "capacity" | "fields">, holders: (Row & { identity_key: string })[]): object {
   const single = event.lanes.length === 1 && event.capacity === 1;
   return {
     bookings: holders.map((h) => ref(h, event)),
-    ...(single ? { booking: { id: holders[0].id, dogName: holders[0].dog_name, handlerName: holders[0].handler_name } } : {}),
+    // TRANSITIONAL(6b): the v1.0 key, read by the admin schedule page written before the fields were configurable.
+    ...(single ? { booking: { id: holders[0].id, dogName: holders[0].value_1, handlerName: holders[0].value_2 } } : {}),
   };
 }
 
 /**
- * Adds a booking on someone's behalf, in the lane named by `laneId` (which may be left out when the event has one lane). This
+ * TRANSITIONAL(6b): the admin schedule page written before the fields were configurable sends `dogName` and `handlerName` for
+ * `field1` and `field2` and reads its errors under those names too. This is the request with them filled in where the
+ * `field` key is missing, and `answered` copies the first two field errors under the old names. Delete both with that page's use of them.
+ */
+const withFieldAliases = (raw: Record<string, unknown>): Record<string, unknown> => ({
+  ...raw,
+  ...(raw.field1 === undefined && raw.dogName !== undefined ? { field1: raw.dogName } : {}),
+  ...(raw.field2 === undefined && raw.handlerName !== undefined ? { field2: raw.handlerName } : {}),
+});
+const answered = (errors: Record<string, string>): Record<string, string> => ({
+  ...errors,
+  ...(errors.field1 !== undefined ? { dogName: errors.field1 } : {}),
+  ...(errors.field2 !== undefined ? { handlerName: errors.field2 } : {}),
+});
+
+/**
+ * Adds a booking on someone's behalf: `field1` to `field4` as the event's form has them (checked as the public form is: see
+ * checkFieldValue), in the lane named by `laneId` (which may be left out when the event has one lane). This
  * is an admin override: unlike the public booking it ignores the cut-off, the past-slot rule and an archived event, so an
  * organiser can fix up the day itself. The slot must still be one of the current schedule. The place is the lowest free one in
  * the lane at that time, found and taken as the public booking does (placeAtFreeSpot: the UNIQUE constraints decide a clash).
@@ -66,32 +81,28 @@ function takenExtra(event: Pick<EventRow, "lanes" | "capacity">, holders: (Row &
 export async function addBooking(
   db: D1Database, event: EventRow, raw: Record<string, unknown>, hooks: MutationHooks = {},
 ): Promise<Outcome<BookingRef>> {
-  const dog = checkName(raw.dogName, "dog's name");
-  const handler = checkName(raw.handlerName, "handler's name");
+  const checked = checkFieldValues(withFieldAliases(raw), event.fields);
   const laneChoice = chooseLane(event, raw.laneId);
-  const fields: Record<string, string> = {};
-  if ("message" in dog) fields.dogName = dog.message;
-  if ("message" in handler) fields.handlerName = handler.message;
+  const fields: Record<string, string> = "errors" in checked ? checked.errors : {};
   if ("message" in laneChoice) fields.laneId = laneChoice.message;
   if (typeof raw.slot !== "string") fields.slot = "Choose a slot.";
-  if (Object.keys(fields).length > 0) return invalidInput(fields);
-  const { name: dogName } = dog as { name: string };
-  const { name: handlerName } = handler as { name: string };
+  if (Object.keys(fields).length > 0) return invalidInput(answered(fields));
+  const { values } = checked as { values: string[] };
   const { laneId } = laneChoice as { laneId: number };
   const slot = findSlot(event, raw.slot as string);
   if (!slot) return invalidSlot();
   await hooks.afterRead?.();
 
-  const key = identityKeyOf([dogName, handlerName]);
+  const key = identityKeyFor(event.fields, values);
   const outcome = await placeAtFreeSpot({
     db, event, laneId, slot: slot.start, identityKey: key,
     insert: async ({ place, seq }) => {
       const results = await db.batch([
         scheduleUnchanged(db, event),
         db.prepare(
-          `INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key, identity_seq, token)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${COLUMNS}`,
-        ).bind(event.id, laneId, slot.start, place, dogName, handlerName, key, seq, generateBookingToken()),
+          `INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, value_3, value_4, identity_key, identity_seq, token)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${COLUMNS}`,
+        ).bind(event.id, laneId, slot.start, place, ...columnValues(values), key, seq, generateBookingToken()),
       ]);
       return (results[1].results as Row[])[0];
     },
@@ -105,7 +116,7 @@ export async function addBooking(
       const holders = await holdersOf(db, event.id, laneId, slot.start);
       if (holders.length === 0) return changed(); // whoever held it has gone again
       const own = holders.find((h) => h.identity_key === key);
-      if (own) return fail(409, "duplicate_booking", "That dog and handler already have a booking for this event.", { booking: ref(own, event) });
+      if (own) return fail(409, "duplicate_booking", duplicateMessage(event.fields), { booking: ref(own, event) });
       return fail(409, "slot_taken", "That slot is already taken.", takenExtra(event, holders));
     }
     case "identity_limit": {
@@ -113,7 +124,7 @@ export async function addBooking(
         .prepare(`SELECT ${COLUMNS} FROM bookings WHERE event_id = ? AND identity_key = ? ORDER BY identity_seq LIMIT 1`)
         .bind(event.id, key).first<Row>();
       if (!existing) return changed(); // whoever caused the clash has gone again
-      return fail(409, "duplicate_booking", "That dog and handler already have a booking for this event.", { booking: ref(existing, event) });
+      return fail(409, "duplicate_booking", duplicateMessage(event.fields), { booking: ref(existing, event) });
     }
     case "gave_up":
     case "settled":

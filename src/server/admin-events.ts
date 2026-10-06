@@ -2,7 +2,8 @@ import { londonToUtc, LondonTimeError, utcToLondon } from "../core/london";
 import { DEFAULT_NEAR_MISS_MINUTES, generateSchedule, type TimeRange } from "../core/schedule";
 import { generateSlug } from "../core/slug";
 import { IDEMPOTENCY_KEY, INVISIBLE, invisibleMessage, LINE_SEPARATORS, noStore, readJsonObject } from "./bookings";
-import { bookingWindow, type EventRow } from "./events";
+import { bookingWindow, fieldOf, type EventRow, type RawField } from "./events";
+import { DEFAULT_FIELDS, draftsOf, LEGACY_FIELDS, MAX_FIELD_LABEL_CODE_POINTS, MAX_FIELD_LENGTH, MAX_FIELDS, MAX_IDENTITY_LIMIT, withPositions, type FieldDraft } from "./fields";
 import { errorResponse } from "./http";
 
 const MAX_NAME_CODE_POINTS = 100;
@@ -42,6 +43,10 @@ export interface EventDraft {
   lanes?: LaneDraft[];
   /** Places per lane per time; undefined when the request didn't say (create: 1; edit: unchanged). */
   capacity?: number;
+  /** The booking form's fields in order; undefined when the request didn't say (create: one required "Name" field that is the identity; edit: unchanged). */
+  fields?: FieldDraft[];
+  /** How many bookings one identity may hold; undefined when the request didn't say (create: 1; edit: unchanged). */
+  identityLimit?: number;
 }
 
 export interface LaneDraft { id?: number; name: string }
@@ -202,6 +207,68 @@ function parseLanes(value: unknown, stored: StoredLayout | undefined, fields: Fi
   return undefined;
 }
 
+/**
+ * The booking form's fields of a create, an edit or a template: one to four, each `{ label, required, maxLength, identity }`.
+ * The label is text like an event name (at most 40 characters, no invisible, control or line-separating characters) and
+ * differs from every other label ignoring case (NFC and Unicode lower case). The first field is required, a field that
+ * identifies a booking is required, and at least one field identifies a booking. Errors are keyed `fields` (the list),
+ * `fields.N` (an item) and `fields.N.label`, `fields.N.required`, `fields.N.maxLength` or `fields.N.identity`, N counting from 0.
+ */
+function parseFields(value: unknown, fields: Fields): FieldDraft[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) fields.fields = "Fields must be a list.";
+  else if (value.length === 0) fields.fields = "A booking form needs at least one field.";
+  else if (value.length > MAX_FIELDS) fields.fields = `You can have at most ${MAX_FIELDS} fields.`;
+  else {
+    const drafts: FieldDraft[] = [];
+    const seen = new Set<string>();
+    let ok = true;
+    value.forEach((item, i) => {
+      const f = asRecord(item);
+      if (!f) {
+        fields[`fields.${i}`] = "Each field needs a label.";
+        ok = false;
+        return;
+      }
+      const label = checkName(f.label, undefined, "field label", MAX_FIELD_LABEL_CODE_POINTS);
+      if ("message" in label) {
+        fields[`fields.${i}.label`] = label.message;
+        ok = false;
+      } else {
+        const same = label.name.normalize("NFC").toLowerCase();
+        if (seen.has(same)) {
+          fields[`fields.${i}.label`] = "Two fields can't have the same label.";
+          ok = false;
+        }
+        seen.add(same);
+      }
+      const maxLength = checkInteger(f.maxLength, 1, MAX_FIELD_LENGTH);
+      if (maxLength === null) {
+        fields[`fields.${i}.maxLength`] = `Enter a whole number of characters from 1 to ${MAX_FIELD_LENGTH}.`;
+        ok = false;
+      }
+      if (typeof f.required !== "boolean") {
+        fields[`fields.${i}.required`] = "Required must be true or false.";
+        ok = false;
+      } else if (i === 0 && !f.required) {
+        fields[`fields.${i}.required`] = "The first field must be required.";
+        ok = false;
+      } else if (f.identity === true && !f.required) {
+        fields[`fields.${i}.required`] = "A field that identifies a booking must be required.";
+        ok = false;
+      }
+      if (typeof f.identity !== "boolean") {
+        fields[`fields.${i}.identity`] = "Identifies a booking must be true or false.";
+        ok = false;
+      }
+      if (ok) drafts.push({ label: (label as { name: string }).name, required: f.required as boolean, maxLength: maxLength!, identity: f.identity as boolean });
+    });
+    if (ok && !drafts.some((f) => f.identity)) fields.fields = "At least one field must identify a booking.";
+    else if (ok) return drafts;
+  }
+  return undefined;
+}
+
 /** How many places the event would have: its time slots, times its lanes, times the places in each. */
 export const placeCountOf = (slotCount: number, laneCount: number, capacity: number): number => slotCount * laneCount * capacity;
 
@@ -256,6 +323,13 @@ export function parseEventDraft(
     if (c === null) fields.capacity = `Enter a whole number of places from 1 to ${MAX_CAPACITY}.`;
     else capacity = c;
   }
+  const bookingFields = parseFields(raw.fields, fields);
+  let identityLimit: number | undefined;
+  if (raw.identityLimit !== undefined) {
+    const l = checkInteger(raw.identityLimit, 1, MAX_IDENTITY_LIMIT);
+    if (l === null) fields.identityLimit = `Enter a whole number of bookings from 1 to ${MAX_IDENTITY_LIMIT}.`;
+    else identityLimit = l;
+  }
 
   const breaks: EventDraft["breaks"] = [];
   if (!Array.isArray(raw.breaks)) fields.breaks = "Breaks must be a list.";
@@ -287,6 +361,7 @@ export function parseEventDraft(
     sessionMinutes: sessionMinutes!, gapMinutes: gapMinutes!, costPence: costPence!,
     venuePostcode: (postcode as { postcode: string }).postcode, details: (details as { details: string }).details,
     shareMessage, listed: raw.listed as boolean | undefined, startUtc: startUtc!, endUtc: endUtc!, breaks, lanes, capacity,
+    fields: bookingFields, identityLimit,
   };
   const slotCount = previewSchedule(draft).slots.length;
   if (slotCount === 0) return { fields: { end: "No sessions fit between the start and end." } };
@@ -368,6 +443,8 @@ export interface SavedEvent {
   breaks: { startUtc: string; endUtc: string; label: string }[];
   lanes: { id: number; name: string }[];
   capacity: number;
+  fields: FieldDraft[];
+  identityLimit: number;
 }
 
 export interface CreateEventResult { kind: "created" | "replayed" | "idempotency_key_reuse"; saved: SavedEvent }
@@ -377,7 +454,7 @@ export const createdBody = (e: SavedEvent) => ({
   event: {
     slug: e.slug, name: e.name, startUtc: e.startUtc, endUtc: e.endUtc, sessionMinutes: e.sessionMinutes,
     gapMinutes: e.gapMinutes, costPence: e.costPence, venuePostcode: e.venuePostcode, details: e.details,
-    shareMessage: e.shareMessage, lanes: e.lanes, capacity: e.capacity,
+    shareMessage: e.shareMessage, lanes: e.lanes, capacity: e.capacity, fields: e.fields, identityLimit: e.identityLimit,
   },
   path: `/e/${e.slug}`,
   slotCount: generateSchedule({
@@ -389,6 +466,9 @@ export const createdBody = (e: SavedEvent) => ({
 /** The lanes a create request means: the ones it lists, or the one unnamed lane. */
 const lanesOf = (d: EventDraft): { name: string }[] => d.lanes ?? [{ name: "" }];
 
+/** The fields a create request means: the ones it lists, or the one required "Name" field. */
+const fieldsOf = (d: Pick<EventDraft, "fields">): FieldDraft[] => d.fields ?? [...DEFAULT_FIELDS];
+
 const breakKey = (b: { startUtc: string; endUtc: string; label: string }): string => JSON.stringify([b.startUtc, b.endUtc, b.label]);
 
 /** The same event, breaks compared as a set so their order doesn't matter. */
@@ -398,7 +478,8 @@ function sameEvent(saved: SavedEvent, d: EventDraft): boolean {
   return saved.name === d.name && saved.startUtc === d.startUtc && saved.endUtc === d.endUtc
     && saved.sessionMinutes === d.sessionMinutes && saved.gapMinutes === d.gapMinutes && saved.costPence === d.costPence
     && saved.venuePostcode === d.venuePostcode && saved.details === d.details && saved.shareMessage === (d.shareMessage ?? "")
-    && saved.listed === (d.listed ?? true) && saved.capacity === (d.capacity ?? 1)
+    && saved.listed === (d.listed ?? true) && saved.capacity === (d.capacity ?? 1) && saved.identityLimit === (d.identityLimit ?? 1)
+    && JSON.stringify(saved.fields) === JSON.stringify(fieldsOf(d))
     && JSON.stringify(saved.lanes.map((l) => l.name)) === JSON.stringify(lanesOf(d).map((l) => l.name))
     && mine.length === theirs.length && mine.every((k, i) => k === theirs[i]);
 }
@@ -412,14 +493,15 @@ export async function findEventByKey(
   db: D1Database, key: string, d: EventDraft,
 ): Promise<{ kind: "replayed" | "idempotency_key_reuse"; saved: SavedEvent } | null> {
   const idOf = "(SELECT id FROM events WHERE idempotency_key = ?)";
-  const [events, breaks, lanes, layout] = await db.batch([
+  const [events, breaks, lanes, fieldRows, layout] = await db.batch([
     db.prepare(
       `SELECT slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, share_message, listed
        FROM events WHERE idempotency_key = ?`,
     ).bind(key),
     db.prepare(`SELECT start_utc, end_utc, label FROM breaks WHERE event_id = ${idOf} ORDER BY start_utc, end_utc, label`).bind(key),
     db.prepare(`SELECT id, name FROM event_lanes WHERE event_id = ${idOf} ORDER BY position`).bind(key),
-    db.prepare(`SELECT capacity FROM event_layout WHERE event_id = ${idOf}`).bind(key),
+    db.prepare(`SELECT position, label, required, max_length, in_identity FROM event_fields WHERE event_id = ${idOf} ORDER BY position`).bind(key),
+    db.prepare(`SELECT capacity, identity_limit FROM event_layout WHERE event_id = ${idOf}`).bind(key),
   ]);
   const e = (events.results as {
     slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number; gap_minutes: number;
@@ -434,6 +516,8 @@ export async function findEventByKey(
       .map((b) => ({ startUtc: b.start_utc, endUtc: b.end_utc, label: b.label })),
     lanes: lanes.results as { id: number; name: string }[],
     capacity: (layout.results as { capacity: number }[])[0]?.capacity ?? 1,
+    fields: draftsOf((fieldRows.results as unknown as RawField[]).map(fieldOf)),
+    identityLimit: (layout.results as { identity_limit: number }[])[0]?.identity_limit ?? 1,
   };
   return { kind: sameEvent(saved, d) ? "replayed" : "idempotency_key_reuse", saved };
 }
@@ -458,29 +542,37 @@ export async function createEvent(db: D1Database, d: EventDraft, key: string): P
     throw e;
   }
   const lanes = lanesOf(d).map((l, i) => ({ id: laneIds[i], name: l.name }));
-  return { kind: "created", saved: { ...d, shareMessage: d.shareMessage ?? "", listed: d.listed ?? true, slug, lanes, capacity: d.capacity ?? 1 } };
+  return {
+    kind: "created",
+    saved: { ...d, shareMessage: d.shareMessage ?? "", listed: d.listed ?? true, slug, lanes, capacity: d.capacity ?? 1, fields: fieldsOf(d), identityLimit: d.identityLimit ?? 1 },
+  };
 }
 
 /**
- * Inserts the event, its layout (the capacity, 1 if the draft has none; identity limit 1), its lanes (the draft's, or one
- * unnamed lane) and all its breaks in one batch, so either all of it is stored or none. Returns the lane ids in order.
+ * Inserts the event, its layout (the capacity, 1 if the draft has none; the identity limit, likewise 1), its lanes (the
+ * draft's, or one unnamed lane), its breaks and its booking form's fields (the draft's, or one required "Name") in one batch, so either all of it is stored or none. Returns the lane ids in order.
  * Assumes a validated draft; the table CHECK constraints are the last line of defence.
  */
 export async function insertEventWithBreaks(db: D1Database, slug: string, d: EventDraft, idempotencyKey: string): Promise<number[]> {
   const lanes = lanesOf(d);
+  const idOfEvent = "(SELECT id FROM events WHERE slug = ?)";
   const results = await db.batch([
     db.prepare(
       `INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, share_message, listed, idempotency_key)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(slug, d.name, d.startUtc, d.endUtc, d.sessionMinutes, d.gapMinutes, d.costPence, d.venuePostcode, d.details,
       d.shareMessage ?? "", d.listed === false ? 0 : 1, idempotencyKey),
-    db.prepare("INSERT INTO event_layout (event_id, capacity) VALUES ((SELECT id FROM events WHERE slug = ?), ?)").bind(slug, d.capacity ?? 1),
+    db.prepare("INSERT INTO event_layout (event_id, capacity, identity_limit) VALUES ((SELECT id FROM events WHERE slug = ?), ?, ?)")
+      .bind(slug, d.capacity ?? 1, d.identityLimit ?? 1),
     ...lanes.map((l, i) =>
       db.prepare("INSERT INTO event_lanes (event_id, position, name) VALUES ((SELECT id FROM events WHERE slug = ?), ?, ?) RETURNING id")
         .bind(slug, i + 1, l.name)),
     ...d.breaks.map((b) =>
       db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES ((SELECT id FROM events WHERE slug = ?), ?, ?, ?)")
         .bind(slug, b.startUtc, b.endUtc, b.label)),
+    ...withPositions(fieldsOf(d)).map((f) =>
+      db.prepare(`INSERT INTO event_fields (event_id, position, label, required, max_length, in_identity) VALUES (${idOfEvent}, ?, ?, ?, ?, ?)`)
+        .bind(slug, f.position, f.label, f.required ? 1 : 0, f.maxLength, f.identity ? 1 : 0)),
   ]);
   return results.slice(2, 2 + lanes.length).map((r) => (r.results as { id: number }[])[0].id);
 }
@@ -518,7 +610,7 @@ export const defaultShareMessageStatement = (db: D1Database): D1PreparedStatemen
  * The admin list in three groups; every event is in exactly one (archived wins, then the end time decides):
  * `events` (Upcoming: not archived, ends after now, soonest first), `past` (not archived, ended at or before
  * now) and `archived`, each of the last two at most 100, most recently started first, with a HasMore flag.
- * One batch of eight queries: the upcoming events, their breaks, lanes, layouts and booking counts, then Past and
+ * One batch of nine queries: the upcoming events, their breaks, lanes, fields, layouts and booking counts, then Past and
  * Archived, then the default template's share message (`defaultShareMessage`, "" if there is none). An upcoming event
  * is `full` when every place of every lane at every time is booked. `slotCount` is the number of times and `bookedCount` the
  * number of bookings; `laneCount`, `capacity` and `placeCount` (times x lanes x places per lane) say how many places there are.
@@ -526,13 +618,14 @@ export const defaultShareMessageStatement = (db: D1Database): D1PreparedStatemen
 export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMinutes: number) {
   const nowIso = `${now.toISOString().slice(0, 19)}Z`;
   const upcoming = `SELECT id FROM events WHERE archived = 0 AND end_utc > ?1 ORDER BY start_utc, id LIMIT ${MAX_LIST}`;
-  const [events, breaks, lanes, layouts, counts, pastRows, archivedRows, defaultMessage] = await db.batch([
+  const [events, breaks, lanes, fieldRows, layouts, counts, pastRows, archivedRows, defaultMessage] = await db.batch([
     db.prepare(
       `SELECT id, slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, share_message, listed
        FROM events WHERE id IN (${upcoming}) ORDER BY start_utc, id`,
     ).bind(nowIso),
     db.prepare(`SELECT event_id, start_utc, end_utc, label FROM breaks WHERE event_id IN (${upcoming})`).bind(nowIso),
     db.prepare(`SELECT event_id, id, position, name FROM event_lanes WHERE event_id IN (${upcoming}) ORDER BY position`).bind(nowIso),
+    db.prepare(`SELECT event_id, position, label, required, max_length, in_identity FROM event_fields WHERE event_id IN (${upcoming}) ORDER BY position`).bind(nowIso),
     db.prepare(`SELECT event_id, capacity, identity_limit, config_rev FROM event_layout WHERE event_id IN (${upcoming})`).bind(nowIso),
     db.prepare(`SELECT event_id, COUNT(*) AS n FROM bookings WHERE event_id IN (${upcoming}) GROUP BY event_id`).bind(nowIso),
     olderEvents(db, "archived = 0 AND end_utc <= ?1").bind(nowIso),
@@ -547,6 +640,10 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
   for (const l of (lanes.results as { event_id: number; id: number; position: number; name: string }[])) {
     lanesOf.set(l.event_id, [...(lanesOf.get(l.event_id) ?? []), { id: l.id, position: l.position, name: l.name }]);
   }
+  const fieldsOfEvent = new Map<number, EventRow["fields"]>();
+  for (const f of (fieldRows.results as unknown as (RawField & { event_id: number })[])) {
+    fieldsOfEvent.set(f.event_id, [...(fieldsOfEvent.get(f.event_id) ?? []), fieldOf(f)]);
+  }
   const layoutOf = new Map((layouts.results as { event_id: number; capacity: number; identity_limit: number; config_rev: number }[]).map((r) => [r.event_id, r]));
   const bookedOf = new Map((counts.results as { event_id: number; n: number }[]).map((r) => [r.event_id, r.n]));
   const upcomingList = (events.results as unknown as ListedEvent[]).map((e) => {
@@ -554,8 +651,8 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
       id: e.id, slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc,
       sessionMinutes: e.session_minutes, gapMinutes: e.gap_minutes, costPence: e.cost_pence,
       venuePostcode: e.venue_postcode, details: e.details, shareMessage: e.share_message, archived: false, listed: e.listed === 1, breaks: breaksOf.get(e.id) ?? [],
-      lanes: lanesOf.get(e.id) ?? [], capacity: layoutOf.get(e.id)?.capacity ?? 1, identityLimit: layoutOf.get(e.id)?.identity_limit ?? 1,
-      configRev: layoutOf.get(e.id)?.config_rev ?? 0,
+      lanes: lanesOf.get(e.id) ?? [], fields: fieldsOfEvent.get(e.id) ?? [...LEGACY_FIELDS], capacity: layoutOf.get(e.id)?.capacity ?? 1,
+      identityLimit: layoutOf.get(e.id)?.identity_limit ?? 1, configRev: layoutOf.get(e.id)?.config_rev ?? 0,
     } satisfies EventRow;
     const slotCount = generateSchedule({
       start: row.startUtc, end: row.endUtc, sessionMinutes: row.sessionMinutes, gapMinutes: row.gapMinutes, breaks: row.breaks,
@@ -567,6 +664,7 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
       venuePostcode: e.venue_postcode, details: e.details, shareMessage: e.share_message, slotCount, bookedCount, archived: false,
       listed: e.listed === 1,
       laneCount: row.lanes.length, lanes: row.lanes.map(({ name }) => ({ name })), capacity: row.capacity, placeCount,
+      fields: draftsOf(row.fields), identityLimit: row.identityLimit,
       full: slotCount > 0 && bookedCount >= placeCount,
       bookings: bookingWindow(row, cutoffOffsetMinutes, now),
       path: `/e/${e.slug}`,

@@ -20,7 +20,7 @@ export const onRequestPost: RouteHandler<"slug"> = async ({ request, env, data, 
     const draft = await readEventDraft(request, false, { laneIds: event.lanes.map((l) => l.id), capacity: event.capacity });
     if (draft instanceof Response) return draft;
     const preview = previewSchedule(draft);
-    const affected = strandedBookings(await loadBookings(env.DB, event.id), planOf(event, draft, preview.slots)).map(toRef);
+    const affected = strandedBookings(await loadBookings(env.DB, event), planOf(event, draft, preview.slots)).map(toRef);
     const placeCount = placeCountOf(preview.slots.length, draft.lanes?.length ?? event.lanes.length, draft.capacity ?? event.capacity);
     return json({ ...preview, placeCount, affected }, 200, noStore);
   } catch (e) {

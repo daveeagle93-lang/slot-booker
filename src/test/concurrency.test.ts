@@ -60,12 +60,12 @@ async function send(path: string, init: { method: string; body?: unknown; admin?
   const body = await res.json().catch(() => null) as any;
   return { status: res.status, code: body?.error?.code, token: body?.icsUrl?.split("/").at(-2), replayed: res.headers.get("idempotent-replayed") === "true", body };
 }
-const book = (slug: string, slot: string, dog: string, handler: string, o: { laneId?: number; key?: string } = {}) =>
+const book = (slug: string, slot: string, dog: string, handler: string, o: { laneId?: number; key?: string; extra?: Record<string, string> } = {}) =>
   send(`/api/events/${slug}/bookings`, {
-    method: "POST", body: { slot, dogName: dog, handlerName: handler, idempotencyKey: o.key ?? generateBookingToken(), ...(o.laneId === undefined ? {} : { laneId: o.laneId }) },
+    method: "POST", body: { slot, field1: dog, field2: handler, ...o.extra, idempotencyKey: o.key ?? generateBookingToken(), ...(o.laneId === undefined ? {} : { laneId: o.laneId }) },
   });
 const adminAdd = (slug: string, slot: string, dog: string, handler: string, laneId?: number) =>
-  send(`/api/admin/events/${slug}/bookings`, { method: "POST", admin: true, body: { slot, dogName: dog, handlerName: handler, ...(laneId === undefined ? {} : { laneId }) } });
+  send(`/api/admin/events/${slug}/bookings`, { method: "POST", admin: true, body: { slot, field1: dog, field2: handler, ...(laneId === undefined ? {} : { laneId }) } });
 const adminMove = (slug: string, id: number, fromSlot: string, toSlot: string, toLane?: number) =>
   send(`/api/admin/events/${slug}/bookings/${id}/move`, { method: "POST", admin: true, body: { fromSlot, toSlot, ...(toLane === undefined ? {} : { toLane }) } });
 
@@ -111,6 +111,29 @@ describe("booking places under concurrent requests", () => {
       await t.env.DB.prepare("UPDATE event_layout SET identity_limit = ? WHERE event_id = ?").bind(limit, e.id).run();
       const answers = await Promise.all(Array.from({ length: 8 }, (_, i) => book(e.slug, slotAt(i), "Rex", "Sam Jones")));
       expect(tally(answers), `round ${round}`).toEqual({ "201": limit, "409 duplicate_booking": 8 - limit });
+      expect((await rows(e.id)).map((r) => r.identity_seq).sort(), `round ${round}`).toEqual(Array.from({ length: limit }, (_, i) => i + 1));
+    }
+  }, 120_000);
+
+  it.each([1, 2, 3])("N parallel bookings of ONE rider and pony (a form with an optional third field that differs every time) with an identity limit of %i: exactly that many are created", async (limit) => {
+    for (let round = 0; round < ITERATIONS; round++) {
+      const e = await insertEvent(t.env.DB, {
+        ...DAY, identityLimit: limit,
+        fields: [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Phone", required: false }],
+      });
+      const answers = await Promise.all(Array.from({ length: 8 }, (_, i) => book(e.slug, slotAt(i), "Ann Lee", "Biscuit", { extra: { field3: `0770090000${i}` } })));
+      expect(tally(answers), `round ${round}`).toEqual({ "201": limit, "409 duplicate_booking": 8 - limit });
+      expect((await rows(e.id)).map((r) => r.identity_seq).sort(), `round ${round}`).toEqual(Array.from({ length: limit }, (_, i) => i + 1));
+    }
+  }, 120_000);
+
+  it.each([1, 2])("N parallel bookings of ONE car reg (a form of one field, the identity) with an identity limit of %i: exactly that many are created", async (limit) => {
+    for (let round = 0; round < ITERATIONS; round++) {
+      const e = await insertEvent(t.env.DB, { ...DAY, identityLimit: limit, fields: [{ label: "Car reg", identity: true }] });
+      const answers = await Promise.all(Array.from({ length: 6 }, (_, i) => send(`/api/events/${e.slug}/bookings`, {
+        method: "POST", body: { slot: slotAt(i), field1: i % 2 ? "AB12 CDE" : "ab12  cde", idempotencyKey: generateBookingToken() },
+      })));
+      expect(tally(answers), `round ${round}`).toEqual({ "201": limit, "409 duplicate_booking": 6 - limit });
       expect((await rows(e.id)).map((r) => r.identity_seq).sort(), `round ${round}`).toEqual(Array.from({ length: limit }, (_, i) => i + 1));
     }
   }, 120_000);

@@ -5,6 +5,7 @@ import {
 import { bookingCutoffOffsetMinutes } from "../../../../server/config";
 import type { RouteHandler } from "../../../../server/env";
 import { bookingWindow, eventSummary, isSlotBookable, loadEventBySlug, type EventRow } from "../../../../server/events";
+import { duplicateMessage } from "../../../../server/fields";
 import { errorResponse, json } from "../../../../server/http";
 import { bookingIcsUrl } from "../../../../server/ics";
 
@@ -89,7 +90,7 @@ export const onRequestPost: RouteHandler<"slug"> = async ({ request, env, params
       } : {}, noStore);
     }
     case "duplicate_booking":
-      return errorResponse(409, "duplicate_booking", "That dog and handler already have a booking for this event.", {}, noStore);
+      return errorResponse(409, "duplicate_booking", duplicateMessage(current.fields), {}, noStore);
     case "slot_taken":
       return errorResponse(409, "slot_taken", "That slot's just gone.", { freeSlots: result.freeSlots }, noStore);
   }

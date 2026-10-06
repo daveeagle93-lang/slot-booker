@@ -1,18 +1,32 @@
 /// <reference types="node" />
 // BACK-COMPAT REPLAY of the v1.0 golden outputs (src/test/fixtures/v1-golden, captured from commit 7810f8c: see its README.md).
 // It builds a local D1 migrated to 0014 only (as a v1.0 deployment is), loads the golden fixture's seed.sql, applies
-// the remaining migrations (0015 to 0017: the bookings rebuild for lanes and places, with real `wrangler d1 migrations
-// apply`), then replays the same scenario as the capture script (the real Worker handlers and the real booking.js /
-// schedule.js in happy-dom, same fixed clock, same normalisation) against the CURRENT code, and compares every output
-// with the committed file. Text outputs (HTML, text, CSV, .ics with its UID, lineup, share, privacy) must be
-// byte-identical. JSON outputs must be identical except for keys the current code ADDS and that are listed, with the
-// reason, in ALLOWED_ADDITIONS below. Nothing else may differ, and an entry that no longer matches anything fails too.
-// The fixture files are never rewritten here.
+// the remaining migrations (0015 to 0018: the bookings rebuild for lanes and places, then the booking form's fields, with real
+// `wrangler d1 migrations apply`), then replays the same scenario as the capture script (the real Worker handlers and the real
+// booking.js / schedule.js in happy-dom, same fixed clock, same normalisation) against the CURRENT code, and compares every output
+// with the committed file. Text outputs (HTML, text, CSV, .ics with its UID, lineup, share, privacy) must be byte-identical.
+// JSON outputs must be identical except for keys the current code ADDS and that are listed, with the reason, in ALLOWED_ADDITIONS
+// below. Nothing else may differ, and an entry that no longer matches anything fails too. The fixture files are never rewritten here.
+//
+// Since 0018 the booking form's fields are configurable, which changes the PUBLIC JSON shapes (dogName and handlerName became
+// field1 and field2, and a booking carries `fields: [{ label, value }]`) and the booking page's DOM attribute names (the ids,
+// names and so on are derived from the field's position). The migrated v1.0 events have the fields Dog and Handler, so the replay
+// can say the same things in the new words and translate the answers back. Everything that translates or allows is in this file's
+// ADAPTERS and WORDING tables below, each with its reason, and each must be USED by the replay or the last test fails:
+//   - REQUEST adapter (adaptRequest): the public POST bodies of the scenario are v1.0's (dogName, handlerName) and are sent as
+//     field1 and field2. The admin requests are NOT adapted: the admin API still accepts the v1.0 names (TRANSITIONAL(6b)).
+//   - RESPONSE normalisers (legacyPublic, legacyCall): new -> v1.0 shape, public answers only, and only when the labels really
+//     are Dog and Handler (anything else throws): `booking.fields` -> dogName and handlerName, the error keys field1 and field2 ->
+//     dogName and handlerName, and the page's own request bodies in the logged calls.
+//   - DOM normaliser (legacyDom): the booking page's ids, names, `for` and `aria-describedby` that are derived from the position
+//     (field-1 and so on), listed one by one, applied to the booking page's innerHTML only. textContent is never normalised.
+//   - WORDING table (WORDING): the only text that may differ: the decision-1 changes (form titles are the bare label, "{Label} is
+//     required.") and the same bare label in the other validation messages, and the default privacy notice (decision 5).
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Window } from "happy-dom";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PRIVACY_NOTICE } from "../server/config";
+import { defaultPrivacyNotice } from "../server/config";
 import { NOW, ORIGIN, passwordEnv, TEST_PASSWORD } from "../server/auth/test-harness";
 import { createWorker } from "../worker";
 import { init as initBooking } from "../../public/booking.js";
@@ -63,7 +77,165 @@ const ALLOWED_ADDITIONS: Allowed[] = [
   { files: /^admin-api\/bookings-(add|move)\.json$/, path: "*.body.bookings", why: "a slot_taken answer lists everyone who holds a place in the lane at that time (the v1.0 `booking` key stays for one lane and one place)" },
   { files: /^admin-api\/bookings-swap\.json$/, path: "*.body.a.lane", why: "a swapped booking says which lane it is in now (a swap can change the lane)" },
   { files: /^admin-api\/bookings-swap\.json$/, path: "*.body.b.lane", why: "a swapped booking says which lane it is in now (a swap can change the lane)" },
+  // The booking form's fields (0018). The public side is translated back by the RESPONSE normalisers; what is added is listed here.
+  { files: /^public-api\/event-(?!not-found)/, path: "body.event.fields", why: "the public event lists the booking form's fields (position, label, required, longest value; never which identify a booking) so the page can render them" },
+  { files: /^public-api\/post-(bookings|slot-started)\.json$/, path: "*.body.event.fields", why: "the event summary in a booking answer carries the fields, as the public event does" },
+  // Admin side: the first two values of every booking are still sent as dogName and handlerName (TRANSITIONAL(6b)), with the labelled `fields` beside them.
+  { files: /^admin-api\/events-list\.json$/, path: "body.events[].fields", why: "the admin list gives each upcoming event's booking form fields" },
+  { files: /^admin-api\/events-list\.json$/, path: "body.events[].identityLimit", why: "the admin list gives how many bookings one identity may hold" },
+  { files: /^admin-api\/detail-/, path: "body.event.fields", why: "the admin detail lists the event's booking form fields for the edit form" },
+  { files: /^admin-api\/detail-/, path: "body.event.identityLimit", why: "the admin detail gives how many bookings one identity may hold" },
+  { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.event.fields", why: "an event as the admin API returns it (detail or saved edit) lists its booking form fields" },
+  { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.event.identityLimit", why: "an event as the admin API returns it (detail or saved edit) gives its identity limit" },
+  { files: /^admin-api\/(detail-|orphan-actions)/, path: "body.orphans[].fields", why: "an orphan booking lists its values by label, as every booking in the admin API does" },
+  { files: /^admin-api\/orphan-actions\.json$/, path: "*.body.orphans[].fields", why: "an orphan booking lists its values by label, as every booking in the admin API does" },
+  { files: /^admin-api\/detail-/, path: "body.slots[].booking.fields", why: "the slot's v1.0 `booking` lists its values by label, as every booking in the admin API does" },
+  { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.slots[].booking.fields", why: "the slot's v1.0 `booking` lists its values by label, as every booking in the admin API does" },
+  { files: /^admin-api\/bookings-(add|move)\.json$/, path: "*.body.booking.fields", why: "a booking added or moved by the admin (or the one holding an identity) lists its values by label" },
+  { files: /^admin-api\/orphan-actions\.json$/, path: "*.body.booking.fields", why: "a booking added by the admin lists its values by label" },
+  { files: /^admin-api\/bookings-clear\.json$/, path: "*.body.removed.fields", why: "a booking cleared by the admin lists its values by label" },
+  { files: /^admin-api\/event-edit\.json$/, path: "*.body.affected[].fields", why: "a booking an edit would strand lists its values by label" },
+  { files: /^admin-api\/event-edit\.json$/, path: "*.body.removed[].fields", why: "a booking an edit removed lists its values by label" },
+  { files: /^admin-api\/bookings-add\.json$/, path: "*.body.fields.field1", why: "the admin add also keys the first value's error by its number (dogName stays, TRANSITIONAL(6b))" },
+  { files: /^admin-api\/bookings-add\.json$/, path: "*.body.fields.field2", why: "the admin add also keys the second value's error by its number (handlerName stays, TRANSITIONAL(6b))" },
+  { files: /^admin-api\/templates-list\.json$/, path: "body.templates[].fields", why: "a template lists its booking form fields" },
+  { files: /^admin-api\/templates-list\.json$/, path: "body.templates[].identityLimit", why: "a template gives how many bookings one identity may hold" },
+  { files: /^admin-api\/template-\d+\.json$/, path: "body.template.fields", why: "a template lists its booking form fields" },
+  { files: /^admin-api\/template-\d+\.json$/, path: "body.template.identityLimit", why: "a template gives how many bookings one identity may hold" },
 ];
+
+// ---------------------------------------------------------------------------------------------------------------------
+// WORDING: the only text that may differ from v1.0. Each row says: in the files matching `files`, the golden text `old` is now
+// `now`. The golden file is never rewritten: the row is applied to what was read from it before the comparison, so a file whose
+// text differs in any other way, or where the old text is still there, fails. A row that matches nothing fails too.
+// ---------------------------------------------------------------------------------------------------------------------
+interface Worded { files: RegExp; old: string; now: string; why: string }
+// Where the validation messages show: the public JSON, the booking page (its error paragraphs), the admin add's JSON and the admin schedule's add panel.
+const MESSAGES_IN = /^(public-api\/post-invalid-input\.json|booking-page\/.*\.(html|txt)|admin-api\/bookings-add\.json|admin-schedule\/e1-add-submitted-empty\.(html|txt)|admin-schedule-flows\/add-invalid-input\.(html|txt))$/;
+const REQUIRED = "decision 1: the required error is \"{Label} is required.\"";
+const BARE = "decision 1: the other validation messages use the same bare label";
+const WORDING: Worded[] = [
+  { files: /^booking-page(-flows)?\/.*\.(html|txt)$/, old: "Dog's name", now: "Dog", why: "decision 1: the booking form's field title is the bare label" },
+  { files: /^booking-page(-flows)?\/.*\.(html|txt)$/, old: "Handler's name", now: "Handler", why: "decision 1: the booking form's field title is the bare label" },
+  { files: MESSAGES_IN, old: "Enter the dog's name.", now: "Dog is required.", why: REQUIRED },
+  { files: MESSAGES_IN, old: "Enter the handler's name.", now: "Handler is required.", why: REQUIRED },
+  { files: MESSAGES_IN, old: "The dog's name must be at most 80 characters.", now: "Dog must be at most 80 characters.", why: BARE },
+  { files: MESSAGES_IN, old: "The handler's name must be at most 80 characters.", now: "Handler must be at most 80 characters.", why: BARE },
+  { files: MESSAGES_IN, old: "The dog's name can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.",
+    now: "Dog can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.", why: BARE },
+  { files: MESSAGES_IN, old: "The handler's name can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.",
+    now: "Handler can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.", why: BARE },
+  { files: MESSAGES_IN, old: "The dog's name can't contain line or paragraph separators.", now: "Dog can't contain line or paragraph separators.", why: BARE },
+  { files: MESSAGES_IN, old: "The dog's name can't contain control characters.", now: "Dog can't contain control characters.", why: BARE },
+  { files: MESSAGES_IN, old: "The dog's name can't contain unpaired surrogate characters.", now: "Dog can't contain unpaired surrogate characters.", why: BARE },
+  { files: MESSAGES_IN, old: "The dog's name must contain at least one letter or number.", now: "Dog must contain at least one letter or number.", why: BARE },
+  { files: MESSAGES_IN, old: "The handler's name must contain at least one letter or number.", now: "Handler must contain at least one letter or number.", why: BARE },
+  { files: MESSAGES_IN, old: "The dog's name can't contain private-use or blank-looking characters. Try plain text.", now: "Dog can't contain private-use or blank-looking characters. Try plain text.", why: BARE },
+  { files: /^(privacy\/.*\.txt|public-api\/event-.*\.json|booking-page(-flows)?\/.*\.(html|txt))$/,
+    old: "We store your name, your dog's name and the slot you choose so the club can run the event.",
+    now: "We store the details you enter on this form (Dog, Handler) and the slot you choose so the club can run the event.",
+    why: "decision 5: the default privacy notice is built from the labels of the form; only its first sentence names the fields, the rest is v1.0's" },
+];
+const wordingHits = new Map<Worded, Set<string>>(WORDING.map((w) => [w, new Set<string>()]));
+const worded = (rel: string, golden: string): string => {
+  let out = golden;
+  for (const w of WORDING) {
+    if (!w.files.test(rel) || !out.includes(w.old)) continue;
+    wordingHits.get(w)!.add(rel);
+    out = out.replaceAll(w.old, w.now);
+  }
+  return out;
+};
+
+// ---------------------------------------------------------------------------------------------------------------------
+// ADAPTERS: translations between the v1.0 shapes the scenario is written in and the current ones. Every use is counted.
+// ---------------------------------------------------------------------------------------------------------------------
+const adapterHits = new Map<string, number>();
+const used = (name: string) => adapterHits.set(name, (adapterHits.get(name) ?? 0) + 1);
+const ADAPTERS = [
+  "request: public POST dogName -> field1", "request: public POST handlerName -> field2",
+  "response: booking.fields -> dogName and handlerName", "response: error key field1 -> dogName", "response: error key field2 -> handlerName",
+  "call log: page request field1 -> dogName", "call log: page request field2 -> handlerName",
+  "dom: <label for=field-1>", "dom: <label for=field-2>", "dom: input id field-1", "dom: input id field-2", "dom: input name field1", "dom: input name field2",
+  "dom: input aria-describedby field-1-error", "dom: input aria-describedby field-2-error", "dom: error id field-1-error", "dom: error id field-2-error",
+  "dom: handler input autocomplete off -> name",
+];
+
+/** REQUEST adapter: a v1.0 public booking body (dogName, handlerName) as the current public API takes it (field1, field2). Anything else is left alone. */
+function adaptRequest(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (k === "dogName") { used("request: public POST dogName -> field1"); out.field1 = v; }
+    else if (k === "handlerName") { used("request: public POST handlerName -> field2"); out.field2 = v; }
+    else out[k] = v;
+  }
+  return out;
+}
+
+const isDogHandler = (labels: string[]) => labels.length === 2 && labels[0] === "Dog" && labels[1] === "Handler";
+
+/**
+ * RESPONSE normaliser: a public answer as v1.0 shaped it. `booking.fields` (labelled values) becomes dogName and handlerName and the
+ * error keys field1 and field2 become dogName and handlerName. It only exists for the labels Dog and Handler: anything else throws,
+ * so a changed label or a third field can never be hidden by it. `event.fields` is not touched (it is an allowed addition).
+ */
+function legacyPublic(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  const out: Record<string, any> = { ...(body as object) };
+  if (out.booking && Array.isArray(out.booking.fields)) {
+    const { fields, ...rest } = out.booking;
+    if (!isDogHandler(fields.map((f: { label: string }) => f.label))) throw new Error(`the v1.0 shape only exists for the labels Dog and Handler, got ${JSON.stringify(fields)}`);
+    used("response: booking.fields -> dogName and handlerName");
+    out.booking = { ...rest, dogName: fields[0].value, handlerName: fields[1].value };
+  }
+  if (out.fields && typeof out.fields === "object" && !Array.isArray(out.fields)) {
+    const renamed: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(out.fields)) {
+      if (k === "field1") { used("response: error key field1 -> dogName"); renamed.dogName = v; }
+      else if (k === "field2") { used("response: error key field2 -> handlerName"); renamed.handlerName = v; }
+      else if (/^field\d$/.test(k)) throw new Error(`the v1.0 shape only exists for two fields, got ${k}`);
+      else renamed[k] = v;
+    }
+    out.fields = renamed;
+  }
+  return out;
+}
+
+/** The booking page's own request body as it is written in the call log: field1 and field2 as v1.0 named them. */
+function legacyCall(url: string, method: string, logged: any): any {
+  if (method !== "POST" || !/^\/api\/events\/[^/]+\/bookings$/.test(url) || !logged || typeof logged !== "object") return logged;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(logged)) {
+    if (k === "field1") { used("call log: page request field1 -> dogName"); out.dogName = v; }
+    else if (k === "field2") { used("call log: page request field2 -> handlerName"); out.handlerName = v; }
+    else if (/^field\d$/.test(k)) throw new Error(`the v1.0 shape only exists for two fields, got ${k}`);
+    else out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * DOM normaliser for the booking page's innerHTML: the attributes that are now derived from the field's position, one by one.
+ * Only these exact attributes are rewritten (the input's id, name and aria-describedby, its error paragraph's id, the label's `for`,
+ * and the second input's autocomplete, which was "name" for a handler's name and is "off" for every field now: a stored label can't
+ * tell the browser what kind of value it is). Every other attribute, and all text, must be the same as v1.0's.
+ */
+function legacyDom(html: string): string {
+  let out = html.replace(/(<input id="field-2"[^>]*?) autocomplete="off"/g, (_m, head) => { used("dom: handler input autocomplete off -> name"); return `${head} autocomplete="name"`; });
+  const swap = (name: string, from: string, to: string) => { out = out.replaceAll(from, () => { used(name); return to; }); };
+  swap("dom: <label for=field-1>", 'for="field-1"', 'for="dog-name"');
+  swap("dom: <label for=field-2>", 'for="field-2"', 'for="handler-name"');
+  swap("dom: input id field-1", 'id="field-1"', 'id="dog-name"');
+  swap("dom: input id field-2", 'id="field-2"', 'id="handler-name"');
+  swap("dom: input name field1", 'name="field1"', 'name="dog"');
+  swap("dom: input name field2", 'name="field2"', 'name="handler"');
+  swap("dom: input aria-describedby field-1-error", 'aria-describedby="field-1-error"', 'aria-describedby="dog-error"');
+  swap("dom: input aria-describedby field-2-error", 'aria-describedby="field-2-error"', 'aria-describedby="handler-error"');
+  swap("dom: error id field-1-error", 'id="field-1-error"', 'id="dog-error"');
+  swap("dom: error id field-2-error", 'id="field-2-error"', 'id="handler-error"');
+  return out;
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Output helpers: `save` compares one output with the golden file of the same name instead of writing it
@@ -94,7 +266,7 @@ const matchesPattern = (pattern: string, path: string): boolean =>
 function save(rel: string, content: string, _description?: string) {
   if (compared.has(rel)) throw new Error(`compared twice: ${rel}`);
   compared.add(rel);
-  const golden = readFileSync(join(FIXTURES, rel), "utf8");
+  const golden = worded(rel, readFileSync(join(FIXTURES, rel), "utf8"));
   if (!rel.endsWith(".json")) {
     if (content !== golden) failures.push(`${rel}: differs from the golden file\n--- golden\n${golden}\n--- now\n${content}`);
     return;
@@ -137,7 +309,7 @@ const T = {
 const tokenOf = (id: number) => `tok-b${String(id).padStart(2, "0")}-0123456789abcdef`;
 const FIXTURE_TOKENS = new Set(Array.from({ length: 16 }, (_, i) => tokenOf(i + 1))); // the seeded bookings 1 to 16
 
-// A database migrated to 0014 and holding the golden seed, then taken through 0015 to 0017 by `wrangler d1 migrations apply`:
+// A database migrated to 0014 and holding the golden seed, then taken through 0015 to 0018 by `wrangler d1 migrations apply`:
 // what a v1.0 deployment looks like after updating. Built once; each scenario works on its own copy.
 let migrated: StagedDb;
 beforeAll(async () => {
@@ -145,7 +317,7 @@ beforeAll(async () => {
   // One statement per line (the fixture's own rule), so a semicolon inside a text value is not a split point.
   const seed = readFileSync(join(FIXTURES, "seed.sql"), "utf8").split("\n").filter((l) => l.trim() !== "" && !l.startsWith("--"));
   await v1.env.DB.batch(seed.map((s) => v1.env.DB.prepare(s)));
-  await v1.applyThrough("0017");
+  await v1.applyThrough("0018");
   migrated = v1;
 }, 300_000);
 afterAll(async () => { await migrated?.dispose(); });
@@ -190,7 +362,7 @@ function pageFetch(env: any, session?: { cookie: string; csrf: string }) {
     let body = init.body;
     let logged: any = null;
     if (typeof body === "string") { try { logged = JSON.parse(body); } catch { logged = body; } if (logged && logged.idempotencyKey) logged = { ...logged, idempotencyKey: "<key>" }; }
-    calls.push({ method, url, body: logged });
+    calls.push({ method, url, body: legacyCall(url, method, logged) });
     pending++;
     try {
       return await worker.fetch(new Request(`${ORIGIN}${url}`, { method, headers, body }), env);
@@ -249,14 +421,15 @@ function newWindow() {
   return window;
 }
 
-function makeDomSaver(dir: string, pageName: string) {
+/** `normalise` rewrites the page's innerHTML before it is compared (the booking page's legacyDom); the text is never rewritten. */
+function makeDomSaver(dir: string, pageName: string, normalise: (html: string) => string = (html) => html) {
   const meta: Record<string, unknown> = {};
   return {
     meta,
     /** Writes `<dir>/<state>.html` (pretty innerHTML of <body>) and `<dir>/<state>.txt` (textContent of <body>). */
     state(name: string, window: any, description: string, extra: Record<string, unknown> = {}) {
       const doc = window.document;
-      save(`${dir}/${name}.html`, `${pretty(norm(doc.body.innerHTML))}\n`, `${pageName}, ${description}: innerHTML of <body>, with each ">" followed directly by "<" broken onto a new line`);
+      save(`${dir}/${name}.html`, `${pretty(norm(normalise(doc.body.innerHTML)))}\n`, `${pageName}, ${description}: innerHTML of <body>, with each ">" followed directly by "<" broken onto a new line`);
       save(`${dir}/${name}.txt`, `${norm(doc.body.textContent)}\n`, `${pageName}, ${description}: textContent of <body>`);
       meta[name] = normDeep({ title: doc.title, ...extra });
     },
@@ -342,7 +515,7 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
     // --- Privacy notice
     const e1json = (await (await call(pub, "GET", `/api/events/${SLUG.e1}`)).json()) as any;
     save("privacy/notice-in-api.txt", `${e1json.privacyNotice}\n`, "privacyNotice as GET /api/events/:slug returns it (no PRIVACY_NOTICE set)");
-    save("privacy/default-notice.txt", `${DEFAULT_PRIVACY_NOTICE}\n`, "DEFAULT_PRIVACY_NOTICE constant from src/server/config.ts");
+    save("privacy/default-notice.txt", `${defaultPrivacyNotice(["Dog", "Handler"])}\n`, "the default notice from src/server/config.ts, for the labels Dog and Handler");
 
     // --- Admin JSON
     saveJson("admin-api/events-list.json", await callSnap(c, "GET", "/api/admin/events"), "GET /api/admin/events: upcoming, past and archived groups, default share message");
@@ -392,7 +565,7 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
       "buildShareMessage for event 4 (its own share message)");
 
     // --- Booking page states
-    const bp = makeDomSaver("booking-page", "booking page");
+    const bp = makeDomSaver("booking-page", "booking page", legacyDom);
     {
       const page = await openBooking(pub, SLUG.e1);
       bp.state("e1-open", page.window, "event 1 open with free slots", { calls: page.net.calls });
@@ -403,8 +576,8 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
       const attempt = async (name: string, desc: string, dog: string, handler: string) => {
         const p = await openBooking(pub, SLUG.e1);
         slotButton(p, T["1120"]).click();
-        typeInto(p, "#dog-name", dog);
-        typeInto(p, "#handler-name", handler);
+        typeInto(p, "#field-1", dog);
+        typeInto(p, "#field-2", handler);
         await submitBooking(p);
         bp.state(name, p.window, desc, { calls: p.net.calls });
       };
@@ -485,8 +658,11 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
     current = await freshEnv();
     const env = await appEnv(current.env.DB);
     const pub: Ctx = { env };
-    const post = (slug: string, body: unknown, extra: Record<string, string> = {}, ctx: Ctx = pub) =>
-      callSnap(ctx, "POST", `/api/events/${slug}/bookings`, body, extra);
+    // The scenario's bodies are v1.0's: the REQUEST adapter sends them as field1 and field2, the RESPONSE normaliser reads the answer as v1.0 shaped it.
+    const post = async (slug: string, body: unknown, extra: Record<string, string> = {}, ctx: Ctx = pub) => {
+      const r = await callSnap(ctx, "POST", `/api/events/${slug}/bookings`, adaptRequest(body), extra);
+      return { ...r, body: legacyPublic(r.body) };
+    };
     const ok = (over: Record<string, unknown> = {}) => ({ slot: T["1120"], dogName: "Willow", handlerName: "Gail Park", idempotencyKey: "idem-new-created-0001", ...over });
 
     const results: Record<string, unknown> = {};
@@ -567,15 +743,15 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
     const db = current.env.DB;
     const env = await appEnv(db);
     const pub: Ctx = { env };
-    const bp = makeDomSaver("booking-page-flows", "booking page flow");
+    const bp = makeDomSaver("booking-page-flows", "booking page flow", legacyDom);
 
     // a successful booking and its confirmation
     {
       const clip: string[] = [];
       const page = await openBooking(pub, SLUG.e1, clip);
       slotButton(page, T["1120"]).click();
-      typeInto(page, "#dog-name", "Willow");
-      typeInto(page, "#handler-name", "Gail Park");
+      typeInto(page, "#field-1", "Willow");
+      typeInto(page, "#field-2", "Gail Park");
       await submitBooking(page);
       bp.state("e1-confirmation", page.window, "after booking 11:20 as Willow / Gail Park: the confirmation", { calls: page.net.calls });
       buttonByText(page, "Copy booking").click();
@@ -587,8 +763,8 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
     {
       const page = await openBooking(pub, SLUG.e1);
       slotButton(page, T["1230"]).click();
-      typeInto(page, "#dog-name", "ZOË");
-      typeInto(page, "#handler-name", "ann lee");
+      typeInto(page, "#field-1", "ZOË");
+      typeInto(page, "#field-2", "ann lee");
       await submitBooking(page);
       bp.state("e1-duplicate-booking", page.window, "booking 12:30 as ZOË / ann lee, which duplicates booking 2: the form error", { calls: page.net.calls });
     }
@@ -600,8 +776,8 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
         // The one line of the scenario written for the new schema: the same booking (id, slot, names, time, token), in event 1's lane at place 1.
         "INSERT INTO bookings (id, event_id, lane_id, slot_start_utc, place, value_1, value_2, created_at, identity_key, token) VALUES (100, 1, (SELECT id FROM event_lanes WHERE event_id = 1), ?, 1, 'Racer', 'Una Frost', '2026-10-01T11:59:00Z', 'racer' || char(31) || 'una frost', 'tok-b100-0123456789abcdef')",
       ).bind(T["1230"]).run();
-      typeInto(page, "#dog-name", "Comet");
-      typeInto(page, "#handler-name", "Dee Marsh");
+      typeInto(page, "#field-1", "Comet");
+      typeInto(page, "#field-2", "Dee Marsh");
       await submitBooking(page);
       bp.state("e1-slot-taken-refresh", page.window, "12:30 was booked by someone else after the page loaded: slot-taken notice and refreshed slots", { calls: page.net.calls });
     }
@@ -611,16 +787,16 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
       slotButton(page, "2026-10-20T18:10:00Z").click();
       await db.prepare("UPDATE events SET end_utc = '2026-10-20T17:45:00Z' WHERE id = 2").run();
       await db.prepare("DELETE FROM breaks WHERE event_id = 2").run();
-      typeInto(page, "#dog-name", "Dash");
-      typeInto(page, "#handler-name", "Eli Ward");
+      typeInto(page, "#field-1", "Dash");
+      typeInto(page, "#field-2", "Eli Ward");
       await submitBooking(page);
       bp.state("e2-invalid-slot-after-edit", page.window, "event 2's end was moved earlier after the page loaded; the chosen 19:10 slot no longer exists", { calls: page.net.calls });
       // and then the event is archived under an open form
       const page2 = await openBooking(pub, SLUG.e2);
       slotButton(page2, "2026-10-20T17:20:00Z").click();
       await db.prepare("UPDATE events SET archived = 1 WHERE id = 2").run();
-      typeInto(page2, "#dog-name", "Echo");
-      typeInto(page2, "#handler-name", "Fay Lowe");
+      typeInto(page2, "#field-1", "Echo");
+      typeInto(page2, "#field-2", "Fay Lowe");
       await submitBooking(page2);
       bp.state("e2-archived-after-load", page2.window, "event 2 was archived after the page loaded: bookings closed (410)", { calls: page2.net.calls });
     }
@@ -631,8 +807,8 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
       const page = await openBooking(late, SLUG.e4);
       slotButton(page, "2026-11-07T13:30:00Z").click();
       vi.setSystemTime(new Date("2026-11-07T13:40:00Z"));
-      typeInto(page, "#dog-name", "Flash");
-      typeInto(page, "#handler-name", "Gus Rowe");
+      typeInto(page, "#field-1", "Flash");
+      typeInto(page, "#field-2", "Gus Rowe");
       await submitBooking(page);
       bp.state("e4-slot-started", page.window, "the 13:30 slot started between choosing it and submitting: 'already started' notice", { calls: page.net.calls });
       vi.setSystemTime(new Date(CLOCK));
@@ -799,5 +975,8 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
     expect(failures).toEqual([]);
     const unused = ALLOWED_ADDITIONS.filter((a) => hits.get(a)!.size === 0).map((a) => `${a.files} ${a.path}`);
     expect(unused, "allowed additions that no output contains any more").toEqual([]);
+    expect(WORDING.filter((w) => wordingHits.get(w)!.size === 0).map((w) => w.old), "wording rows that match no golden text").toEqual([]);
+    expect(ADAPTERS.filter((name) => !adapterHits.get(name)), "adapters the replay never used").toEqual([]);
+    expect([...adapterHits.keys()].filter((name) => !ADAPTERS.includes(name)), "adapters that are not listed").toEqual([]);
   });
 });

@@ -58,6 +58,8 @@ const sql: string[] = [
    VALUES (${q(slug)}, ${q(event.name)}, ${q(event.start)}, ${q(event.end)}, ${event.sessionMinutes}, ${event.gapMinutes}, ${event.costPence}, ${q(event.postcode)}, ${q(event.details)});`,
   `INSERT INTO event_layout (event_id) VALUES ((SELECT id FROM events WHERE slug = ${q(slug)}));`,
   `INSERT INTO event_lanes (event_id, position, name) VALUES ((SELECT id FROM events WHERE slug = ${q(slug)}), 1, '');`,
+  // The sample is a dog club's trial day: Dog and Handler, both required and both in the identity.
+  `INSERT INTO event_fields (event_id, position, label, required, max_length, in_identity) VALUES ((SELECT id FROM events WHERE slug = ${q(slug)}), 1, 'Dog', 1, 80, 1), ((SELECT id FROM events WHERE slug = ${q(slug)}), 2, 'Handler', 1, 80, 1);`,
   ...event.breaks.map((b) =>
     `INSERT INTO breaks (event_id, start_utc, end_utc) VALUES ((SELECT id FROM events WHERE slug = ${q(slug)}), ${q(b.start)}, ${q(b.end)});`),
 ];

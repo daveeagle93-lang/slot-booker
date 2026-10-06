@@ -1,13 +1,17 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PRIVACY_NOTICE } from "../src/server/config";
+import { defaultPrivacyNotice } from "../src/server/config";
 import { init } from "./booking.js";
 
 const SLUG = "abcdefghijklmnop";
+const DOG_HANDLER = [{ position: 1, label: "Dog", required: true, maxLength: 80 }, { position: 2, label: "Handler", required: true, maxLength: 80 }];
 const EVENT = {
   slug: SLUG, name: "Trial Day", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T15:00:00Z",
-  costPence: 1500, venuePostcode: "SW1A 1AA", details: "Bring water.\nBe kind.", archived: false,
+  costPence: 1500, venuePostcode: "SW1A 1AA", details: "Bring water.\nBe kind.", archived: false, fields: DOG_HANDLER,
 };
+const PRIVACY = defaultPrivacyNotice(["Dog", "Handler"]);
+/** The booking as the server answers for the Dog and Handler form: each value under its label. */
+const dogHandler = (dog: string, handler: string) => [{ label: "Dog", value: dog }, { label: "Handler", value: handler }];
 const slot = (start: string, end: string, status: "free" | "taken" | "past" = "free") => ({ start, end, status });
 const SLOTS = [
   slot("2026-06-13T08:00:00Z", "2026-06-13T08:15:00Z", "taken"),
@@ -21,9 +25,9 @@ const reply = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const OPEN = { open: true, closesAt: "2026-06-13T08:00:00Z" };
 const getOk = (event = EVENT, slots: unknown[] = SLOTS, extra: Record<string, unknown> = {}) =>
-  reply(200, { event, slots, bookings: OPEN, privacyNotice: DEFAULT_PRIVACY_NOTICE, ...extra });
+  reply(200, { event, slots, bookings: OPEN, privacyNotice: PRIVACY, ...extra });
 const created = () => reply(201, {
-  booking: { slot: { start: SLOTS[1].start, end: SLOTS[1].end }, dogName: "Biscuit", handlerName: "Ann Lee" },
+  booking: { slot: { start: SLOTS[1].start, end: SLOTS[1].end }, fields: dogHandler("Biscuit", "Ann Lee") },
   event: EVENT, icsUrl: ICS_URL,
 });
 
@@ -61,8 +65,8 @@ const type = (sel: string, value: string) => {
 };
 const submit = () => form().dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 const fill = (dog = "Biscuit", handler = "Ann Lee") => {
-  type("#dog-name", dog);
-  type("#handler-name", handler);
+  type("#field-1", dog);
+  type("#field-2", handler);
 };
 const text = () => document.body.textContent ?? "";
 
@@ -210,7 +214,7 @@ describe("booking", () => {
     expect(post.url).toBe(`/api/events/${SLUG}/bookings`);
     expect((post.init?.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
     expect(JSON.parse(post.init!.body as string)).toEqual({
-      slot: SLOTS[1].start, dogName: "Biscuit", handlerName: "Ann Lee", idempotencyKey: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+      slot: SLOTS[1].start, field1: "Biscuit", field2: "Ann Lee", idempotencyKey: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
     });
 
     expect(text()).toContain("Biscuit");
@@ -233,8 +237,8 @@ describe("booking", () => {
     submit();
     await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
     const body = JSON.parse(calls.find((c) => c.init?.method === "POST")!.init!.body as string);
-    expect(body.dogName).toBe("  Biscuit ");
-    expect(body.handlerName).toBe("ann  lee");
+    expect(body.field1).toBe("  Biscuit ");
+    expect(body.field2).toBe("ann  lee");
   });
 
   it("disables the button while pending and never double-posts", async () => {
@@ -281,13 +285,13 @@ describe("booking", () => {
     expect(slotButtons()[1].getAttribute("aria-pressed")).toBe("false");
     expect(text()).toContain("1 slot left");
     expect(form().hidden).toBe(true);
-    expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
-    expect(($("#handler-name") as HTMLInputElement).value).toBe("Ann Lee");
+    expect(($("#field-1") as HTMLInputElement).value).toBe("Biscuit");
+    expect(($("#field-2") as HTMLInputElement).value).toBe("Ann Lee");
     expect(calls.filter((c) => c.init?.method !== "POST")).toHaveLength(2); // the load, then the refetch
 
     slotButton("10:00").click();
     expect(form().hidden).toBe(false);
-    expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
+    expect(($("#field-1") as HTMLInputElement).value).toBe("Biscuit");
   });
 
   it("handles slot_started like slot_taken: refetches, keeps the started slots, its own message, typed names kept", async () => {
@@ -305,8 +309,8 @@ describe("booking", () => {
     expect(document.activeElement).toBe($("#notice"));
     expect(text()).toContain("1 slot left");
     expect(form().hidden).toBe(true);
-    expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
-    expect(($("#handler-name") as HTMLInputElement).value).toBe("Ann Lee");
+    expect(($("#field-1") as HTMLInputElement).value).toBe("Biscuit");
+    expect(($("#field-2") as HTMLInputElement).value).toBe("Ann Lee");
     expect(calls.filter((c) => c.init?.method !== "POST")).toHaveLength(2);
   });
 
@@ -359,24 +363,24 @@ describe("booking", () => {
     await vi.waitFor(() => expect(form().textContent).toContain("already have a booking"));
     expect(form().hidden).toBe(false);
     expect(slotButton("09:20").getAttribute("aria-pressed")).toBe("true");
-    expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
+    expect(($("#field-1") as HTMLInputElement).value).toBe("Biscuit");
     expect((form().querySelector("button[type=submit]") as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("shows field errors for invalid_input", async () => {
     await start(routes(() => reply(400, {
       error: { code: "invalid_input", message: "Check the highlighted fields." },
-      fields: { dogName: "Enter your dog's name." },
+      fields: { field1: "Dog is required." },
     })));
     slotButton("09:20").click();
     fill("Biscuit", "Ann");
     submit();
-    await vi.waitFor(() => expect(form().textContent).toContain("Enter your dog's name."));
-    const dog = $("#dog-name");
+    await vi.waitFor(() => expect(form().textContent).toContain("Dog is required."));
+    const dog = $("#field-1");
     expect(dog.getAttribute("aria-invalid")).toBe("true");
     const err = document.getElementById(dog.getAttribute("aria-describedby")!.split(" ")[0])!;
-    expect(err.textContent).toBe("Enter your dog's name.");
-    expect($("#handler-name").getAttribute("aria-invalid")).not.toBe("true");
+    expect(err.textContent).toBe("Dog is required.");
+    expect($("#field-2").getAttribute("aria-invalid")).not.toBe("true");
   });
 
   it("refetches on invalid_slot", async () => {
@@ -409,8 +413,8 @@ describe("booking", () => {
     expect(document.activeElement).toBe($("#notice"));
     expect(calls.filter((c) => c.init?.method !== "POST")).toHaveLength(2);
     expect(form().hidden).toBe(true);
-    expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
-    expect(($("#handler-name") as HTMLInputElement).value).toBe("Ann Lee");
+    expect(($("#field-1") as HTMLInputElement).value).toBe("Biscuit");
+    expect(($("#field-2") as HTMLInputElement).value).toBe("Ann Lee");
   });
 
   it.each(["event_archived", "bookings_closed"])("switches to the closed state on 410 %s", async (code) => {
@@ -436,7 +440,7 @@ describe("booking", () => {
 
   describe("a key reused with a different payload", () => {
     const original = {
-      booking: { slot: { start: SLOTS[1].start, end: SLOTS[1].end }, dogName: "Biscuit", handlerName: "Ann Leee" },
+      booking: { slot: { start: SLOTS[1].start, end: SLOTS[1].end }, fields: dogHandler("Biscuit", "Ann Leee") },
       event: EVENT, icsUrl: ICS_URL,
     };
     const reuse = { error: { code: "idempotency_key_reuse", message: "An earlier attempt was saved." } };
@@ -456,7 +460,7 @@ describe("booking", () => {
       await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
 
       expect(calls.filter((c) => c.init?.method === "POST")).toHaveLength(2);
-      expect(JSON.parse(calls.filter((c) => c.init?.method === "POST")[1].init!.body as string).handlerName).toBe("Ann Lee");
+      expect(JSON.parse(calls.filter((c) => c.init?.method === "POST")[1].init!.body as string).field2).toBe("Ann Lee");
       const handlerRow = [...document.querySelectorAll("dt")].find((dt) => dt.textContent === "Handler")!;
       expect(handlerRow.nextElementSibling!.textContent).toBe("Ann Leee"); // as stored, not as retyped
       expect(text()).toContain("09:20");
@@ -483,7 +487,7 @@ describe("booking", () => {
 
     it("renders the notice and the original booking as text", async () => {
       const evil = "<img src=x onerror=alert(1)>";
-      await start(routes(() => reply(422, { ...reuse, ...original, booking: { ...original.booking, dogName: evil } })));
+      await start(routes(() => reply(422, { ...reuse, ...original, booking: { ...original.booking, fields: dogHandler(evil, "Ann Leee") } })));
       slotButton("09:20").click();
       fill();
       submit();
@@ -515,7 +519,7 @@ describe("booking", () => {
     submit();
     await vi.waitFor(() => expect(form().textContent).toContain("Something went wrong. Please try again."));
     expect(form().hidden).toBe(false);
-    expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
+    expect(($("#field-1") as HTMLInputElement).value).toBe("Biscuit");
     expect(slotButton("09:20").getAttribute("aria-pressed")).toBe("true");
     const button = form().querySelector("button[type=submit]") as HTMLButtonElement;
     expect(button.disabled).toBe(false);
@@ -601,7 +605,7 @@ describe("privacy notice", () => {
     await start(routes(() => created()));
     slotButton("09:20").click();
     expect(heading().closest("form")).toBe(form());
-    expect(heading().parentElement!.textContent).toContain(DEFAULT_PRIVACY_NOTICE);
+    expect(heading().parentElement!.textContent).toContain(PRIVACY);
     const submitButton = form().querySelector("button[type=submit]")!;
     expect(heading().compareDocumentPosition(submitButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -679,7 +683,7 @@ describe("text safety", () => {
 
   it("renders names and details in the confirmation as text", async () => {
     await start(routes(() => reply(201, {
-      booking: { slot: { start: SLOTS[1].start, end: SLOTS[1].end }, dogName: evil, handlerName: "<u>me</u>" },
+      booking: { slot: { start: SLOTS[1].start, end: SLOTS[1].end }, fields: dogHandler(evil, "<u>me</u>") },
       event: { ...EVENT, details: "<b>hi</b>" }, icsUrl: ICS_URL,
     })));
     slotButton("09:20").click();
@@ -868,7 +872,7 @@ describe("branding, privacy contact and the admin notice", () => {
       expect(document.querySelector(".site-header")).toBeNull();
       slotButton("09:20").click();
       fill("Biscuit", "Ann Lee");
-      const dogInput = $("#dog-name");
+      const dogInput = $("#field-1");
 
       arrive(SETTINGS);
       await vi.waitFor(() => expect(document.querySelector(".site-header")).not.toBeNull());
@@ -879,9 +883,9 @@ describe("branding, privacy contact and the admin notice", () => {
         .toBe("Questions about your details, or want them deleted? Contact Ann Lee, ann@barkside.example.");
       expect(document.querySelectorAll(".privacy p:last-child a")).toHaveLength(1);
       // The same form and the same inputs, so nothing typed was lost and the chosen slot is still chosen.
-      expect($("#dog-name")).toBe(dogInput);
-      expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
-      expect(($("#handler-name") as HTMLInputElement).value).toBe("Ann Lee");
+      expect($("#field-1")).toBe(dogInput);
+      expect(($("#field-1") as HTMLInputElement).value).toBe("Biscuit");
+      expect(($("#field-2") as HTMLInputElement).value).toBe("Ann Lee");
       expect(form().hidden).toBe(false);
       expect(slotButton("09:20").getAttribute("aria-pressed")).toBe("true");
     });
@@ -914,7 +918,7 @@ describe("lanes and places", () => {
     [...groups().find((g) => g.getAttribute("aria-label") === time)!.querySelectorAll<HTMLButtonElement>("button")];
   const laneButton = (time: string, lane: string) => laneButtons(time).find((b) => b.querySelector(".lane-name")!.textContent === lane)!;
   const bookedIn = (lane = LANES[0]) => reply(201, {
-    booking: { slot: { start: START.b, end: end(START.b) }, lane, dogName: "Biscuit", handlerName: "Ann Lee" },
+    booking: { slot: { start: START.b, end: end(START.b) }, lane, fields: dogHandler("Biscuit", "Ann Lee") },
     event: LANE_EVENT, icsUrl: ICS_URL,
   });
   const posted = (calls: Call[]) => JSON.parse(String(calls.find((c) => c.init?.method === "POST")!.init!.body));
@@ -980,7 +984,7 @@ describe("lanes and places", () => {
       fill();
       submit();
       await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
-      expect(posted(calls)).toMatchObject({ slot: START.b, laneId: 12, dogName: "Biscuit", handlerName: "Ann Lee" });
+      expect(posted(calls)).toMatchObject({ slot: START.b, laneId: 12, field1: "Biscuit", field2: "Ann Lee" });
       const terms = [...document.querySelectorAll("dt")].map((d) => d.textContent);
       expect(terms).toEqual(["When", "Dog", "Handler", "Lane", "Venue", "Cost"]);
       expect(document.querySelectorAll("dd")[3].textContent).toBe("Ring 2");
@@ -1011,7 +1015,7 @@ describe("lanes and places", () => {
       expect(document.querySelectorAll(".slot-group button[aria-pressed='true']")).toHaveLength(0);
       expect(form().hidden).toBe(true);
       expect(document.activeElement).toBe($("#notice"));
-      expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
+      expect(($("#field-1") as HTMLInputElement).value).toBe("Biscuit");
     });
 
     it("replaces the list with the refetched one after slot_taken, started times included", async () => {
@@ -1030,13 +1034,13 @@ describe("lanes and places", () => {
 
     it("shows 'Choose a lane.' as the form error for fields.laneId, beside field errors", async () => {
       await start(routes(() => reply(400, {
-        error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: { laneId: "Choose a lane.", dogName: "Too short." },
+        error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: { laneId: "Choose a lane.", field1: "Too short." },
       }), lanesGet()));
       laneButton("09:40", "Ring 1").click();
       fill();
       submit();
       await vi.waitFor(() => expect($(".form-error").textContent).toBe("Choose a lane."));
-      expect($("#dog-error").textContent).toBe("Too short.");
+      expect($("#field-1-error").textContent).toBe("Too short.");
     });
 
     it("refetches on event_changed and shows the new lanes", async () => {
@@ -1056,7 +1060,7 @@ describe("lanes and places", () => {
     it("shows the booking and the Lane row when the key was reused and the server answers with the saved booking", async () => {
       await start(routes(() => reply(422, {
         error: { code: "idempotency_key_reuse", message: "x" },
-        booking: { slot: { start: START.b, end: end(START.b) }, lane: LANES[0], dogName: "Biscuit", handlerName: "Ann Lee" },
+        booking: { slot: { start: START.b, end: end(START.b) }, lane: LANES[0], fields: dogHandler("Biscuit", "Ann Lee") },
         event: LANE_EVENT, icsUrl: ICS_URL,
       }), lanesGet()));
       laneButton("09:40", "Ring 2").click();
@@ -1166,5 +1170,147 @@ describe("lanes and places", () => {
       await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
       expect([...document.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["When", "Dog", "Handler", "Venue", "Cost"]);
     });
+  });
+});
+
+describe("the form of an event's own fields", () => {
+  const field = (position: number, label: string, o: { required?: boolean; maxLength?: number } = {}) => ({ position, label, required: o.required ?? true, maxLength: o.maxLength ?? 80 });
+  const FOUR = [field(1, "Rider"), field(2, "Pony"), field(3, "Phone", { required: false, maxLength: 12 }), field(4, "Notes", { required: false, maxLength: 40 })];
+  const withFields = (fields: ReturnType<typeof field>[]) => ({ ...EVENT, fields });
+  const open = async (fields: ReturnType<typeof field>[], post: Handler = () => created()) => {
+    const r = await start(routes(post, () => getOk(withFields(fields) as typeof EVENT, SLOTS, { privacyNotice: defaultPrivacyNotice(fields.map((f) => f.label)) })));
+    slotButton("09:20").click();
+    return r;
+  };
+  const inputs = () => [...form().querySelectorAll<HTMLInputElement>("input")];
+  const labels = () => [...form().querySelectorAll("label")].map((l) => l.textContent);
+  const posted = (calls: Call[]) => JSON.parse(String(calls.find((c) => c.init?.method === "POST")!.init!.body));
+
+  it("renders Dog and Handler as v1.0 did, by their bare labels: ids, names, limits and keyboard hints included", async () => {
+    await open(DOG_HANDLER);
+    expect(labels()).toEqual(["Dog", "Handler"]);
+    expect(inputs().map((i) => [i.id, i.name, i.type, i.required, i.getAttribute("maxlength"), i.getAttribute("autocapitalize"), i.getAttribute("autocomplete"), i.getAttribute("enterkeyhint"), i.getAttribute("aria-describedby")])).toEqual([
+      ["field-1", "field1", "text", true, "80", "words", "off", "next", "field-1-error"],
+      ["field-2", "field2", "text", true, "80", "words", "off", "done", "field-2-error"],
+    ]);
+    expect([...form().querySelectorAll("label")].map((l) => l.getAttribute("for"))).toEqual(["field-1", "field-2"]);
+    expect([...form().querySelectorAll(".field-error")].map((e) => [e.id, e.getAttribute("role"), e.textContent])).toEqual([["field-1-error", "alert", ""], ["field-2-error", "alert", ""]]);
+  });
+
+  it("renders one input for a form of one field, with the enter key saying done", async () => {
+    await open([field(1, "Car reg", { maxLength: 10 })]);
+    expect(labels()).toEqual(["Car reg"]);
+    expect(inputs().map((i) => [i.id, i.getAttribute("maxlength"), i.getAttribute("autocomplete"), i.getAttribute("enterkeyhint"), i.required])).toEqual([["field-1", "10", "off", "done", true]]);
+  });
+
+  it("renders four fields in position order: optional ones say so, are not required, and have their own longest value", async () => {
+    await open(FOUR);
+    expect(labels()).toEqual(["Rider", "Pony", "Phone (optional)", "Notes (optional)"]);
+    expect(inputs().map((i) => [i.id, i.required, i.getAttribute("maxlength"), i.getAttribute("autocapitalize"), i.getAttribute("autocomplete"), i.getAttribute("enterkeyhint")])).toEqual([
+      ["field-1", true, "80", "words", "off", "next"], ["field-2", true, "80", "words", "off", "next"],
+      ["field-3", false, "12", "words", "off", "next"], ["field-4", false, "40", "words", "off", "done"],
+    ]);
+  });
+
+  it("puts the privacy notice after the last field, naming the labels", async () => {
+    await open(FOUR);
+    expect(form().querySelector(".privacy")!.textContent).toContain("(Rider, Pony, Phone, Notes)");
+    expect(inputs().at(-1)!.compareDocumentPosition(form().querySelector(".privacy")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("sends field1 to fieldN as typed (an optional one left blank as an empty string) and no other names", async () => {
+    const { calls } = await open(FOUR);
+    type("#field-1", " Ann Lee ");
+    type("#field-2", "Biscuit");
+    type("#field-4", "Nervous");
+    submit();
+    await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+    expect(posted(calls)).toEqual({ slot: SLOTS[1].start, field1: " Ann Lee ", field2: "Biscuit", field3: "", field4: "Nervous", idempotencyKey: expect.any(String) });
+  });
+
+  it("sends only field1 for a form of one field", async () => {
+    const { calls } = await open([field(1, "Car reg")]);
+    type("#field-1", "AB12 CDE");
+    submit();
+    await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+    expect(Object.keys(posted(calls)).sort()).toEqual(["field1", "idempotencyKey", "slot"]);
+  });
+
+  it("shows each error under its own input, from fields.fieldN, with aria-invalid and the bare-label wording the server gives", async () => {
+    await open(FOUR, () => reply(400, {
+      error: { code: "invalid_input", message: "Check the highlighted fields." },
+      fields: { field1: "Rider is required.", field3: "Phone must be at most 12 characters." },
+    }));
+    submit();
+    await vi.waitFor(() => expect(form().textContent).toContain("Rider is required."));
+    const state = () => [1, 2, 3, 4].map((n) => [$(`#field-${n}`).getAttribute("aria-invalid"), $(`#field-${n}-error`).textContent]);
+    expect(state()).toEqual([["true", "Rider is required."], [null, ""], ["true", "Phone must be at most 12 characters."], [null, ""]]);
+    expect($(".form-error").textContent).toBe("");
+    expect($("#field-1").getAttribute("aria-describedby")).toBe("field-1-error");
+  });
+
+  it("clears the errors when another slot is chosen, and maps no error to a field the event doesn't have", async () => {
+    await open([field(1, "Car reg")], () => reply(400, {
+      error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: { field1: "Car reg is required.", field2: "ignored" },
+    }));
+    submit();
+    await vi.waitFor(() => expect($("#field-1-error").textContent).toBe("Car reg is required."));
+    expect(document.getElementById("field-2-error")).toBeNull();
+    expect($(".form-error").textContent).toBe("");
+    slotButton("09:40").click();
+    expect($("#field-1-error").textContent).toBe("");
+    expect($("#field-1").hasAttribute("aria-invalid")).toBe(false);
+  });
+
+  it("shows the form error when the answer has no field error of ours at all", async () => {
+    await open([field(1, "Car reg")], () => reply(400, { error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: {} }));
+    submit();
+    await vi.waitFor(() => expect($(".form-error").textContent).toBe("Check the highlighted fields."));
+  });
+
+  it("shows the confirmation with a row for each value the booking has, labelled, in order; an optional blank is not shown", async () => {
+    await open(FOUR, () => reply(201, {
+      booking: { slot: { start: SLOTS[1].start, end: SLOTS[1].end }, fields: [{ label: "Rider", value: "Ann Lee" }, { label: "Pony", value: "Biscuit" }, { label: "Notes", value: "Nervous" }] },
+      event: withFields(FOUR), icsUrl: ICS_URL,
+    }));
+    submit();
+    await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+    const rows = [...document.querySelectorAll("dl.facts dt")].map((dt) => [dt.textContent, dt.nextElementSibling!.textContent]);
+    expect(rows).toEqual([["When", "Saturday 13 June 2026, 09:20–09:35"], ["Rider", "Ann Lee"], ["Pony", "Biscuit"], ["Notes", "Nervous"], ["Venue", "SW1A 1AA"], ["Cost", "£15.00"]]);
+  });
+
+  it("copies the labelled values", async () => {
+    const { clipboard } = await open([field(1, "Car reg")], () => reply(201, {
+      booking: { slot: { start: SLOTS[1].start, end: SLOTS[1].end }, fields: [{ label: "Car reg", value: "AB12 CDE" }] },
+      event: withFields([field(1, "Car reg")]), icsUrl: ICS_URL,
+    }));
+    submit();
+    await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+    [...document.querySelectorAll("button")].find((b) => b.textContent === "Copy booking")!.click();
+    await vi.waitFor(() => expect(clipboard.writeText).toHaveBeenCalledWith("Trial Day\nSaturday 13 June 2026, 09:20–09:35\nCar reg: AB12 CDE\nVenue: SW1A 1AA\nCost: £15.00\nBring water.\nBe kind."));
+  });
+
+  it("renders labels and values as text, never markup", async () => {
+    const evil = "<img src=x onerror=alert(1)>";
+    await open([field(1, evil)], () => reply(201, {
+      booking: { slot: { start: SLOTS[1].start, end: SLOTS[1].end }, fields: [{ label: evil, value: "<u>x</u>" }] }, event: withFields([field(1, evil)]), icsUrl: ICS_URL,
+    }));
+    expect(document.querySelector("img")).toBeNull();
+    expect(labels()).toEqual([evil]);
+    submit();
+    await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+    expect(document.querySelector("img, u")).toBeNull();
+    expect(text()).toContain(evil);
+  });
+
+  it("keeps what was typed in every field after a refetch (slot_taken)", async () => {
+    await open(FOUR, () => reply(409, { error: { code: "slot_taken", message: "gone" }, freeSlots: [{ start: SLOTS[2].start, end: SLOTS[2].end }] }));
+    type("#field-1", "Ann");
+    type("#field-3", "0770");
+    submit();
+    await vi.waitFor(() => expect(text()).toContain("That slot's just gone."));
+    slotButton("09:40").click();
+    expect(($("#field-1") as HTMLInputElement).value).toBe("Ann");
+    expect(($("#field-3") as HTMLInputElement).value).toBe("0770");
   });
 });

@@ -40,7 +40,7 @@ const flag = async (id: number) => (await t.env.DB.prepare("SELECT archived FROM
 const publicBook = (slug: string, slot: string) => book({
   request: new Request(`http://localhost/api/events/${slug}/bookings`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ slot, dogName: "Rex", handlerName: "Sam Smith", idempotencyKey: generateSlug() }),
+    body: JSON.stringify({ slot, field1: "Rex", field2: "Sam Smith", idempotencyKey: generateSlug() }),
   }),
   env: t.env, params: { slug },
 } as unknown as Parameters<typeof book>[0]);

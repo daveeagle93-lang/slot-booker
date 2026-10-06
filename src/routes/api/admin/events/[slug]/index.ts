@@ -22,8 +22,10 @@ export const onRequestGet: RouteHandler<"slug"> = async ({ env, data, params }) 
 /**
  * Saves the event as the form describes it. Removing bookings needs their ids in `removeBookingIds`: the
  * server works out which bookings the new schedule, lanes or capacity would strand itself and refuses (409) unless every one
- * is listed, so the confirmation is enforced here, not only in the page. `lanes` and `capacity` are optional (left out, they
- * stay as they are); a draft that sends them is refused with 409 `event_changed` if they were edited since the event was read. A retry of a save that already
+ * is listed, so the confirmation is enforced here, not only in the page. `lanes`, `capacity`, `fields` and `identityLimit` are optional
+ * (left out, they stay as they are); a draft that sends them is refused with 409 `event_changed` if they were edited since the event
+ * was read. Once the event has bookings, a draft that changes the number of fields or which of them identify a booking is refused with
+ * 409 `fields_locked`. A retry of a save that already
  * went through finds nothing left to remove and answers 200 with `removed: []`.
  * Two admins saving at once: the last write wins on the event's fields (there is no version column); the
  * bookings are still protected, by the guard inside the save's batch.
@@ -51,7 +53,11 @@ export const onRequestPut: RouteHandler<"slug"> = async ({ request, env, data, p
     const result = await saveEventEdit(env.DB, event, parsed.draft, remove.ids);
     if (result.kind === "not_found") return eventNotFound();
     if (result.kind === "layout_changed") {
-      return errorResponse(409, "event_changed", "The lanes or places of this event were edited while you were working. Reload the page.", {}, noStore);
+      return errorResponse(409, "event_changed", "The lanes, places or booking form of this event were edited while you were working. Reload the page.", {}, noStore);
+    }
+    if (result.kind === "fields_locked") {
+      const message = "This event has bookings, so fields can't be added or removed and the fields that identify a booking can't be changed. You can still change labels, which fields are required, how long each can be and how many bookings one identity may hold.";
+      return errorResponse(409, "fields_locked", message, {}, noStore);
     }
     if (result.kind === "bookings_affected") {
       const message = "Some bookings are on slots this change would remove. Check the list and confirm to remove them.";

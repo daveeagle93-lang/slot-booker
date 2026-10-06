@@ -44,8 +44,11 @@ const post = (slug: string, body: unknown, o: PostOptions = {}): Promise<Respons
 const newKey = generateBookingToken; // 22 base64url characters, the same shape as the browser's key
 
 /** Each call is a different form load, so it gets a fresh key unless one is passed. */
-const entry = (slot: string, dogName: string, handlerName: string, idempotencyKey = newKey()) =>
-  ({ slot, dogName, handlerName, idempotencyKey });
+const entry = (slot: string, dog: string, handler: string, idempotencyKey = newKey()) =>
+  ({ slot, field1: dog, field2: handler, idempotencyKey });
+
+/** The booking as the answer shows it for the Dog and Handler form: each value with its label. */
+const dogHandler = (dog: string, handler: string) => [{ label: "Dog", value: dog }, { label: "Handler", value: handler }];
 
 interface ErrorBody {
   error: { code: string; message: string };
@@ -77,12 +80,13 @@ describe("POST /api/events/:slug/bookings", () => {
     expect(payload).toEqual({
       booking: {
         slot: { start: "2026-06-13T08:15:00Z", end: "2026-06-13T08:30:00Z" }, lane: { id: laneId, name: "" },
-        dogName: "Zoë", handlerName: "Sam   Jones",
+        fields: dogHandler("Zoë", "Sam   Jones"),
       },
       event: {
         slug, name: "Summer show", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z",
         costPence: 1250, venuePostcode: "AB1 2CD", details: "Bring water", archived: false,
         lanes: [{ id: laneId, name: "" }], capacity: 1,
+        fields: [{ position: 1, label: "Dog", required: true, maxLength: 80 }, { position: 2, label: "Handler", required: true, maxLength: 80 }],
       },
       icsUrl: expect.stringMatching(new RegExp(`^/api/events/${slug}/bookings/[A-Za-z0-9_-]{22}/ics$`)),
     });
@@ -174,7 +178,7 @@ describe("POST /api/events/:slug/bookings", () => {
       const { id, slug } = await insertEvent(t.env.DB);
       const res = await post(slug, entry("2026-06-13T08:00:00Z", "\u3164", "Sam Jones"));
       expect(res.status).toBe(400);
-      expect(((await res.json()) as ErrorBody).fields).toEqual({ dogName: "The dog's name must contain at least one letter or number." });
+      expect(((await res.json()) as ErrorBody).fields).toEqual({ field1: "Dog must contain at least one letter or number." });
       expect(await rows(id)).toHaveLength(0);
     });
 
@@ -342,7 +346,7 @@ describe("POST /api/events/:slug/bookings", () => {
 
     it("returns 400 invalid_input for a missing or non-string slot", async () => {
       const { id, slug } = await insertEvent(t.env.DB);
-      for (const body of [{ dogName: "Rex", handlerName: "Sam", idempotencyKey: newKey() }, { ...entry(SLOT, "Rex", "Sam"), slot: 123 }]) {
+      for (const body of [{ field1: "Rex", field2: "Sam", idempotencyKey: newKey() }, { ...entry(SLOT, "Rex", "Sam"), slot: 123 }]) {
         const res = await post(slug, body);
         expect(res.status).toBe(400);
         const parsed = (await res.json()) as ErrorBody;
@@ -441,22 +445,23 @@ describe("POST /api/events/:slug/bookings", () => {
       });
       const res = await post(slug, undefined, { stream });
       expect(res.status).toBe(201);
-      expect(((await res.json()) as { booking: { dogName: string } }).booking.dogName).toBe("Zoë");
+      expect(((await res.json()) as { booking: { fields: { value: string }[] } }).booking.fields[0].value).toBe("Zoë");
     });
 
     it("returns 400 invalid_input naming each bad name field", async () => {
       const { id, slug } = await insertEvent(t.env.DB);
       const cases: [string, Record<string, unknown>, string[]][] = [
-        ["missing dog", { slot: SLOT, handlerName: "Sam", idempotencyKey: newKey() }, ["dogName"]],
-        ["missing handler", { slot: SLOT, dogName: "Rex", idempotencyKey: newKey() }, ["handlerName"]],
-        ["both missing", { slot: SLOT, idempotencyKey: newKey() }, ["dogName", "handlerName"]],
-        ["non-string", entry(SLOT, "Rex", 7 as unknown as string), ["handlerName"]],
-        ["blank", entry(SLOT, "   ", "Sam"), ["dogName"]],
-        ["too long (81 chars)", entry(SLOT, "Rex", "a".repeat(81)), ["handlerName"]],
+        ["missing dog", { slot: SLOT, field2: "Sam", idempotencyKey: newKey() }, ["field1"]],
+        ["missing handler", { slot: SLOT, field1: "Rex", idempotencyKey: newKey() }, ["field2"]],
+        ["both missing", { slot: SLOT, idempotencyKey: newKey() }, ["field1", "field2"]],
+        ["the v1.0 names are not read any more", { slot: SLOT, dogName: "Rex", handlerName: "Sam", idempotencyKey: newKey() }, ["field1", "field2"]],
+        ["non-string", entry(SLOT, "Rex", 7 as unknown as string), ["field2"]],
+        ["blank", entry(SLOT, "   ", "Sam"), ["field1"]],
+        ["too long (81 chars)", entry(SLOT, "Rex", "a".repeat(81)), ["field2"]],
         ["80 characters after trim is fine", entry(SLOT, "Rex", ` ${"a".repeat(80)} `), []],
-        ["control character", entry(SLOT, "Re\u0000x", "Sam"), ["dogName"]],
-        ["newline inside", entry(SLOT, "Rex", "Sam\nJones"), ["handlerName"]],
-        ["both bad", entry(SLOT, "", "\u0007"), ["dogName", "handlerName"]],
+        ["control character", entry(SLOT, "Re\u0000x", "Sam"), ["field1"]],
+        ["newline inside", entry(SLOT, "Rex", "Sam\nJones"), ["field2"]],
+        ["both bad", entry(SLOT, "", "\u0007"), ["field1", "field2"]],
       ];
       for (const [label, body, bad] of cases) {
         const res = await post(slug, body);
@@ -476,15 +481,15 @@ describe("POST /api/events/:slug/bookings", () => {
     it("rejects a lone surrogate with 400 and inserts nothing (it would break the icsUrl after the insert)", async () => {
       const { id, slug } = await insertEvent(t.env.DB);
       // The escape survives JSON.parse as a real lone surrogate.
-      const raw = `{"slot":"${SLOT}","dogName":"Rex\\ud800","handlerName":"Sam","idempotencyKey":"${newKey()}"}`;
+      const raw = `{"slot":"${SLOT}","field1":"Rex\\ud800","field2":"Sam","idempotencyKey":"${newKey()}"}`;
       const res = await post(slug, undefined, { raw });
       expect(res.status).toBe(400);
       const parsed = (await res.json()) as ErrorBody;
       expect(parsed.error.code).toBe("invalid_input");
-      expect(Object.keys(parsed.fields ?? {})).toEqual(["dogName"]);
+      expect(Object.keys(parsed.fields ?? {})).toEqual(["field1"]);
       expect(await rows(id)).toHaveLength(0);
-      const handler = `{"slot":"${SLOT}","dogName":"Rex","handlerName":"\\udc00Sam","idempotencyKey":"${newKey()}"}`;
-      expect(Object.keys(((await (await post(slug, undefined, { raw: handler })).json()) as ErrorBody).fields ?? {})).toEqual(["handlerName"]);
+      const handler = `{"slot":"${SLOT}","field1":"Rex","field2":"\\udc00Sam","idempotencyKey":"${newKey()}"}`;
+      expect(Object.keys(((await (await post(slug, undefined, { raw: handler })).json()) as ErrorBody).fields ?? {})).toEqual(["field2"]);
       expect(await rows(id)).toHaveLength(0);
     });
 
@@ -507,8 +512,8 @@ describe("POST /api/events/:slug/bookings", () => {
             expect(res.status, label).toBe(400);
             const parsed = (await res.json()) as ErrorBody;
             expect(parsed.error.code, label).toBe("invalid_input");
-            expect(Object.keys(parsed.fields ?? {}).sort(), label).toEqual(["dogName", "handlerName"]);
-            expect(parsed.fields?.dogName, label).toBe("The dog's name can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.");
+            expect(Object.keys(parsed.fields ?? {}).sort(), label).toEqual(["field1", "field2"]);
+            expect(parsed.fields?.field1, label).toBe("Dog can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.");
           }
         }
         expect(await rows(id)).toHaveLength(0);
@@ -518,7 +523,7 @@ describe("POST /api/events/:slug/bookings", () => {
         const { id, slug } = await insertEvent(t.env.DB);
         const res = await post(slug, entry(SLOT, "\u200B\u200B", "Sam"));
         expect(res.status).toBe(400);
-        expect(Object.keys(((await res.json()) as ErrorBody).fields ?? {})).toEqual(["dogName"]);
+        expect(Object.keys(((await res.json()) as ErrorBody).fields ?? {})).toEqual(["field1"]);
         expect(await rows(id)).toHaveLength(0);
       });
 
@@ -536,8 +541,8 @@ describe("POST /api/events/:slug/bookings", () => {
         const res = await post(slug, entry(SLOT, `Rex${ch}`, `${ch}Sam`));
         expect(res.status, JSON.stringify(ch)).toBe(400);
         expect(((await res.json()) as ErrorBody).fields).toEqual({
-          dogName: "The dog's name can't contain private-use or blank-looking characters. Try plain text.",
-          handlerName: "The handler's name can't contain private-use or blank-looking characters. Try plain text.",
+          field1: "Dog can't contain private-use or blank-looking characters. Try plain text.",
+          field2: "Handler can't contain private-use or blank-looking characters. Try plain text.",
         });
       }
       expect(await rows(id)).toHaveLength(0);
@@ -556,9 +561,9 @@ describe("POST /api/events/:slug/bookings", () => {
           expect(res.status, label).toBe(400);
           const parsed = (await res.json()) as ErrorBody;
           expect(parsed.error.code, label).toBe("invalid_input");
-          expect(Object.keys(parsed.fields ?? {}).sort(), label).toEqual(["dogName", "handlerName"]);
-          expect(parsed.fields?.dogName, label).toContain(text);
-          expect(parsed.fields?.handlerName, label).toContain(text);
+          expect(Object.keys(parsed.fields ?? {}).sort(), label).toEqual(["field1", "field2"]);
+          expect(parsed.fields?.field1, label).toContain(text);
+          expect(parsed.fields?.field2, label).toContain(text);
         }
         expect(await rows(id)).toHaveLength(0);
       });
@@ -587,7 +592,7 @@ describe("POST /api/events/:slug/bookings", () => {
       expect(retry.headers.get("idempotent-replayed")).toBe("true");
       expect(retry.headers.get("cache-control")).toBe("no-store");
       expect(await retry.json()).toEqual({
-        booking: { slot: { start: S1, end: "2026-06-13T08:15:00Z" }, lane: { id: laneId, name: "" }, dogName: "Rex", handlerName: "Sam Jones" },
+        booking: { slot: { start: S1, end: "2026-06-13T08:15:00Z" }, lane: { id: laneId, name: "" }, fields: dogHandler("Rex", "Sam Jones") },
         event: expect.objectContaining({ slug, name: "Summer show", archived: false }),
         icsUrl: `/api/events/${slug}/bookings/${stored[0].token}/ics`,
       });
@@ -613,8 +618,7 @@ describe("POST /api/events/:slug/bookings", () => {
       await post(slug, entry(S1, "Rex", "Sam Jones", key));
       const res = await post(slug, entry(S1, " REX ", "sam   jones", key));
       expect(res.status).toBe(201);
-      expect(((await res.json()) as { booking: { dogName: string; handlerName: string } }).booking)
-        .toMatchObject({ dogName: "Rex", handlerName: "Sam Jones" });
+      expect(((await res.json()) as { booking: { fields: unknown } }).booking.fields).toEqual(dogHandler("Rex", "Sam Jones"));
       expect(await rows(id)).toHaveLength(1);
     });
 
@@ -683,7 +687,7 @@ describe("POST /api/events/:slug/bookings", () => {
         expect(res.headers.get("cache-control")).toBe("no-store");
         expect(await res.json()).toEqual({
           error: { code: "idempotency_key_reuse", message },
-          booking: { slot: { start: S1, end: "2026-06-13T08:15:00Z" }, lane: { id: laneId, name: "" }, dogName: "Rex", handlerName: "Sam Jnes" },
+          booking: { slot: { start: S1, end: "2026-06-13T08:15:00Z" }, lane: { id: laneId, name: "" }, fields: dogHandler("Rex", "Sam Jnes") },
           event: expect.objectContaining({ slug, name: "Summer show" }),
           icsUrl: original.icsUrl,
         });
@@ -695,9 +699,9 @@ describe("POST /api/events/:slug/bookings", () => {
         const key = newKey();
         await post(slug, entry(S1, "Rex", "Sam Jnes", key));
         const res = await post(slug, entry(S1, "REX", "SAM JONES", key));
-        const body = (await res.json()) as { booking: { dogName: string; handlerName: string } };
+        const body = (await res.json()) as { booking: { fields: unknown } };
         expect(res.status).toBe(422);
-        expect(body.booking).toMatchObject({ dogName: "Rex", handlerName: "Sam Jnes" });
+        expect(body.booking.fields).toEqual(dogHandler("Rex", "Sam Jnes"));
       });
 
       it("reveals nothing for a key that no booking holds", async () => {
@@ -719,12 +723,12 @@ describe("POST /api/events/:slug/bookings", () => {
         const other = await post(b.slug, entry(S2, "Fido", "Ann Lee", key));
         expect(other.status).toBe(201);
         expect(other.headers.get("idempotent-replayed")).toBeNull();
-        expect(((await other.json()) as { booking: { dogName: string } }).booking.dogName).toBe("Fido");
+        expect(((await other.json()) as { booking: { fields: { value: string }[] } }).booking.fields[0].value).toBe("Fido");
         // Event b's own key holder can see only event b's booking.
         const edited = await post(b.slug, entry(S2, "Fido", "Ann Leigh", key));
         expect(edited.status).toBe(422);
-        const body = (await edited.json()) as { booking: { dogName: string }; icsUrl: string };
-        expect(body.booking.dogName).toBe("Fido");
+        const body = (await edited.json()) as { booking: { fields: { value: string }[] }; icsUrl: string };
+        expect(body.booking.fields[0].value).toBe("Fido");
         expect(body.icsUrl).toContain(`/api/events/${b.slug}/`);
         expect(await rows(a.id)).toHaveLength(1);
         expect(await rows(b.id)).toHaveLength(1);
@@ -846,8 +850,8 @@ describe("POST /api/events/:slug/bookings", () => {
 
       it("reports the key alongside other bad fields", async () => {
         const { slug } = await insertEvent(t.env.DB);
-        const res = await post(slug, { slot: S1, dogName: "", handlerName: "Sam" });
-        expect(Object.keys(((await res.json()) as ErrorBody).fields ?? {}).sort()).toEqual(["dogName", "idempotencyKey"]);
+        const res = await post(slug, { slot: S1, field1: "", field2: "Sam" });
+        expect(Object.keys(((await res.json()) as ErrorBody).fields ?? {}).sort()).toEqual(["field1", "idempotencyKey"]);
       });
     });
   });
@@ -1155,7 +1159,7 @@ describe("POST /api/events/:slug/bookings", () => {
       const other = await insertEvent(t.env.DB);
       const res = await post(slug, withLane(SLOT, "", "Sam", other.laneId));
       expect(res.status).toBe(400);
-      expect(await fieldsOf(res)).toEqual({ dogName: "Enter the dog's name.", laneId: "Choose a lane." });
+      expect(await fieldsOf(res)).toEqual({ field1: "Dog is required.", laneId: "Choose a lane." });
     });
 
     it("refuses a lane id on a one-lane event when it is not that lane's", async () => {
@@ -1222,6 +1226,108 @@ describe("POST /api/events/:slug/bookings", () => {
       const res = await post(slug, withLane(SLOT, "Rex", "Sam"), { env });
       expect(res.status).toBe(201); // the retry against the fresh event books it
       expect((await rows(id))).toHaveLength(1);
+    });
+  });
+
+  describe("configured booking forms", () => {
+    const RIDER_PONY: Parameters<typeof insertEvent>[1] = {
+      fields: [
+        { label: "Rider", identity: true }, { label: "Pony", identity: true },
+        { label: "Phone", required: false, maxLength: 12 },
+      ],
+    };
+    const S2 = "2026-06-13T08:15:00Z";
+    const body = (over: Record<string, unknown>) => ({ slot: SLOT, idempotencyKey: newKey(), ...over });
+    const errors = async (res: Response) => ((await res.json()) as ErrorBody).fields;
+
+    it("takes field1 to field3, answers with each non-empty value under its label in the form's order, and stores them in value_1 to value_3", async () => {
+      const { id, slug, laneId } = await insertEvent(t.env.DB, RIDER_PONY);
+      const res = await post(slug, body({ field1: " Ann Lee ", field2: "Biscuit", field3: "07700 900123" }));
+      expect(res.status).toBe(201);
+      expect(((await res.json()) as { booking: unknown }).booking).toEqual({
+        slot: { start: SLOT, end: S2 }, lane: { id: laneId, name: "" },
+        fields: [{ label: "Rider", value: "Ann Lee" }, { label: "Pony", value: "Biscuit" }, { label: "Phone", value: "07700 900123" }],
+      });
+      expect((await rows(id))[0]).toMatchObject({
+        value_1: "Ann Lee", value_2: "Biscuit", value_3: "07700 900123", value_4: "", identity_key: identityKeyOf(["Ann Lee", "Biscuit"]),
+      });
+    });
+
+    it("leaves an optional field left blank out of the answer, and stores it as empty", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, RIDER_PONY);
+      for (const [i, blank] of [{}, { field3: "" }, { field3: "   " }, { field3: null }].entries()) {
+        const slot = `2026-06-13T08:${String(i * 15).padStart(2, "0")}:00Z`;
+        const res = await post(slug, body({ slot, field1: `Ann${i}`, field2: "Biscuit", ...blank }));
+        expect(res.status, JSON.stringify(blank)).toBe(201);
+        expect(((await res.json()) as { booking: { fields: { label: string }[] } }).booking.fields.map((f) => f.label), JSON.stringify(blank)).toEqual(["Rider", "Pony"]);
+      }
+      expect((await rows(id)).every((r) => r.value_3 === "")).toBe(true);
+    });
+
+    it("keys each error by the field's number, with the field's own label and longest value, and does not ask a one-field event for a second", async () => {
+      const { slug } = await insertEvent(t.env.DB, RIDER_PONY);
+      expect(await errors(await post(slug, body({ field1: "", field2: "\u200B", field3: "x".repeat(13) })))).toEqual({
+        field1: "Rider is required.", field2: expect.stringContaining("Pony can't contain invisible"), field3: "Phone must be at most 12 characters.",
+      });
+      const one = await insertEvent(t.env.DB, { fields: [{ label: "Car reg", identity: true }] });
+      expect(await errors(await post(one.slug, body({})))).toEqual({ field1: "Car reg is required." });
+      expect((await post(one.slug, body({ field1: "AB12 CDE" }))).status).toBe(201); // no second field is asked for
+    });
+
+    it("identifies a booking by the identity fields only: another Phone is the same booking, another Pony is not", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, RIDER_PONY);
+      expect((await post(slug, body({ field1: "Ann", field2: "Biscuit", field3: "111" }))).status).toBe(201);
+      const same = await post(slug, body({ slot: S2, field1: " ANN", field2: "biscuit ", field3: "222" }));
+      expect(same.status).toBe(409);
+      expect(((await same.json()) as ErrorBody).error).toEqual({ code: "duplicate_booking", message: "That rider and pony already have a booking for this event." });
+      expect((await post(slug, body({ slot: S2, field1: "Ann", field2: "Nutmeg" }))).status).toBe(201);
+      expect(await rows(id)).toHaveLength(2);
+    });
+
+    it("identifies a booking by one field alone", async () => {
+      const { slug } = await insertEvent(t.env.DB, { fields: [{ label: "Car reg", identity: true }, { label: "Driver", required: false }] });
+      expect((await post(slug, body({ field1: "AB12 CDE", field2: "Ann" }))).status).toBe(201);
+      const again = await post(slug, body({ slot: S2, field1: "ab12  cde", field2: "Sam" }));
+      expect(again.status).toBe(409);
+      expect(((await again.json()) as ErrorBody).error.message).toBe("That car reg already has a booking for this event.");
+    });
+
+    it("lets an identity that is made of two fields book up to the limit, and not a booking more, with the numbers 1 to the limit", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, { ...RIDER_PONY, identityLimit: 2 });
+      const slots = ["2026-06-13T08:00:00Z", "2026-06-13T08:15:00Z", "2026-06-13T08:30:00Z"];
+      expect((await Promise.all(slots.map((slot) => post(slug, body({ slot, field1: "Ann", field2: "Biscuit" }))))).map((r) => r.status).sort()).toEqual([201, 201, 409]);
+      expect((await rows(id)).map((r) => r.identity_seq).sort()).toEqual([1, 2]);
+    });
+
+    it("replays a retry, and answers a retry that changed an optional field as the booking as it was saved", async () => {
+      const { slug } = await insertEvent(t.env.DB, RIDER_PONY);
+      const key = newKey();
+      const first = await post(slug, { ...body({ field1: "Ann", field2: "Biscuit", field3: "111" }), idempotencyKey: key });
+      expect(first.status).toBe(201);
+      const replay = await post(slug, { ...body({ field1: "ann", field2: "BISCUIT", field3: "111" }), idempotencyKey: key });
+      expect(replay.status).toBe(201);
+      expect(replay.headers.get("idempotent-replayed")).toBe("true");
+      const changed = await post(slug, { ...body({ field1: "Ann", field2: "Biscuit", field3: "222" }), idempotencyKey: key });
+      expect(changed.status).toBe(422);
+      expect(((await changed.json()) as { booking: { fields: unknown[] } }).booking.fields).toEqual([
+        { label: "Rider", value: "Ann" }, { label: "Pony", value: "Biscuit" }, { label: "Phone", value: "111" },
+      ]);
+    });
+
+    it("books a four-field form, and shows every value in the answer", async () => {
+      const { slug } = await insertEvent(t.env.DB, { fields: [{ label: "A", identity: true }, { label: "B" }, { label: "C", required: false }, { label: "D", required: false, maxLength: 1 }] });
+      const res = await post(slug, body({ field1: "a", field2: "b", field3: "c", field4: "d" }));
+      expect(res.status).toBe(201);
+      expect(((await res.json()) as { booking: { fields: unknown[] } }).booking.fields).toEqual([
+        { label: "A", value: "a" }, { label: "B", value: "b" }, { label: "C", value: "c" }, { label: "D", value: "d" },
+      ]);
+      expect(await errors(await post(slug, body({ slot: S2, field1: "x", field2: "y", field4: "dd" })))).toEqual({ field4: "D must be at most 1 characters." });
+    });
+
+    it("books against the fields as the event has them now: a form edited after the page loaded is validated by the new one", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, RIDER_PONY);
+      await t.env.DB.prepare("UPDATE event_fields SET required = 0, in_identity = 0 WHERE event_id = ? AND position = 2").bind(id).run();
+      expect((await post(slug, body({ field1: "Ann" }))).status).toBe(201); // Pony is optional now
     });
   });
 });

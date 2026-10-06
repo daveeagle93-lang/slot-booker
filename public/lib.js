@@ -45,8 +45,7 @@ export function copyText(event, booking) {
     event.name,
     `${formatDate(booking.slot.start)}, ${formatTimeRange(booking.slot.start, booking.slot.end)}`,
     ...(booking.lane?.name ? [`Lane: ${booking.lane.name}`] : []),
-    `Dog: ${booking.dogName}`,
-    `Handler: ${booking.handlerName}`,
+    ...booking.fields.map((f) => `${f.label}: ${f.value}`),
     `Venue: ${event.venuePostcode}`,
     `Cost: ${formatPounds(event.costPence)}`,
   ];

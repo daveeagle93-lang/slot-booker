@@ -3,7 +3,7 @@ import type { AppEnv } from "../../../../../server/env";
 import {
   accessClaims, accessEnv, accessJwt, adminApp, jwksFetch, NOW, newAccessKey, ORIGIN, passwordEnv, TEST_PASSWORD,
 } from "../../../../../server/auth/test-harness";
-import { createTestEnv, insertBooking, insertEvent, type TestEnv } from "../../../../../test/db";
+import { createTestEnv, insertBooking, insertBookingOf, insertEvent, type TestEnv } from "../../../../../test/db";
 import { onRequestGet } from "./export.csv";
 
 const ADMIN = { admin: { identity: "test@example.com", csrfBinding: "x" } };
@@ -49,6 +49,33 @@ describe("GET /api/admin/events/[slug]/export.csv", () => {
     expect(text).toBe(
       `${BOM}${HEADER}"2026-10-24 09:00","Rex","Sam Smith","2026-10-01 23:30"\r\n"2026-10-24 10:00","Flo","Pat Jones","2026-12-01 09:05"\r\n`,
     );
+  });
+
+  it("has one column for each field of the booking form, headed by its label, in the form's order, with an optional blank as an empty cell", async () => {
+    const fields = [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Phone", required: false }, { label: "Notes", required: false }];
+    const { id, slug } = await insertEvent(t.env.DB, { fields });
+    const first = await insertBookingOf(t.env.DB, id, fields, "2026-06-13T08:00:00Z", ["Ann Lee", "Biscuit", "07700 900123", "Nervous, shy"]);
+    const second = await insertBookingOf(t.env.DB, id, fields, "2026-06-13T08:15:00Z", ["Bea", "Nutmeg"]);
+    await setCreated(first, "2026-06-01T10:00:00Z");
+    await setCreated(second, "2026-06-01T10:05:00Z");
+    expect(await body(await get(slug))).toBe(
+      `${BOM}"Time","Rider","Pony","Phone","Notes","Booked at"\r\n`
+      + '"2026-06-13 09:00","Ann Lee","Biscuit","07700 900123","Nervous, shy","2026-06-01 11:00"\r\n'
+      + '"2026-06-13 09:15","Bea","Nutmeg","","","2026-06-01 11:05"\r\n',
+    );
+  });
+
+  it("has a single column for a form of one field, and puts the Lane column before the fields", async () => {
+    const one = await insertEvent(t.env.DB, { fields: [{ label: "Car reg", identity: true }], lanes: ["Ring 1", "Ring 2"] });
+    expect(await body(await get(one.slug))).toBe(`${BOM}"Time","Lane","Car reg","Booked at"\r\n`);
+  });
+
+  it("guards a label that a spreadsheet would run as a formula, like every other cell", async () => {
+    const { id, slug } = await insertEvent(t.env.DB, { fields: [{ label: "=SUM(A1)", identity: true }, { label: "+Pony", required: false }] });
+    const text = await body(await get(slug));
+    expect(text).toBe(`${BOM}"Time","'=SUM(A1)","'+Pony","Booked at"\r\n`);
+    await insertBookingOf(t.env.DB, id, [{ label: "=SUM(A1)", identity: true }, { label: "+Pony" }], "2026-06-13T08:00:00Z", ["=1+1", "@x"]);
+    expect(await body(await get(slug))).toContain(`"'=1+1","'@x"`);
   });
 
   it("exports only that event's bookings", async () => {

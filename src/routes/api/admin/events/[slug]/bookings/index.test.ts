@@ -21,6 +21,9 @@ afterAll(async () => {
   await t.dispose();
 });
 
+/** A booking of the Dog and Handler form as the admin API shows it: labelled values, and TRANSITIONAL(6b) `dogName` and `handlerName`. */
+const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }], dogName: dog, handlerName: handler });
+
 interface Opts { contentType?: string | null; raw?: string; data?: unknown[] }
 type Handler = (ctx: never) => Response | Promise<Response>;
 
@@ -64,7 +67,7 @@ describe("POST /api/admin/events/[slug]/bookings", () => {
     const res = await add(e.slug, { slot: S[2], dogName: "Rex", handlerName: "Sam Smith" });
     expect(res.status).toBe(201);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await body(res)).toEqual({ booking: { id: expect.any(Number), slotStart: S[2], dogName: "Rex", handlerName: "Sam Smith", lane: { id: expect.any(Number), name: "" } } });
+    expect(await body(res)).toEqual({ booking: { id: expect.any(Number), slotStart: S[2], ...dh("Rex", "Sam Smith"), lane: { id: expect.any(Number), name: "" } } });
     expect(await stored(e.id)).toHaveLength(1);
   });
 
@@ -100,7 +103,10 @@ describe("POST /api/admin/events/[slug]/bookings", () => {
     expect(fields.status).toBe(400);
     expect(await body(fields)).toMatchObject({
       error: { code: "invalid_input" },
-      fields: { dogName: "Enter the dog's name.", handlerName: "The handler's name must be at most 80 characters." },
+      fields: {
+        field1: "Dog is required.", field2: "Handler must be at most 80 characters.",
+        dogName: "Dog is required.", handlerName: "Handler must be at most 80 characters.", // TRANSITIONAL(6b)
+      },
     });
     expect(await stored(e.id)).toHaveLength(0);
   });
@@ -110,7 +116,7 @@ describe("POST /api/admin/events/[slug]/bookings", () => {
     for (const ch of ["\u2028", "\u2029", "\u0085"]) {
       const res = await add(e.slug, { slot: S[0], dogName: `Rex${ch}08:15 \u2014 free`, handlerName: `Sam${ch}` });
       expect(res.status, JSON.stringify(ch)).toBe(400);
-      expect(Object.keys((await body(res)).fields).sort()).toEqual(["dogName", "handlerName"]);
+      expect(Object.keys((await body(res)).fields).sort()).toEqual(["dogName", "field1", "field2", "handlerName"]);
     }
     expect(await stored(e.id)).toHaveLength(0);
   });
@@ -121,7 +127,7 @@ describe("POST /api/admin/events/[slug]/bookings", () => {
     const pub = await publicBook({
       request: new Request(`http://localhost/api/events/${e.slug}/bookings`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slot, dogName: "Pub", handlerName: "Lic", idempotencyKey: "abcdefghijklmnopqrstuv" }),
+        body: JSON.stringify({ slot, field1: "Pub", field2: "Lic", idempotencyKey: "abcdefghijklmnopqrstuv" }),
       }),
       env: { ...t.env, BOOKING_CUTOFF_OFFSET_MINUTES: undefined }, params: { slug: e.slug },
     } as never);
@@ -154,7 +160,7 @@ describe("DELETE /api/admin/events/[slug]/bookings/[id]", () => {
     const res = await clear(e.slug, a, { confirm: true });
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await body(res)).toEqual({ removed: { id: a, slotStart: S[0], dogName: "Rex", handlerName: "Sam", lane: { id: expect.any(Number), name: "" } } });
+    expect(await body(res)).toEqual({ removed: { id: a, slotStart: S[0], ...dh("Rex", "Sam"), lane: { id: expect.any(Number), name: "" } } });
     expect((await stored(e.id)).map((r) => r.id)).toEqual([b]);
   });
 
@@ -213,7 +219,7 @@ describe("POST /api/admin/events/[slug]/bookings/[id]/move", () => {
     const res = await move(e.slug, a, { fromSlot: S[0], toSlot: S[5] });
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await body(res)).toEqual({ booking: { id: a, slotStart: S[5], dogName: "Rex", handlerName: "Sam", lane: { id: expect.any(Number), name: "" } } });
+    expect(await body(res)).toEqual({ booking: { id: a, slotStart: S[5], ...dh("Rex", "Sam"), lane: { id: expect.any(Number), name: "" } } });
   });
 
   it("answers 409 slot_taken with the holder, 409 changed for a stale fromSlot, 400 for same_slot and invalid_slot, 404 otherwise", async () => {
@@ -288,7 +294,7 @@ describe("the booking tools with lanes and places, over HTTP", () => {
     const made = await add(e.slug, { slot: S[0], laneId: l2, dogName: "Rex", handlerName: "Sam" });
     expect(made.status).toBe(201);
     const booking = (await body(made)).booking;
-    expect(booking).toEqual({ id: expect.any(Number), slotStart: S[0], dogName: "Rex", handlerName: "Sam", lane: { id: l2, name: "Ring 2" } });
+    expect(booking).toEqual({ id: expect.any(Number), slotStart: S[0], ...dh("Rex", "Sam"), lane: { id: l2, name: "Ring 2" } });
     const full = await add(e.slug, { slot: S[0], laneId: l2, dogName: "Bella", handlerName: "Alex" });
     expect(full.status).toBe(409);
     const taken = await body(full);

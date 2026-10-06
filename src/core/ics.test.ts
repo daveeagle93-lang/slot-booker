@@ -2,12 +2,14 @@ import ICAL from "ical.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildBookingIcs, type BookingIcsInput } from "./ics";
 
+/** The booking form of a dog club, as the events made before the fields were configurable have it. */
+const dogHandler = (dog: string, handler: string) => [{ label: "Dog", value: dog }, { label: "Handler", value: handler }];
+
 const base: BookingIcsInput = {
   uid: "booking-42@slot-booker",
   dtstamp: "2026-06-01T10:00:00Z",
   slot: { start: "2026-06-13T08:00:00Z", end: "2026-06-13T08:20:00Z" },
-  dogName: "Rex",
-  handlerName: "Sam Jones",
+  fields: dogHandler("Rex", "Sam Jones"),
   eventName: "Trial Day",
   venuePostcode: "SW1A 1AA",
   costPence: 1250,
@@ -259,7 +261,7 @@ describe("escaping", () => {
   });
 
   it("escapes SUMMARY and LOCATION too", () => {
-    const ics = make({ dogName: "A,B;C", eventName: "x\\y", venuePostcode: "AB1, 2CD" });
+    const ics = make({ fields: dogHandler("A,B;C", "Sam Jones"), eventName: "x\\y", venuePostcode: "AB1, 2CD" });
     expect(prop(ics, "SUMMARY")).toBe("SUMMARY:A\\,B\\;C – x\\\\y");
     expect(prop(ics, "LOCATION")).toBe("LOCATION:AB1\\, 2CD");
   });
@@ -276,7 +278,7 @@ describe("folding", () => {
     "long ".repeat(60);
 
   it("folds long, multi-byte, multi-line input safely", () => {
-    const ics = make({ dogName: "Zoë 🐕", handlerName: "Zoë, ZOË", details: nasty });
+    const ics = make({ fields: dogHandler("Zoë 🐕", "Zoë, ZOË"), details: nasty });
     expectWellFormed(ics);
     expectLinesDecodeCleanly(ics);
     expect(physicalLines(ics).some((l) => l.startsWith(" "))).toBe(true);
@@ -331,8 +333,8 @@ describe("independent parse (ical.js)", () => {
   beforeEach(() => ICAL.TimezoneService.reset());
 
   const nastyCases: Partial<BookingIcsInput>[] = [
-    { dogName: "Zoë", handlerName: "Zoë", eventName: "Fun, games; and \\ more" },
-    { dogName: "ZOË 🐕", eventName: "E".repeat(120), venuePostcode: "AB1, 2CD; UK" },
+    { fields: dogHandler("Zoë", "Zoë"), eventName: "Fun, games; and \\ more" },
+    { fields: dogHandler("ZOË 🐕", "Sam Jones"), eventName: "E".repeat(120), venuePostcode: "AB1, 2CD; UK" },
     { uid: "uid-" + "u".repeat(150) + "@slot-booker", venuePostcode: "a".repeat(65) + "ë" },
     { details: "one, two; three \\ four\r\nfive\nsix\r" + "word ".repeat(80) + "🐕" },
   ];
@@ -342,11 +344,11 @@ describe("independent parse (ical.js)", () => {
     const ics = buildBookingIcs(input);
     const { event } = parse(ics);
     expect(event.uid).toBe(input.uid);
-    expect(event.summary).toBe(`${input.dogName} – ${input.eventName}`);
+    expect(event.summary).toBe(`${input.fields[0].value} – ${input.eventName}`);
     expect(event.location).toBe(input.venuePostcode);
     const details = input.details.replace(/\r\n|\r/g, "\n").trim();
     expect(event.description).toBe(
-      `Dog: ${input.dogName}\nHandler: ${input.handlerName}\nSlot: 09:00–09:20\nCost: £12.50` +
+      `${input.fields.map((f) => `${f.label}: ${f.value}`).join("\n")}\nSlot: 09:00–09:20\nCost: £12.50` +
         (details ? `\n\n${details}` : ""),
     );
   });
@@ -378,8 +380,7 @@ describe("snapshot", () => {
       uid: "booking-42@slot-booker",
       dtstamp: "2026-06-01T10:00:00Z",
       slot: { start: "2026-06-13T08:00:00Z", end: "2026-06-13T08:20:00Z" },
-      dogName: "Zoë",
-      handlerName: "Sam Jones",
+      fields: dogHandler("Zoë", "Sam Jones"),
       eventName: "Saturday Trial Day",
       venuePostcode: "SW1A 1AA",
       costPence: 1250,
@@ -451,5 +452,32 @@ describe("lane in the description", () => {
     const ics = make({ laneName: "A\r\nX-EVIL:1\nEND:VEVENT\u0007" });
     expectWellFormed(ics);
     expect(unfold(ics).filter((l) => l.startsWith("X-EVIL") || l.startsWith("END:VEVENT"))).toEqual(["END:VEVENT"]);
+  });
+});
+
+describe("configured booking forms", () => {
+  const description = (fields: BookingIcsInput["fields"], over: Partial<BookingIcsInput> = {}) =>
+    parse(make({ fields, ...over })).event.description.split("\n");
+
+  it("is byte-identical for Dog and Handler (the first value names the booking, each value has its own line)", () => {
+    expect(prop(make(), "SUMMARY")).toBe("SUMMARY:Rex – Trial Day");
+    expect(description(dogHandler("Rex", "Sam Jones"))).toEqual(["Dog: Rex", "Handler: Sam Jones", "Slot: 09:00–09:20", "Cost: £12.50", "", "Bring water."]);
+  });
+
+  it("takes the first value for SUMMARY and a `Label: value` line for every value given, in order", () => {
+    const fields = [{ label: "Rider", value: "Ann Lee" }, { label: "Pony", value: "Biscuit" }, { label: "Notes", value: "Nervous of puddles" }];
+    expect(prop(make({ fields }), "SUMMARY")).toBe("SUMMARY:Ann Lee – Trial Day");
+    expect(description(fields).slice(0, 4)).toEqual(["Rider: Ann Lee", "Pony: Biscuit", "Notes: Nervous of puddles", "Slot: 09:00–09:20"]);
+  });
+
+  it("has one line for one field", () => {
+    expect(description([{ label: "Name", value: "Ann Lee" }]).slice(0, 2)).toEqual(["Name: Ann Lee", "Slot: 09:00–09:20"]);
+    expect(prop(make({ fields: [{ label: "Name", value: "Ann Lee" }] }), "SUMMARY")).toBe("SUMMARY:Ann Lee – Trial Day");
+  });
+
+  it("escapes a label like any other text", () => {
+    const fields = [{ label: "Dog, name; 1", value: "Rex" }];
+    expect(prop(make({ fields }), "DESCRIPTION")).toContain("DESCRIPTION:Dog\\, name\\; 1: Rex\\n");
+    expect(description(fields)[0]).toBe("Dog, name; 1: Rex");
   });
 });

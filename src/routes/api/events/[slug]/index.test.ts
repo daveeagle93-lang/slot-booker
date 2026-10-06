@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PRIVACY_NOTICE } from "../../../../server/config";
+import { defaultPrivacyNotice } from "../../../../server/config";
 import type { AppEnv } from "../../../../server/env";
 import { createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../../../../test/db";
 import { onRequestGet } from "./index";
@@ -44,7 +44,20 @@ describe("GET /api/events/:slug", () => {
       startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z",
       costPence: 1250, venuePostcode: "AB1 2CD", details: "Bring water", archived: false,
       lanes: [{ id: laneId, name: "" }], capacity: 1,
+      fields: [{ position: 1, label: "Dog", required: true, maxLength: 80 }, { position: 2, label: "Handler", required: true, maxLength: 80 }],
     });
+  });
+
+  it("lists the booking form's fields in order with their label, whether they are required and their longest value, and never which identify a booking", async () => {
+    const { slug } = await insertEvent(t.env.DB, {
+      fields: [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Notes", required: false, maxLength: 20 }],
+    });
+    const text = await (await get(slug)).text();
+    expect((JSON.parse(text) as { event: { fields: unknown } }).event.fields).toEqual([
+      { position: 1, label: "Rider", required: true, maxLength: 80 }, { position: 2, label: "Pony", required: true, maxLength: 80 },
+      { position: 3, label: "Notes", required: false, maxLength: 20 },
+    ]);
+    expect(text).not.toMatch(/identity/i);
   });
 
   it("serves an unlisted event exactly as a listed one, without saying it is unlisted", async () => {
@@ -199,9 +212,17 @@ describe("GET /api/events/:slug", () => {
       return ((await (await get(slug, vars)).json()) as { privacyNotice: string }).privacyNotice;
     };
 
-    it("is the default when PRIVACY_NOTICE is unset or blank", async () => {
-      expect(await notice()).toBe(DEFAULT_PRIVACY_NOTICE);
-      expect(await notice({ PRIVACY_NOTICE: "  \n " })).toBe(DEFAULT_PRIVACY_NOTICE);
+    it("is the default for the form's labels when PRIVACY_NOTICE is unset or blank", async () => {
+      expect(await notice()).toBe(defaultPrivacyNotice(["Dog", "Handler"]));
+      expect(await notice({ PRIVACY_NOTICE: "  \n " })).toBe(defaultPrivacyNotice(["Dog", "Handler"]));
+    });
+
+    it("names the labels the event's form really has", async () => {
+      const { slug } = await insertEvent(t.env.DB, { fields: [{ label: "Car reg", identity: true }] });
+      const text = ((await (await get(slug)).json()) as { privacyNotice: string }).privacyNotice;
+      expect(text).toBe(defaultPrivacyNotice(["Car reg"]));
+      expect(text).toContain("(Car reg)");
+      expect(text).not.toContain("Dog");
     });
 
     it("is the club's own text, trimmed, when set", async () => {
@@ -216,20 +237,23 @@ describe("GET /api/events/:slug", () => {
     const res = await get(slug, { PRIVACY_NOTICE: "Plain notice." }); // the default wording mentions dogs
     const text = await res.text();
     expect(text).toContain('"taken"');
-    for (const secret of ["Zxqdogname", "Zxqhandlername", "zxqdogname", "zxqhandlername", "dog", "handler", "key", "created"]) {
+    for (const secret of ["Zxqdogname", "Zxqhandlername", "zxqdogname", "zxqhandlername", "dog", "handler", "key", "created", "identity"]) {
       expect(text).not.toContain(secret);
     }
     const body = JSON.parse(text) as Record<string, unknown>;
     expect(Object.keys(body).sort()).toEqual(["bookings", "event", "privacyNotice", "slots"]);
-    expect(Object.keys(body.event as object).sort()).toEqual(
-      ["archived", "capacity", "costPence", "details", "endUtc", "lanes", "name", "slug", "startUtc", "venuePostcode"],
-    );
     // The lanes (id and name) and each slot's places (laneId and free) are what a booker needs; nothing else about them.
-    const { event, slots } = body as { event: { lanes: object[] }; slots: { places: object[] }[] };
+    const { event, slots } = body as { event: { lanes: object[]; fields: object[] }; slots: { places: object[] }[] };
+    expect(Object.keys(body.event as object).sort()).toEqual(
+      ["archived", "capacity", "costPence", "details", "endUtc", "fields", "lanes", "name", "slug", "startUtc", "venuePostcode"],
+    );
+    expect(event.fields.map((f) => Object.keys(f).sort())).toEqual(
+      [["label", "maxLength", "position", "required"], ["label", "maxLength", "position", "required"]],
+    );
     expect(event.lanes.map((l) => Object.keys(l).sort())).toEqual([["id", "name"]]);
     expect(slots.flatMap((s) => s.places.map((p) => Object.keys(p).sort()))).toEqual(slots.map(() => ["free", "laneId"]));
-    // Lane ids are small numbers like any id, so look for the event's and the booking's ids with the lanes and places left out.
-    const scrubbed = JSON.stringify({ ...body, event: { ...event, lanes: [] }, slots: slots.map((s) => ({ ...s, places: [] })) });
+    // Lane ids and field positions are small numbers like any id, so look for the event's and the booking's ids with the lanes, fields and places left out.
+    const scrubbed = JSON.stringify({ ...body, event: { ...event, lanes: [], fields: [] }, slots: slots.map((s) => ({ ...s, places: [] })) });
     expect(scrubbed).not.toMatch(new RegExp(`"id"|"${id}"|:${id}[,}]`));
   });
 });

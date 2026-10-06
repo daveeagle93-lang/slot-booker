@@ -1,5 +1,6 @@
 /**
- * Identity key for dog/handler names: two names that produce the same key are the same identity.
+ * Identity key for one value of an event's identity fields (a dog's name, a handler's name, a car registration, ...): two values that
+ * produce the same key are the same identity.
  * Order matters: strip default-ignorable code points, NFKC, strip them again, trim, collapse whitespace,
  * lower-case (en-GB, so no Turkish I rules).
  *

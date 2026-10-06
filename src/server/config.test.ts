@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { bookingCutoffOffsetMinutes, DEFAULT_PRIVACY_NOTICE, privacyNotice } from "./config";
+import { bookingCutoffOffsetMinutes, defaultPrivacyNotice, privacyNotice } from "./config";
+
+const DOG_HANDLER = ["Dog", "Handler"];
 
 const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 afterEach(() => warn.mockClear());
@@ -29,35 +31,40 @@ describe("bookingCutoffOffsetMinutes", () => {
 });
 
 describe("privacyNotice", () => {
-  it("has a British English default that says what this build really does: names can be shared as a running order, and details are kept until an organiser deletes the event", () => {
-    expect(DEFAULT_PRIVACY_NOTICE).toBe(
-      "We store your name, your dog's name and the slot you choose so the club can run the event. "
-      + "The club's organisers can see these details; other people using this page only see which slots are taken. "
-      + "The organisers may share the running order, with names, with other participants (for example in a group chat). "
-      + "The details are kept until an organiser deletes the event; nothing is deleted automatically.",
-    );
-    expect(DEFAULT_PRIVACY_NOTICE).not.toMatch(/deletes booking details after/i);
+  const REST = "The club's organisers can see these details; other people using this page only see which slots are taken. "
+    + "The organisers may share the running order, with names, with other participants (for example in a group chat). "
+    + "The details are kept until an organiser deletes the event; nothing is deleted automatically.";
+
+  it("has a British English default that names the labels of the booking form, and says what this build really does: names can be shared as a running order, and details are kept until an organiser deletes the event", () => {
+    expect(defaultPrivacyNotice(DOG_HANDLER)).toBe(`We store the details you enter on this form (Dog, Handler) and the slot you choose so the club can run the event. ${REST}`);
+    expect(defaultPrivacyNotice(DOG_HANDLER)).not.toMatch(/deletes booking details after/i);
+  });
+
+  it("lists one label, or four, in the order of the form", () => {
+    expect(defaultPrivacyNotice(["Name"])).toBe(`We store the details you enter on this form (Name) and the slot you choose so the club can run the event. ${REST}`);
+    expect(defaultPrivacyNotice(["Rider", "Pony", "Phone", "Notes"])).toContain("(Rider, Pony, Phone, Notes)");
   });
 
   it.each([undefined, "", "   ", "\n\n \t\n"])("uses the default for %j", (raw) => {
-    expect(privacyNotice(raw)).toBe(DEFAULT_PRIVACY_NOTICE);
+    expect(privacyNotice(raw, DOG_HANDLER)).toBe(defaultPrivacyNotice(DOG_HANDLER));
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("uses a custom notice, trimmed, keeping blank lines between paragraphs", () => {
-    expect(privacyNotice("  First paragraph.\n\nSecond paragraph.\n ")).toBe("First paragraph.\n\nSecond paragraph.");
+  it("uses a custom notice, trimmed, keeping blank lines between paragraphs, whatever the labels", () => {
+    expect(privacyNotice("  First paragraph.\n\nSecond paragraph.\n ", DOG_HANDLER)).toBe("First paragraph.\n\nSecond paragraph.");
+    expect(privacyNotice("  First paragraph.  ", ["Name"])).toBe("First paragraph.");
     expect(warn).not.toHaveBeenCalled();
   });
 
   it("keeps a notice of exactly 1000 code points", () => {
     const exact = "é".repeat(1000);
-    expect(privacyNotice(exact)).toBe(exact);
+    expect(privacyNotice(exact, DOG_HANDLER)).toBe(exact);
     expect(warn).not.toHaveBeenCalled();
   });
 
   it("truncates to 1000 code points, not UTF-16 units, and warns once", () => {
     const long = "🐕".repeat(1001);
-    const result = privacyNotice(long);
+    const result = privacyNotice(long, DOG_HANDLER);
     expect([...result]).toHaveLength(1000);
     expect(result.isWellFormed()).toBe(true);
     expect(warn).toHaveBeenCalledTimes(1);

@@ -166,16 +166,18 @@ export function init({ document, fetch, location, clipboard, settings = null, se
     const slotsLeft = h("p", { class: "slots-left" });
     const grid = h("ul", { class: "slot-grid" });
 
-    const dog = h("input", {
-      id: "dog-name", name: "dog", type: "text", required: true, maxlength: "80", autocapitalize: "words",
-      autocomplete: "off", enterkeyhint: "next", "aria-describedby": "dog-error",
-    });
-    const handler = h("input", {
-      id: "handler-name", name: "handler", type: "text", required: true, maxlength: "80", autocapitalize: "words",
-      autocomplete: "name", enterkeyhint: "done", "aria-describedby": "handler-error",
-    });
-    const dogError = h("p", { id: "dog-error", class: "field-error", role: "alert" });
-    const handlerError = h("p", { id: "handler-error", class: "field-error", role: "alert" });
+    // One input for each field of the event's booking form, in order. Ids and names come from the field's position, and the
+    // keyboard's enter key says "next" until the last field, where it says "done".
+    const fields = (event.fields ?? []).map((f, i, all) => ({
+      position: f.position,
+      input: h("input", {
+        id: `field-${f.position}`, name: `field${f.position}`, type: "text", required: f.required, maxlength: String(f.maxLength),
+        autocapitalize: "words", autocomplete: "off", enterkeyhint: i === all.length - 1 ? "done" : "next",
+        "aria-describedby": `field-${f.position}-error`,
+      }),
+      error: h("p", { id: `field-${f.position}-error`, class: "field-error", role: "alert" }),
+      label: f.required ? f.label : `${f.label} (optional)`,
+    }));
     const formError = h("div", { class: "form-error", role: "alert" });
     const heading = h("h2", { tabindex: "-1" });
     const submit = h("button", { type: "submit", class: "button primary" });
@@ -188,13 +190,12 @@ export function init({ document, fetch, location, clipboard, settings = null, se
     const form = h("form", { id: "booking-form", hidden: true },
       heading,
       formError,
-      h("div", { class: "field" }, h("label", { for: "dog-name" }, "Dog's name"), dog, dogError),
-      h("div", { class: "field" }, h("label", { for: "handler-name" }, "Handler's name"), handler, handlerError),
+      ...fields.map((f) => h("div", { class: "field" }, h("label", { for: f.input.id }, f.label), f.input, f.error)),
       ...(privacySection ? [privacySection] : []),
       submit,
       progress);
 
-    view = { privacy: privacySection, notice, slotsLeft, grid, form, heading, submit, progress, formError, dog, handler, dogError, handlerError };
+    view = { privacy: privacySection, notice, slotsLeft, grid, form, heading, submit, progress, formError, fields };
     show(
       eventHeader(event),
       h("section", { class: "slots", "aria-labelledby": "slots-heading" },
@@ -279,7 +280,7 @@ export function init({ document, fetch, location, clipboard, settings = null, se
 
   function clearErrors() {
     view.formError.textContent = "";
-    for (const [input, error] of [[view.dog, view.dogError], [view.handler, view.handlerError]]) {
+    for (const { input, error } of view.fields) {
       error.textContent = "";
       input.removeAttribute("aria-invalid");
     }
@@ -308,7 +309,7 @@ export function init({ document, fetch, location, clipboard, settings = null, se
       res = await fetch(`/api/events/${slug}/bookings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slot: selected, ...(selectedLane === null ? {} : { laneId: selectedLane }), dogName: view.dog.value, handlerName: view.handler.value, idempotencyKey }),
+        body: JSON.stringify({ slot: selected, ...(selectedLane === null ? {} : { laneId: selectedLane }), ...Object.fromEntries(view.fields.map((f) => [`field${f.position}`, f.input.value])), idempotencyKey }),
       });
       data = await res.json().catch(() => null);
     } catch {
@@ -332,9 +333,13 @@ export function init({ document, fetch, location, clipboard, settings = null, se
       view.formError.textContent = data.error.message;
     } else if (res.status === 400 && code === "invalid_input") {
       const f = data.fields ?? {};
-      if (f.dogName) fieldError(view.dog, view.dogError, f.dogName);
-      if (f.handlerName) fieldError(view.handler, view.handlerError, f.handlerName);
-      if (f.slot || f.laneId || !(f.dogName || f.handlerName)) {
+      let fieldErrors = 0;
+      for (const { position, input, error } of view.fields) {
+        if (!f[`field${position}`]) continue;
+        fieldError(input, error, f[`field${position}`]);
+        fieldErrors++;
+      }
+      if (f.slot || f.laneId || fieldErrors === 0) {
         view.formError.textContent = f.slot ?? f.laneId ?? f.idempotencyKey ?? data.error.message;
       }
     } else if (res.status === 400 && code === "invalid_slot") {
@@ -386,8 +391,7 @@ export function init({ document, fetch, location, clipboard, settings = null, se
       h("p", { class: "event-name" }, ev.name),
       h("dl", { class: "facts" },
         ...row("When", when),
-        ...row("Dog", booking.dogName),
-        ...row("Handler", booking.handlerName),
+        ...booking.fields.flatMap((f) => row(f.label, f.value)),
         ...(booking.lane?.name ? row("Lane", booking.lane.name) : []),
         ...row("Venue", mapsLink(ev.venuePostcode)),
         ...row("Cost", formatPounds(ev.costPence))),

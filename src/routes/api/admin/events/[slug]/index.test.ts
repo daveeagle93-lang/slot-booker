@@ -3,7 +3,7 @@ import { buildLineup } from "../../../../../core/lineup";
 import { generateSlug } from "../../../../../core/slug";
 import type { AppEnv } from "../../../../../server/env";
 import { saveSettings } from "../../../../../server/settings";
-import { countRows, createTestEnv, insertBooking, insertBreak, insertEvent, insertTemplate, interceptBatches, type TestEnv } from "../../../../../test/db";
+import { countRows, createTestEnv, insertBooking, insertBookingOf, insertBreak, insertEvent, insertTemplate, interceptBatches, type TestEnv } from "../../../../../test/db";
 import { onRequestPost as book } from "../../../events/[slug]/bookings";
 import { onRequestGet as publicGet } from "../../../events/[slug]/index";
 import { onRequestDelete as clearBooking } from "./bookings/[id]/index";
@@ -31,13 +31,16 @@ const get = (slug: string, ...data: unknown[]): Promise<Response> =>
     } as unknown as Parameters<typeof onRequestGet>[0]),
   );
 
+/** A booking of the Dog and Handler form as the admin API shows it: labelled values, and TRANSITIONAL(6b) `dogName` and `handlerName`. */
+const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }], dogName: dog, handlerName: handler });
+
 interface Detail {
   event: Record<string, unknown>;
   slots: {
     start: string; end: string; booking: { id: number; dogName: string; handlerName: string } | null;
-    places: { laneId: number; laneName: string; free: number; bookings: { id: number; dogName: string; handlerName: string }[] }[];
+    places: { laneId: number; laneName: string; free: number; bookings: { id: number; dogName: string; handlerName: string; fields: { label: string; value: string }[] }[] }[];
   }[];
-  orphans: { id: number; slotStart: string; dogName: string; handlerName: string; lane: { id: number; name: string } }[];
+  orphans: { id: number; slotStart: string; dogName: string; handlerName: string; fields: { label: string; value: string }[]; lane: { id: number; name: string } }[];
   lineup: string;
   defaultShareMessage: string;
 }
@@ -64,6 +67,7 @@ describe("GET /api/admin/events/[slug]", () => {
       startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z",
       breaks: [{ start: "10:00", end: "10:30", label: "Lunch", startUtc: "2026-10-24T09:00:00Z", endUtc: "2026-10-24T09:30:00Z" }],
       lanes: [{ id: expect.any(Number), name: "" }], capacity: 1,
+      fields: [{ label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }], identityLimit: 1,
     });
     expect(body.orphans).toEqual([]);
   });
@@ -113,8 +117,8 @@ describe("GET /api/admin/events/[slug]", () => {
     expect(slots).toEqual([
       { start: "2026-10-24T08:00:00Z", end: "2026-10-24T08:20:00Z", booking: null, places: free },
       {
-        start: "2026-10-24T08:20:00Z", end: "2026-10-24T08:40:00Z", booking: { id: bookingId, dogName: "Rex", handlerName: "Sam Smith" },
-        places: [{ laneId, laneName: "", free: 0, bookings: [{ id: bookingId, dogName: "Rex", handlerName: "Sam Smith" }] }],
+        start: "2026-10-24T08:20:00Z", end: "2026-10-24T08:40:00Z", booking: { id: bookingId, ...dh("Rex", "Sam Smith") },
+        places: [{ laneId, laneName: "", free: 0, bookings: [{ id: bookingId, ...dh("Rex", "Sam Smith") }] }],
       },
       { start: "2026-10-24T08:40:00Z", end: "2026-10-24T09:00:00Z", booking: null, places: free },
     ]);
@@ -131,8 +135,8 @@ describe("GET /api/admin/events/[slug]", () => {
     expect(event).toMatchObject({ lanes: [{ id: l1, name: "Ring 1" }, { id: l2, name: "Ring 2" }], capacity: 2 });
     expect(slots.map((s) => s.booking)).toEqual([null, null]);
     expect(slots[0].places).toEqual([
-      { laneId: l1, laneName: "Ring 1", free: 0, bookings: [{ id: first, dogName: "First", handlerName: "H" }, { id: second, dogName: "Second", handlerName: "H" }] },
-      { laneId: l2, laneName: "Ring 2", free: 1, bookings: [{ id: other, dogName: "Other", handlerName: "H" }] },
+      { laneId: l1, laneName: "Ring 1", free: 0, bookings: [{ id: first, ...dh("First", "H") }, { id: second, ...dh("Second", "H") }] },
+      { laneId: l2, laneName: "Ring 2", free: 1, bookings: [{ id: other, ...dh("Other", "H") }] },
     ]);
     expect(slots[1].places).toEqual([{ laneId: l1, laneName: "Ring 1", free: 2, bookings: [] }, { laneId: l2, laneName: "Ring 2", free: 2, bookings: [] }]);
     expect(orphans).toEqual([]);
@@ -141,7 +145,7 @@ describe("GET /api/admin/events/[slug]", () => {
   it("keeps `booking` for one lane and capacity 1 even when the lane is named, and drops it for one lane with capacity 2", async () => {
     const named = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:20:00Z", sessionMinutes: 20, lanes: ["Main"] });
     const b = await insertBooking(t.env.DB, named.id, "2026-10-24T08:00:00Z", "Rex", "Sam");
-    expect((await detail(named.slug)).slots[0].booking).toEqual({ id: b, dogName: "Rex", handlerName: "Sam" });
+    expect((await detail(named.slug)).slots[0].booking).toEqual({ id: b, ...dh("Rex", "Sam") });
     const wide = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:20:00Z", sessionMinutes: 20, capacity: 2 });
     await insertBooking(t.env.DB, wide.id, "2026-10-24T08:00:00Z", "Rex", "Sam");
     expect((await detail(wide.slug)).slots[0].booking).toBeNull();
@@ -164,7 +168,18 @@ describe("GET /api/admin/events/[slug]", () => {
     const { slots, orphans } = await detail(slug);
     expect(slots.every((s) => s.booking === null)).toBe(true);
     expect(orphans.map((o) => o.dogName)).toEqual(["Early", "Zed"]);
-    expect(orphans[0]).toEqual({ id: orphanId, slotStart: "2026-10-24T07:00:00Z", dogName: "Early", handlerName: "Eve", lane: { id: expect.any(Number), name: "" } });
+    expect(orphans[0]).toEqual({ id: orphanId, slotStart: "2026-10-24T07:00:00Z", ...dh("Early", "Eve"), lane: { id: expect.any(Number), name: "" } });
+  });
+
+  it("lists a configured form's values by label (a blank optional one left out) and joins them in the lineup, in the form's order", async () => {
+    const fields = [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Phone", required: false }];
+    const { id, slug } = await insertEvent(t.env.DB, { name: "Pony day", startUtc: "2026-03-14T09:00:00Z", endUtc: "2026-03-14T09:40:00Z", sessionMinutes: 20, venuePostcode: "AB1 2CD", fields });
+    await insertBookingOf(t.env.DB, id, fields, "2026-03-14T09:00:00Z", ["Ann Lee", "Biscuit", "07700 900123"]);
+    await insertBookingOf(t.env.DB, id, fields, "2026-03-14T09:20:00Z", ["Bea", "Nutmeg"]);
+    const body = await detail(slug);
+    expect(body.slots[0].places[0].bookings[0]).toMatchObject({ fields: [{ label: "Rider", value: "Ann Lee" }, { label: "Pony", value: "Biscuit" }, { label: "Phone", value: "07700 900123" }] });
+    expect(body.slots[1].places[0].bookings[0]).toMatchObject({ fields: [{ label: "Rider", value: "Bea" }, { label: "Pony", value: "Nutmeg" }] });
+    expect(body.lineup).toBe("Pony day\nSaturday 14 March 2026 · AB1 2CD\n\n09:00 — Ann Lee — Biscuit — 07700 900123\n09:20 — Bea — Nutmeg");
   });
 
   it("includes the lineup text, equal to buildLineup on the same data, without orphans", async () => {
@@ -274,11 +289,11 @@ async function snapshot(eventId: number): Promise<string> {
 
 interface Saved {
   event: Record<string, unknown>; slotCount: number;
-  removed: { id: number; slotStart: string; dogName: string; handlerName: string; lane: { id: number; name: string } }[];
+  removed: { id: number; slotStart: string; dogName: string; handlerName: string; fields: { label: string; value: string }[]; lane: { id: number; name: string } }[];
 }
 interface Conflict {
   error: { code: string; message: string };
-  affected: { id: number; slotStart: string; dogName: string; handlerName: string; lane: { id: number; name: string } }[];
+  affected: { id: number; slotStart: string; dogName: string; handlerName: string; fields: { label: string; value: string }[]; lane: { id: number; name: string } }[];
 }
 const storedBreaks = async (eventId: number) =>
   (await t.env.DB.prepare("SELECT start_utc, end_utc, label FROM breaks WHERE event_id = ? ORDER BY start_utc").bind(eventId).all()).results;
@@ -301,6 +316,7 @@ describe("PUT /api/admin/events/[slug]: saving without bookings in the way", () 
       startUtc: "2026-10-31T10:00:00Z", endUtc: "2026-10-31T13:00:00Z",
       breaks: [{ start: "11:00", end: "11:15", label: "Tea", startUtc: "2026-10-31T11:00:00Z", endUtc: "2026-10-31T11:15:00Z" }],
       lanes: [{ id: expect.any(Number), name: "" }], capacity: 1,
+      fields: [{ label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }], identityLimit: 1,
     });
     expect(body.removed).toEqual([]);
     expect(body.slotCount).toBe(6); // 10:00 10:25 | 11:15 11:40 12:05 12:30 (10:50 would overrun the break, 12:55 the end)
@@ -433,8 +449,8 @@ describe("PUT /api/admin/events/[slug]: bookings that would lose their slot", ()
   }
   const shorter = (over: Record<string, unknown> = {}) => draft({ end: "11:30", ...over });
   const listOf = (e: { b: number; c: number }) => [
-    { id: e.b, slotStart: "2026-10-24T10:30:00Z", dogName: "Bravo", handlerName: "Bob", lane: { id: expect.any(Number), name: "" } },
-    { id: e.c, slotStart: "2026-10-24T10:45:00Z", dogName: "Charlie", handlerName: "Cat", lane: { id: expect.any(Number), name: "" } },
+    { id: e.b, slotStart: "2026-10-24T10:30:00Z", ...dh("Bravo", "Bob"), lane: { id: expect.any(Number), name: "" } },
+    { id: e.c, slotStart: "2026-10-24T10:45:00Z", ...dh("Charlie", "Cat"), lane: { id: expect.any(Number), name: "" } },
   ];
 
   it("saves a change to `listed` alone with bookings present: no 409, nothing removed, bookings kept", async () => {
@@ -526,7 +542,7 @@ describe("PUT /api/admin/events/[slug]: bookings that would lose their slot", ()
   const publicRequest = (slug: string, slot: string, key: string) => () => book({
     request: new Request(`http://localhost/api/events/${slug}/bookings`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slot, dogName: "Rex", handlerName: "Sam Smith", idempotencyKey: key }),
+      body: JSON.stringify({ slot, field1: "Rex", field2: "Sam Smith", idempotencyKey: key }),
     }),
     env: t.env, params: { slug },
   } as unknown as Parameters<typeof book>[0]);
@@ -1064,5 +1080,111 @@ describe("PUT /api/admin/events/[slug]: lanes and capacity", () => {
     expect((await put(e.slug, draft({ name: "Only the name" }))).status).toBe(200);
     expect(await lanesOf(e.id)).toEqual([{ id: e.laneIds[0], name: "Ring 1" }, { id: e.laneIds[1], name: "Ring 2" }]);
     expect(await capacityOf(e.id)).toEqual({ capacity: 4, config_rev: 0 });
+  });
+});
+
+describe("PUT /api/admin/events/[slug]: the booking form's fields and the identity limit", () => {
+  const F = (label: string, over: Record<string, unknown> = {}) => ({ label, required: true, maxLength: 80, identity: false, ...over });
+  const form = async (id: number) => (await t.env.DB.prepare("SELECT label, required, max_length, in_identity FROM event_fields WHERE event_id = ? ORDER BY position").bind(id).all()).results;
+  const errorOf = async (res: Response) => ((await res.json()) as { error: { code: string; message: string } }).error;
+
+  it("saves the fields and the limit, returns them with the event, and the detail shows the same", async () => {
+    const e = await seed();
+    const fields = [F("Rider", { identity: true }), F("Pony", { identity: true, maxLength: 30 }), F("Phone", { required: false, maxLength: 12 })];
+    const res = await put(e.slug, draft({ fields, identityLimit: 3 }));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Saved).event).toMatchObject({ fields, identityLimit: 3 });
+    expect((await detail(e.slug)).event).toMatchObject({ fields, identityLimit: 3 });
+    expect(await form(e.id)).toEqual([
+      { label: "Rider", required: 1, max_length: 80, in_identity: 1 }, { label: "Pony", required: 1, max_length: 30, in_identity: 1 }, { label: "Phone", required: 0, max_length: 12, in_identity: 0 },
+    ]);
+  });
+
+  it("keeps the fields and the limit when the body doesn't send them", async () => {
+    const e = await seed({ identityLimit: 4 });
+    expect((await put(e.slug, draft({ name: "Only the name" }))).status).toBe(200);
+    expect((await form(e.id)).map((f) => f.label)).toEqual(["Dog", "Handler"]);
+    expect((await detail(e.slug)).event).toMatchObject({ identityLimit: 4 });
+  });
+
+  it("answers 400 with the field errors, keyed fields.N.label and so on, changing nothing", async () => {
+    const e = await seed();
+    const before = await snapshot(e.id);
+    const res = await put(e.slug, draft({ fields: [F("Dog", { identity: true, maxLength: 0 }), F("dog", { required: "x" })], identityLimit: 21 }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: Record<string, string> }).fields).toEqual({
+      "fields.0.maxLength": "Enter a whole number of characters from 1 to 80.", "fields.1.label": "Two fields can't have the same label.",
+      "fields.1.required": "Required must be true or false.", identityLimit: "Enter a whole number of bookings from 1 to 20.",
+    });
+    expect(await snapshot(e.id)).toBe(before);
+  });
+
+  describe("an event with bookings", () => {
+    it("answers 409 fields_locked for a changed number of fields or identity set, naming nothing else, and changes nothing", async () => {
+      const e = await seed();
+      await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Rex", "Sam");
+      const before = await snapshot(e.id);
+      for (const fields of [[F("Dog", { identity: true })], [F("Dog", { identity: true }), F("Handler", { identity: true }), F("Notes", { required: false })], [F("Dog", { identity: true }), F("Handler")]]) {
+        const res = await put(e.slug, draft({ name: "Not saved", fields }));
+        expect(res.status, JSON.stringify(fields)).toBe(409);
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        expect((await errorOf(res)).code).toBe("fields_locked");
+      }
+      expect(await snapshot(e.id)).toBe(before);
+      expect((await form(e.id)).map((f) => f.label)).toEqual(["Dog", "Handler"]);
+    });
+
+    it("saves a change of labels, required flags, longest values and identity limit", async () => {
+      const e = await seed();
+      await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Rex", "Sam");
+      const res = await put(e.slug, draft({ fields: [F("Horse", { identity: true, maxLength: 40 }), F("Rider", { identity: true })], identityLimit: 2 }));
+      expect(res.status).toBe(200);
+      expect((await form(e.id)).map((f) => [f.label, f.max_length])).toEqual([["Horse", 40], ["Rider", 80]]);
+      expect((await t.env.DB.prepare("SELECT identity_limit, config_rev FROM event_layout WHERE event_id = ?").bind(e.id).first())).toEqual({ identity_limit: 2, config_rev: 1 });
+    });
+
+    it("answers fields_locked, not bookings_affected, when the same save would also strand a booking", async () => {
+      const e = await seed();
+      await insertBooking(t.env.DB, e.id, "2026-10-24T10:45:00Z", "Rex", "Sam");
+      const res = await put(e.slug, draft({ end: "11:30", fields: [F("Dog", { identity: true })] }));
+      expect((await errorOf(res)).code).toBe("fields_locked");
+    });
+  });
+
+  it("answers 409 fields_locked when a booking lands between the read and the save", async () => {
+    const e = await seed();
+    const res = await put(e.slug, draft({ fields: [F("Car reg", { identity: true })] }), {
+      env: {
+        DB: interceptBatches(t.env.DB, async (sqls, run) => {
+          if (sqls.some((q) => q.startsWith("UPDATE events SET name"))) await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Rex", "Sam");
+          return run();
+        }),
+      },
+    });
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe("fields_locked");
+    expect((await form(e.id)).map((f) => f.label)).toEqual(["Dog", "Handler"]);
+  });
+
+  it("answers 409 event_changed when the form was edited after the event was read and the body sends fields", async () => {
+    const e = await seed();
+    const res = await put(e.slug, draft({ fields: [F("Mine", { identity: true })] }), {
+      env: {
+        DB: interceptBatches(t.env.DB, async (sqls, run) => {
+          if (sqls.some((q) => q.startsWith("UPDATE events SET name"))) await t.env.DB.prepare("UPDATE event_layout SET config_rev = config_rev + 1 WHERE event_id = ?").bind(e.id).run();
+          return run();
+        }),
+      },
+    });
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).code).toBe("event_changed");
+    expect((await form(e.id)).map((f) => f.label)).toEqual(["Dog", "Handler"]);
+  });
+
+  it("refuses an empty list of fields", async () => {
+    const e = await seed();
+    const res = await put(e.slug, draft({ fields: [] }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: Record<string, string> }).fields).toEqual({ fields: "A booking form needs at least one field." });
   });
 });

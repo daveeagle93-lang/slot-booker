@@ -21,7 +21,7 @@ const seed = async (over: Parameters<typeof insertEvent>[1] = {}) => {
   const e = await insertEvent(t.env.DB, over);
   return { ...e, event: async () => (await loadEventBySlug(t.env.DB, e.slug))! };
 };
-const input = (laneId: number, dog = "Rex", handler = "Sam", slot = S1, key = IDEM): BookingInput => ({ slot, laneId, dogName: dog, handlerName: handler, idempotencyKey: key });
+const input = (laneId: number, dog = "Rex", handler = "Sam", slot = S1, key = IDEM): BookingInput => ({ slot, laneId, values: [dog, handler], idempotencyKey: key });
 const make = async (e: Awaited<ReturnType<typeof seed>>, i: BookingInput, db: D1Database = t.env.DB): Promise<CreateResult> =>
   createBooking(db, await e.event(), { start: i.slot, end: i.slot }, i, NOW);
 const stored = async (eventId: number) =>

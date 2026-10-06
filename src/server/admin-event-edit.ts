@@ -5,14 +5,17 @@ import { defaultShareMessageStatement, previewSchedule, type EventDraft } from "
 import { noStore } from "./bookings";
 import { guard, isGuardFailure } from "./db-guard";
 import { loadEventBySlug, type EventRow } from "./events";
+import { draftsOf, fieldChange, shownValues, withPositions } from "./fields";
 import { errorResponse } from "./http";
 import { loadSettings } from "./settings";
 
 export type EditResult =
   | { kind: "saved"; event: EventRow; slotCount: number; removed: BookingRef[] }
   | { kind: "bookings_affected"; affected: BookingRef[] }
-  /** The lanes or capacity were edited by someone else after the event was read, and this request would have overwritten that. */
+  /** The lanes, capacity, identity limit or fields were edited by someone else after the event was read, and this request would have overwritten that. */
   | { kind: "layout_changed" }
+  /** The request changes the number of fields or which of them identify a booking, and the event has bookings (or got one meanwhile): nothing was written. */
+  | { kind: "fields_locked" }
   | { kind: "not_found" };
 
 export const eventNotFound = (): Response => errorResponse(404, "not_found", "Event not found", {}, noStore);
@@ -22,13 +25,35 @@ export const editFailed = (what: string, e: unknown): Response => {
   return errorResponse(500, "internal_error", "Something went wrong. Please try again.", {}, noStore);
 };
 
-/** A booking as the edit screens list it. `slotStart` is a UTC instant; the slot's end isn't needed. */
-export interface BookingRef { id: number; slotStart: string; dogName: string; handlerName: string; lane: { id: number; name: string } }
+/**
+ * A booking as the edit screens list it. `slotStart` is a UTC instant; the slot's end isn't needed. `fields` are the values of
+ * the booking form, labelled, in the form's order (a blank optional one is left out).
+ *
+ * TRANSITIONAL(6b): `dogName` and `handlerName` (the first two values, "" if the form has no second) are still sent because the
+ * admin pages written before the fields were configurable read them. Delete them with those pages' use of them.
+ */
+export interface BookingRef {
+  id: number; slotStart: string; lane: { id: number; name: string };
+  fields: { label: string; value: string }[]; dogName: string; handlerName: string;
+}
 
 /** A booking with what deciding a clash needs: its place and when it was made. */
 export interface StoredBooking extends BookingRef { place: number; createdAt: string }
 
-export const toRef = (b: StoredBooking): BookingRef => ({ id: b.id, slotStart: b.slotStart, dogName: b.dogName, handlerName: b.handlerName, lane: b.lane });
+/** The bookings columns `value_1` to `value_4`, as every query that lists bookings selects them. */
+export interface ValueColumns { value_1: string; value_2: string; value_3: string; value_4: string }
+
+/** A booking as the admin API shows it, from its columns and the event's fields. */
+export const bookingRefOf = (
+  b: { id: number; slotStart: string; lane: { id: number; name: string } } & ValueColumns, fields: readonly { label: string }[],
+): BookingRef => ({
+  id: b.id, slotStart: b.slotStart, lane: b.lane, fields: shownValues(fields, [b.value_1, b.value_2, b.value_3, b.value_4]),
+  dogName: b.value_1, handlerName: b.value_2, // TRANSITIONAL(6b)
+});
+
+export const toRef = (b: StoredBooking): BookingRef => ({
+  id: b.id, slotStart: b.slotStart, lane: b.lane, fields: b.fields, dogName: b.dogName, handlerName: b.handlerName, // TRANSITIONAL(6b)
+});
 
 /** The event as the edit form uses it: London-local date and times next to the stored UTC instants. */
 export const eventView = (e: EventRow) => ({
@@ -38,22 +63,23 @@ export const eventView = (e: EventRow) => ({
   venuePostcode: e.venuePostcode, details: e.details, shareMessage: e.shareMessage,
   startUtc: e.startUtc, endUtc: e.endUtc,
   lanes: e.lanes.map((l) => ({ id: l.id, name: l.name })), capacity: e.capacity,
+  fields: draftsOf(e.fields), identityLimit: e.identityLimit,
   breaks: [...e.breaks].sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0))
     .map((b) => ({ start: utcToLondon(b.start).time, end: utcToLondon(b.end).time, label: b.label, startUtc: b.start, endUtc: b.end })),
 });
 
-/** Every booking of the event, in slot, lane and place order: one query. The booking form's two fields are value_1 and value_2. */
-export async function loadBookings(db: D1Database, eventId: number): Promise<StoredBooking[]> {
+/** Every booking of the event, in slot, lane and place order: one query. */
+export async function loadBookings(db: D1Database, event: Pick<EventRow, "id" | "fields">): Promise<StoredBooking[]> {
   const { results } = await db
     .prepare(
-      `SELECT b.id, b.slot_start_utc, b.value_1, b.value_2, b.lane_id, l.name AS lane_name, b.place, b.created_at
+      `SELECT b.id, b.slot_start_utc, b.value_1, b.value_2, b.value_3, b.value_4, b.lane_id, l.name AS lane_name, b.place, b.created_at
        FROM bookings b JOIN event_lanes l ON l.id = b.lane_id
        WHERE b.event_id = ? ORDER BY b.slot_start_utc, l.position, b.place, b.id`,
     )
-    .bind(eventId)
-    .all<{ id: number; slot_start_utc: string; value_1: string; value_2: string; lane_id: number; lane_name: string; place: number; created_at: string }>();
+    .bind(event.id)
+    .all<ValueColumns & { id: number; slot_start_utc: string; lane_id: number; lane_name: string; place: number; created_at: string }>();
   return results.map((r) => ({
-    id: r.id, slotStart: r.slot_start_utc, dogName: r.value_1, handlerName: r.value_2, lane: { id: r.lane_id, name: r.lane_name },
+    ...bookingRefOf({ ...r, slotStart: r.slot_start_utc, lane: { id: r.lane_id, name: r.lane_name } }, event.fields),
     place: r.place, createdAt: r.created_at,
   }));
 }
@@ -117,7 +143,7 @@ export async function eventDetail(db: D1Database, event: EventRow) {
     start: event.startUtc, end: event.endUtc, sessionMinutes: event.sessionMinutes, gapMinutes: event.gapMinutes, breaks: event.breaks,
   });
   const [bookings, { clubName }, defaultMessage] = await Promise.all([
-    loadBookings(db, event.id), loadSettings(db), defaultShareMessageStatement(db).first<{ share_message: string }>(),
+    loadBookings(db, event), loadSettings(db), defaultShareMessageStatement(db).first<{ share_message: string }>(),
   ]);
   const orphans = orphanBookings(bookings, event, slots);
   const orphanIds = new Set(orphans.map((b) => b.id));
@@ -129,7 +155,7 @@ export async function eventDetail(db: D1Database, event: EventRow) {
       const held = at.get(`${s.start}|${l.id}`) ?? [];
       return {
         laneId: l.id, laneName: l.name, free: Math.max(0, event.capacity - held.length),
-        bookings: held.map((b) => ({ id: b.id, dogName: b.dogName, handlerName: b.handlerName })),
+        bookings: held.map((b) => ({ id: b.id, fields: b.fields, dogName: b.dogName, handlerName: b.handlerName })), // dogName and handlerName: TRANSITIONAL(6b)
       };
     });
     return { ...s, booking: single ? places[0].bookings[0] ?? null : null, places };
@@ -172,17 +198,24 @@ export interface SaveHooks { afterRead?: () => Promise<void> }
  * (not_found, nothing written). A draft that lists the lanes or the capacity is written over the layout it was made from, so it
  * also fails (layout_changed) if the layout was edited after the event was read; every edit that changes the lanes or the
  * capacity increases event_layout.config_rev in the same batch, which is how a booking request that read the old layout fails
- * its own guard (db-guard.ts). Other event fields are last write wins.
+ * its own guard (db-guard.ts). The same holds for a draft that lists `fields` or `identityLimit`: written over the form it was made
+ * from, and config_rev goes up when the identity limit, the number of fields, which of them identify a booking, a required flag or a
+ * longest value changes (labels alone don't matter to a booking in flight). Once the event has bookings the number of fields and the
+ * identity fields can't change (fields_locked): checked on the bookings read, and by a guard in the batch, so a booking made
+ * after the read stops the save too. Other event fields are last write wins.
  */
 export async function saveEventEdit(
   db: D1Database, event: EventRow, draft: EventDraft, confirmedIds: number[], hooks: SaveHooks = {},
 ): Promise<EditResult> {
   const { slots } = previewSchedule(draft);
   const confirmed = new Set(confirmedIds);
-  const touchesLayout = draft.lanes !== undefined || draft.capacity !== undefined;
+  const touchesLayout = draft.lanes !== undefined || draft.capacity !== undefined || draft.fields !== undefined || draft.identityLimit !== undefined;
   let current = event;
   for (let attempt = 0; ; attempt++) {
-    const affected = strandedBookings(await loadBookings(db, current.id), planOf(current, draft, slots));
+    const bookings = await loadBookings(db, current);
+    // Bookings hold values and identity keys made for the form they were booked with: its number of fields and which of them identify a booking stay.
+    if (bookings.length > 0 && draft.fields !== undefined && fieldChange(current.fields, draft.fields).shape) return { kind: "fields_locked" };
+    const affected = strandedBookings(bookings, planOf(current, draft, slots));
     if (affected.some((b) => !confirmed.has(b.id)) || attempt >= MAX_ATTEMPTS) return { kind: "bookings_affected", affected: affected.map(toRef) };
     if (attempt === 0) await hooks.afterRead?.();
     try {
@@ -213,13 +246,17 @@ async function writeEdit(
   const capacity = draft.capacity ?? event.capacity;
   const lanesChanged = lanes !== undefined
     && (lanes.length !== event.lanes.length || lanes.some((l, i) => l.id !== event.lanes[i].id || l.name !== event.lanes[i].name));
-  const layoutChanged = lanesChanged || capacity !== event.capacity;
+  const identityLimit = draft.identityLimit ?? event.identityLimit;
+  const fields = draft.fields === undefined ? undefined : fieldChange(event.fields, draft.fields);
+  const layoutChanged = lanesChanged || capacity !== event.capacity || identityLimit !== event.identityLimit || (fields?.matters ?? false);
 
   const batch: D1PreparedStatement[] = [
     guard(db, "EXISTS (SELECT 1 FROM events WHERE id = ?)", event.id),
-    ...(lanes === undefined && draft.capacity === undefined ? [] : [
+    ...(lanes === undefined && draft.capacity === undefined && draft.fields === undefined && draft.identityLimit === undefined ? [] : [
       guard(db, "COALESCE((SELECT config_rev FROM event_layout WHERE event_id = ?), 0) = ?", event.id, event.configRev),
     ]),
+    // A booking made since the read stops a change of the number of fields or the identity fields (the whole batch writes nothing).
+    ...(fields?.shape ? [guard(db, "NOT EXISTS (SELECT 1 FROM bookings WHERE event_id = ?)", event.id)] : []),
     guard(
       db,
       `NOT EXISTS (SELECT 1 FROM bookings WHERE event_id = ? AND ${outside} AND id NOT IN (SELECT value FROM json_each(?)))`,
@@ -248,11 +285,18 @@ async function writeEdit(
     db.prepare("DELETE FROM breaks WHERE event_id = ?").bind(event.id),
     ...draft.breaks.map((b) =>
       db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (?, ?, ?, ?)").bind(event.id, b.startUtc, b.endUtc, b.label)),
+    // The fields are replaced as a whole (one batch), so two labels swapped never meet the unique label index half-way.
+    ...(draft.fields === undefined || !fields?.any ? [] : [
+      db.prepare("DELETE FROM event_fields WHERE event_id = ?").bind(event.id),
+      ...withPositions(draft.fields).map((f) =>
+        db.prepare("INSERT INTO event_fields (event_id, position, label, required, max_length, in_identity) VALUES (?, ?, ?, ?, ?, ?)")
+          .bind(event.id, f.position, f.label, f.required ? 1 : 0, f.maxLength, f.identity ? 1 : 0)),
+    ]),
   ];
   const deleteAt = batch.length;
   batch.push(
     db.prepare(
-      "DELETE FROM bookings WHERE event_id = ? AND id IN (SELECT value FROM json_each(?)) RETURNING id, slot_start_utc, lane_id, value_1, value_2",
+      "DELETE FROM bookings WHERE event_id = ? AND id IN (SELECT value FROM json_each(?)) RETURNING id, slot_start_utc, lane_id, value_1, value_2, value_3, value_4",
     ).bind(event.id, ids),
   );
   if (capacity < event.capacity) {
@@ -285,14 +329,14 @@ async function writeEdit(
   if (layoutChanged) {
     batch.push(
       db.prepare(
-        `INSERT INTO event_layout (event_id, capacity, config_rev) VALUES (?, ?, 1)
-         ON CONFLICT (event_id) DO UPDATE SET capacity = excluded.capacity, config_rev = config_rev + 1`,
-      ).bind(event.id, capacity),
+        `INSERT INTO event_layout (event_id, capacity, identity_limit, config_rev) VALUES (?, ?, ?, 1)
+         ON CONFLICT (event_id) DO UPDATE SET capacity = excluded.capacity, identity_limit = excluded.identity_limit, config_rev = config_rev + 1`,
+      ).bind(event.id, capacity, identityLimit),
     );
   }
 
   const results = await db.batch(batch);
-  const deleted = results[deleteAt].results as { id: number; slot_start_utc: string; lane_id: number; value_1: string; value_2: string }[];
+  const deleted = results[deleteAt].results as (ValueColumns & { id: number; slot_start_utc: string; lane_id: number })[];
   const laneName = new Map(event.lanes.map((l) => [l.id, l.name]));
   const newLanes = lanesChanged
     ? (await db.prepare("SELECT id, position, name FROM event_lanes WHERE event_id = ? ORDER BY position").bind(event.id).all<EventRow["lanes"][number]>()).results
@@ -304,10 +348,11 @@ async function writeEdit(
       gapMinutes: draft.gapMinutes, costPence: draft.costPence, venuePostcode: draft.venuePostcode, details: draft.details,
       shareMessage: draft.shareMessage ?? event.shareMessage, listed,
       breaks: draft.breaks.map((b) => ({ start: b.startUtc, end: b.endUtc, label: b.label })),
-      lanes: newLanes, capacity, configRev: layoutChanged ? event.configRev + 1 : event.configRev,
+      lanes: newLanes, capacity, identityLimit, fields: draft.fields === undefined ? event.fields : withPositions(draft.fields),
+      configRev: layoutChanged ? event.configRev + 1 : event.configRev,
     },
-    removed: deleted.map((r) => ({
-      id: r.id, slotStart: r.slot_start_utc, dogName: r.value_1, handlerName: r.value_2, lane: { id: r.lane_id, name: laneName.get(r.lane_id) ?? "" },
-    })).sort((a, b) => (a.slotStart < b.slotStart ? -1 : a.slotStart > b.slotStart ? 1 : a.id - b.id)),
+    removed: deleted.map((r) => bookingRefOf(
+      { ...r, slotStart: r.slot_start_utc, lane: { id: r.lane_id, name: laneName.get(r.lane_id) ?? "" } }, event.fields,
+    )).sort((a, b) => (a.slotStart < b.slotStart ? -1 : a.slotStart > b.slotStart ? 1 : a.id - b.id)),
   };
 }

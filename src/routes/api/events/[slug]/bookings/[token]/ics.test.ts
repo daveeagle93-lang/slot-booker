@@ -2,7 +2,7 @@ import ICAL from "ical.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { generateBookingToken } from "../../../../../../core/slug";
 import { identityKeyOf } from "../../../../../../core/identity";
-import { createTestEnv, insertBreak, insertEvent, type TestEnv } from "../../../../../../test/db";
+import { createTestEnv, insertBookingOf, insertBreak, insertEvent, type TestEnv } from "../../../../../../test/db";
 import { bookingUid } from "../../../../../../server/ics";
 import { saveSettings } from "../../../../../../server/settings";
 import { onRequestPost } from "../../bookings";
@@ -160,6 +160,41 @@ describe("GET /api/events/:slug/bookings/:token/ics", () => {
     expect(ev.description).toContain("Handler: Sam \\ Jones, Esq.");
   });
 
+  describe("a configured booking form", () => {
+    const FIELDS = [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Phone", required: false }, { label: "Notes", required: false }];
+    const tokenOf = async (id: number) => (await t.env.DB.prepare("SELECT token FROM bookings WHERE id = ?").bind(id).first<{ token: string }>())!.token;
+
+    it("names the booking by the first value, and has a `Label: value` line for each value given, in order, leaving out a blank optional one", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, { name: "Pony day", fields: FIELDS });
+      const booking = await insertBookingOf(t.env.DB, id, FIELDS, SLOT, ["Ann Lee", "Biscuit", "", "Nervous; shy"]);
+      const ev = vevent(await (await getIcs(slug, await tokenOf(booking))).text());
+      expect(ev.summary).toBe("Ann Lee – Pony day");
+      expect(ev.description.split("\n").slice(0, 4)).toEqual(["Rider: Ann Lee", "Pony: Biscuit", "Notes: Nervous; shy", "Slot: 09:15–09:30"]);
+    });
+
+    it("has one line for a form of one field", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, { name: "Car show", fields: [{ label: "Car reg", identity: true }] });
+      const booking = await insertBookingOf(t.env.DB, id, [{ label: "Car reg", identity: true }], SLOT, ["AB12 CDE"]);
+      const ev = vevent(await (await getIcs(slug, await tokenOf(booking))).text());
+      expect(ev.summary).toBe("AB12 CDE – Car show");
+      expect(ev.description.split("\n").slice(0, 2)).toEqual(["Car reg: AB12 CDE", "Slot: 09:15–09:30"]);
+    });
+
+    it("keeps the UID from the identity fields only: another phone number is the same entry, another pony is not, and a second booking of an identity is its own entry", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, { fields: FIELDS, identityLimit: 2 });
+      const a = await insertBookingOf(t.env.DB, id, FIELDS, SLOT, ["Ann", "Biscuit", "111"]);
+      const uid = uidOf(await (await getIcs(slug, await tokenOf(a))).text());
+      expect(uid).toBe(await bookingUid(slug, identityKeyOf(["Ann", "Biscuit"])));
+      await t.env.DB.prepare("DELETE FROM bookings WHERE id = ?").bind(a).run();
+      const again = await insertBookingOf(t.env.DB, id, FIELDS, "2026-06-13T08:30:00Z", ["ANN", "biscuit", "222"]);
+      expect(uidOf(await (await getIcs(slug, await tokenOf(again))).text())).toBe(uid);
+      const other = await insertBookingOf(t.env.DB, id, FIELDS, "2026-06-13T08:45:00Z", ["Ann", "Nutmeg"]);
+      expect(uidOf(await (await getIcs(slug, await tokenOf(other))).text())).not.toBe(uid);
+      const second = await insertBookingOf(t.env.DB, id, FIELDS, "2026-06-13T09:00:00Z", ["Ann", "Nutmeg"]);
+      expect(uidOf(await (await getIcs(slug, await tokenOf(second))).text())).toBe(await bookingUid(slug, identityKeyOf(["Ann", "Nutmeg"]), 2));
+    });
+  });
+
   it("starts the description with the club name when one is set, and is as before when it is not", async () => {
     const { id, slug } = await insertEvent(t.env.DB, { details: "Bring water" });
     const token = await book(id, SLOT, "Rex", "Sam Jones");
@@ -250,7 +285,7 @@ describe("GET /api/events/:slug/bookings/:token/ics", () => {
       onRequestPost({
         request: new Request(`http://localhost/api/events/${slug}/bookings`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ slot: SLOT, dogName: "  Zoë & Co ", handlerName: "Sam #1 ", idempotencyKey: generateBookingToken() }),
+          body: JSON.stringify({ slot: SLOT, field1: "  Zoë & Co ", field2: "Sam #1 ", idempotencyKey: generateBookingToken() }),
         }),
         env: t.env,
         params: { slug },

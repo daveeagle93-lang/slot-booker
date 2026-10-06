@@ -1,7 +1,8 @@
 /** Readers for the non-secret Worker variables in AppEnv (src/server/env.ts). Pure: each takes the raw string. */
 
-export const DEFAULT_PRIVACY_NOTICE =
-  "We store your name, your dog's name and the slot you choose so the club can run the event. "
+/** The notice when none is set: built from the labels of the event's booking form, so it names what the form really asks for. */
+export const defaultPrivacyNotice = (labels: readonly string[]): string =>
+  `We store the details you enter on this form (${labels.join(", ")}) and the slot you choose so the club can run the event. `
   + "The club's organisers can see these details; other people using this page only see which slots are taken. "
   + "The organisers may share the running order, with names, with other participants (for example in a group chat). "
   + "The details are kept until an organiser deletes the event; nothing is deleted automatically.";
@@ -19,10 +20,10 @@ export function bookingCutoffOffsetMinutes(raw: string | undefined): number {
   return 0;
 }
 
-/** The trimmed notice, cut to 1000 code points (with a warning), or the default if blank or unset. */
-export function privacyNotice(raw: string | undefined): string {
+/** The trimmed notice, cut to 1000 code points (with a warning), or the default for these field labels if blank or unset. */
+export function privacyNotice(raw: string | undefined, labels: readonly string[]): string {
   const text = raw?.trim() ?? "";
-  if (text === "") return DEFAULT_PRIVACY_NOTICE;
+  if (text === "") return defaultPrivacyNotice(labels);
   const points = [...text];
   if (points.length <= MAX_PRIVACY_NOTICE_CODE_POINTS) return text;
   console.warn(`PRIVACY_NOTICE is longer than ${MAX_PRIVACY_NOTICE_CODE_POINTS} characters; truncating it.`);

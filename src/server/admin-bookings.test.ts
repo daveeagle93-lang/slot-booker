@@ -33,6 +33,9 @@ const slotsOf = async (eventId: number) =>
   Object.fromEntries((await t.env.DB.prepare("SELECT id, slot_start_utc FROM bookings WHERE event_id = ?").bind(eventId).all<{ id: number; slot_start_utc: string }>())
     .results.map((r) => [r.id, r.slot_start_utc]));
 
+/** What a booking of the Dog and Handler form shows in the admin API: its labelled values, and TRANSITIONAL(6b) `dogName` and `handlerName`. */
+const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }], dogName: dog, handlerName: handler });
+
 const failed = (r: unknown): Failure => {
   if (!r || typeof r !== "object" || "ok" in r) throw new Error(`expected a failure, got ${JSON.stringify(r)}`);
   return r as Failure;
@@ -46,7 +49,7 @@ describe("addBooking", () => {
   it("adds the booking with a generated token, no idempotency key and identity keys, names trimmed", async () => {
     const e = await seed();
     const b = ok(await addBooking(t.env.DB, e.event, { slot: e.s[2], dogName: "  Rex ", handlerName: "Sam  Smith" }));
-    expect(b).toEqual({ id: expect.any(Number), slotStart: e.s[2], dogName: "Rex", handlerName: "Sam  Smith", lane: { id: e.event.lanes[0].id, name: "" } });
+    expect(b).toEqual({ id: expect.any(Number), slotStart: e.s[2], ...dh("Rex", "Sam  Smith"), lane: { id: e.event.lanes[0].id, name: "" } });
     const row = (await rows(e.id))[0] as Record<string, unknown>;
     expect(row).toMatchObject({
       id: b.id, slot_start_utc: e.s[2], value_1: "Rex", value_2: "Sam  Smith", lane_id: e.event.lanes[0].id, place: 1,
@@ -101,7 +104,7 @@ describe("addBooking", () => {
     const e = await seed();
     for (const dogName of ["\u3164", "\u2800", "\uFE0F", "\u{1F436}"]) {
       expect(failed(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName, handlerName: "Sam" })), dogName).toMatchObject({
-        status: 400, code: "invalid_input", extra: { fields: { dogName: "The dog's name must contain at least one letter or number." } },
+        status: 400, code: "invalid_input", extra: { fields: { field1: "Dog must contain at least one letter or number.", dogName: "Dog must contain at least one letter or number." } },
       });
     }
     expect(await rows(e.id)).toHaveLength(0);
@@ -132,20 +135,23 @@ describe("addBooking", () => {
     expect(await rows(e.id)).toHaveLength(0);
   });
 
-  it("validates the names exactly as the public form does, and asks for a slot", async () => {
+  it("validates the values exactly as the public form does, and asks for a slot", async () => {
     const e = await seed();
     const odd = [undefined, 5, "", "   ", "x".repeat(81), "a​b", "tab\there", "lone\uD800", "‮evil"];
     for (const dog of odd) {
       for (const handler of ["Sam", ...odd.slice(0, 3)]) {
-        const input = { slot: e.s[0], dogName: dog, handlerName: handler };
+        const input = { slot: e.s[0], field1: dog, field2: handler };
         const publicFields = (validateBookingInput({ ...input, idempotencyKey: IDEM }, e.event) as { fields?: Record<string, string> }).fields ?? {};
         const f = failed(await addBooking(t.env.DB, e.event, input));
         expect(f.code).toBe("invalid_input");
-        expect((f.extra as { fields: unknown }).fields, JSON.stringify(input)).toEqual(publicFields);
+        // The admin answer also carries the first two errors under the names the page written before the fields were configurable.
+        const { dogName, handlerName, ...rest } = (f.extra as { fields: Record<string, string> }).fields;
+        expect(rest, JSON.stringify(input)).toEqual(publicFields);
+        expect([dogName, handlerName], JSON.stringify(input)).toEqual([publicFields.field1, publicFields.field2]);
       }
     }
-    expect(failed(await addBooking(t.env.DB, e.event, { dogName: "Rex", handlerName: "Sam" })).extra).toEqual({ fields: { slot: "Choose a slot." } });
-    expect(ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "x".repeat(80), handlerName: `a${"😀".repeat(79)}` })).dogName).toHaveLength(80);
+    expect(failed(await addBooking(t.env.DB, e.event, { field1: "Rex", field2: "Sam" })).extra).toEqual({ fields: { slot: "Choose a slot." } });
+    expect(ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], field1: "x".repeat(80), field2: `a${"😀".repeat(79)}` })).fields[0].value).toHaveLength(80);
     expect(await rows(e.id)).toHaveLength(1);
   });
 
@@ -226,7 +232,7 @@ describe("clearBooking", () => {
     const e = await seed();
     const a = await insertBooking(t.env.DB, e.id, e.s[0], "Rex", "Sam");
     const b = await insertBooking(t.env.DB, e.id, e.s[1], "Bella", "Alex");
-    expect(ok(await clearBooking(t.env.DB, e.event, a))).toEqual({ id: a, slotStart: e.s[0], dogName: "Rex", handlerName: "Sam", lane: { id: e.event.lanes[0].id, name: "" } });
+    expect(ok(await clearBooking(t.env.DB, e.event, a))).toEqual({ id: a, slotStart: e.s[0], ...dh("Rex", "Sam"), lane: { id: e.event.lanes[0].id, name: "" } });
     expect(Object.keys(await slotsOf(e.id))).toEqual([String(b)]);
   });
 
@@ -260,7 +266,7 @@ describe("moveBooking", () => {
     const e = await seed();
     const a = await insertBooking(t.env.DB, e.id, e.s[0], "Rex", "Sam");
     const other = await insertBooking(t.env.DB, e.id, e.s[1], "Bella", "Alex");
-    expect(ok(await move(e, a, e.s[0], e.s[5]))).toEqual({ id: a, slotStart: e.s[5], dogName: "Rex", handlerName: "Sam", lane: { id: e.event.lanes[0].id, name: "" } });
+    expect(ok(await move(e, a, e.s[0], e.s[5]))).toEqual({ id: a, slotStart: e.s[5], ...dh("Rex", "Sam"), lane: { id: e.event.lanes[0].id, name: "" } });
     expect(await slotsOf(e.id)).toEqual({ [a]: e.s[5], [other]: e.s[1] });
   });
 
@@ -330,7 +336,7 @@ describe("moveBooking", () => {
     const now = new Date("2026-10-01T12:00:00Z");
     const [moved, booked] = await Promise.all([
       move(e, a, e.s[0], e.s[5]),
-      createBooking(t.env.DB, e.event, { start: e.s[5], end: e.s[5] }, { slot: e.s[5], laneId: e.event.lanes[0].id, dogName: "Pub", handlerName: "Lic", idempotencyKey: IDEM }, now),
+      createBooking(t.env.DB, e.event, { start: e.s[5], end: e.s[5] }, { slot: e.s[5], laneId: e.event.lanes[0].id, values: ["Pub", "Lic"], idempotencyKey: IDEM }, now),
     ]);
     expect(("ok" in moved ? 1 : 0) + (booked.kind === "created" ? 1 : 0)).toBe(1);
     if ("ok" in moved) expect(booked.kind).toBe("slot_taken");
@@ -514,8 +520,8 @@ describe("admin tools with capacity and lanes", () => {
     expect(full).toMatchObject({ status: 409, code: "slot_taken" });
     // Several lanes or places: the holders, all of them, and no v1.0 `booking` key.
     expect(full.extra).toEqual({ bookings: [
-      { id: a.id, slotStart: e.s[0], dogName: "A", handlerName: "H1", lane: { id: l1, name: "Ring 1" } },
-      { id: b.id, slotStart: e.s[0], dogName: "B", handlerName: "H2", lane: { id: l1, name: "Ring 1" } },
+      { id: a.id, slotStart: e.s[0], ...dh("A", "H1"), lane: { id: l1, name: "Ring 1" } },
+      { id: b.id, slotStart: e.s[0], ...dh("B", "H2"), lane: { id: l1, name: "Ring 1" } },
     ] });
     const other = ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], laneId: l2, dogName: "C", handlerName: "H3" }));
     expect(other.lane).toEqual({ id: l2, name: "Ring 2" });
@@ -547,7 +553,7 @@ describe("admin tools with capacity and lanes", () => {
     expect(f).toMatchObject({ status: 409, code: "slot_taken" });
     expect(f.extra).toEqual({
       booking: { id: a.id, dogName: "A", handlerName: "H1" },
-      bookings: [{ id: a.id, slotStart: e.s[0], dogName: "A", handlerName: "H1", lane: { id: e.laneId, name: "" } }],
+      bookings: [{ id: a.id, slotStart: e.s[0], ...dh("A", "H1"), lane: { id: e.laneId, name: "" } }],
     });
   });
 
@@ -634,7 +640,7 @@ describe("admin tools with capacity and lanes", () => {
     const a = await insertBooking(t.env.DB, e.id, e.s[0], "Rex", "Sam", { laneId: l1 });
     const f = failed(await moveBooking(t.env.DB, e.event, a, { fromSlot: e.s[0], toSlot: e.s[0], toLane: l2 }));
     expect(f).toMatchObject({ status: 409, code: "slot_taken" });
-    expect(f.extra).toEqual({ bookings: [{ id: held, slotStart: e.s[0], dogName: "Held", handlerName: "H", lane: { id: l2, name: "Ring 2" } }] });
+    expect(f.extra).toEqual({ bookings: [{ id: held, slotStart: e.s[0], ...dh("Held", "H"), lane: { id: l2, name: "Ring 2" } }] });
     expect((await placesOf(e.id))[a]).toEqual([l1, e.s[0], 1]);
     const single = await seed();
     const h = await insertBooking(t.env.DB, single.id, single.s[3], "Held", "H");
@@ -714,5 +720,91 @@ describe("admin tools with capacity and lanes", () => {
     }));
     expect(f).toMatchObject({ status: 409, code: "event_changed" });
     expect(await rows(e.id)).toEqual([]);
+  });
+});
+
+describe("admin add with a configured booking form", () => {
+  const RIDER_PONY: Parameters<typeof insertEvent>[1] = {
+    fields: [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Phone", required: false, maxLength: 12 }],
+  };
+
+  it("takes field1 to field3, answers with each non-empty value under its label (and the first two as dogName and handlerName, TRANSITIONAL(6b))", async () => {
+    const e = await seed(RIDER_PONY);
+    const b = ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], field1: " Ann ", field2: "Biscuit", field3: "111" }));
+    expect(b).toEqual({
+      id: expect.any(Number), slotStart: e.s[0], lane: { id: e.laneId, name: "" },
+      fields: [{ label: "Rider", value: "Ann" }, { label: "Pony", value: "Biscuit" }, { label: "Phone", value: "111" }],
+      dogName: "Ann", handlerName: "Biscuit",
+    });
+    const blank = ok(await addBooking(t.env.DB, e.event, { slot: e.s[1], field1: "Bea", field2: "Nutmeg" }));
+    expect(blank.fields).toEqual([{ label: "Rider", value: "Bea" }, { label: "Pony", value: "Nutmeg" }]);
+    expect((await rows(e.id)).map((r) => (r as { value_3: string }).value_3)).toEqual(["111", ""]);
+  });
+
+  it("checks each value against its own field, keyed field1 to field4, and the first two also as dogName and handlerName", async () => {
+    const e = await seed(RIDER_PONY);
+    expect(failed(await addBooking(t.env.DB, e.event, { slot: e.s[0], field1: "", field2: "🐴", field3: "x".repeat(13) })).extra).toEqual({
+      fields: {
+        field1: "Rider is required.", dogName: "Rider is required.",
+        field2: "Pony must contain at least one letter or number.", handlerName: "Pony must contain at least one letter or number.",
+        field3: "Phone must be at most 12 characters.",
+      },
+    });
+    expect(await rows(e.id)).toEqual([]);
+  });
+
+  it("answers a repeat of the identity with the form's own wording, and the booking that holds it", async () => {
+    const e = await seed(RIDER_PONY);
+    const first = ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], field1: "Ann", field2: "Biscuit", field3: "111" }));
+    const f = failed(await addBooking(t.env.DB, e.event, { slot: e.s[1], field1: "ANN", field2: "biscuit", field3: "222" }));
+    expect(f).toMatchObject({ status: 409, code: "duplicate_booking", message: "That rider and pony already have a booking for this event.", extra: { booking: { id: first.id } } });
+    ok(await addBooking(t.env.DB, e.event, { slot: e.s[1], field1: "Ann", field2: "Nutmeg" }));
+  });
+
+  it("identifies a booking by one field alone, and does not ask a one-field form for a second", async () => {
+    const e = await seed({ fields: [{ label: "Car reg", identity: true }] });
+    expect(ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], field1: "AB12 CDE" })).fields).toEqual([{ label: "Car reg", value: "AB12 CDE" }]);
+    expect(failed(await addBooking(t.env.DB, e.event, { slot: e.s[1], field1: "ab12 cde" })).message).toBe("That car reg already has a booking for this event.");
+  });
+
+  it("books up to the identity limit when the limit is above 1", async () => {
+    const e = await seed({ ...RIDER_PONY, identityLimit: 2 });
+    ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], field1: "Ann", field2: "Biscuit" }));
+    ok(await addBooking(t.env.DB, e.event, { slot: e.s[1], field1: "Ann", field2: "Biscuit" }));
+    expect(failed(await addBooking(t.env.DB, e.event, { slot: e.s[2], field1: "Ann", field2: "Biscuit" })).code).toBe("duplicate_booking");
+    expect((await rows(e.id)).map((r) => (r as { identity_seq: number }).identity_seq)).toEqual([1, 2]);
+  });
+
+  it("lists every holder of a full lane with their values", async () => {
+    const e = await seed({ ...RIDER_PONY, lanes: ["Ring 1", "Ring 2"] });
+    const [l1] = e.laneIds;
+    const a = ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], laneId: l1, field1: "Ann", field2: "Biscuit", field3: "111" }));
+    const f = failed(await addBooking(t.env.DB, e.event, { slot: e.s[0], laneId: l1, field1: "Bea", field2: "Nutmeg" }));
+    expect((f.extra as { bookings: unknown[] }).bookings).toEqual([a]);
+  });
+
+  describe("TRANSITIONAL(6b): the admin page written before the fields were configurable", () => {
+    it("takes dogName and handlerName for field1 and field2, and field1 and field2 win when both are sent", async () => {
+      const e = await seed();
+      const b = ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "Rex", handlerName: "Sam" }));
+      expect(b).toMatchObject({ ...dh("Rex", "Sam") });
+      const c = ok(await addBooking(t.env.DB, e.event, { slot: e.s[1], field1: "Fly", dogName: "ignored", handlerName: "Pat" }));
+      expect(c).toMatchObject({ ...dh("Fly", "Pat") });
+    });
+
+    it("applies the same rules to them, and answers the errors under both names", async () => {
+      const e = await seed();
+      expect(failed(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "a​b", handlerName: "" })).extra).toEqual({
+        fields: {
+          field1: expect.stringContaining("Dog can't contain invisible"), dogName: expect.stringContaining("Dog can't contain invisible"),
+          field2: "Handler is required.", handlerName: "Handler is required.",
+        },
+      });
+    });
+
+    it("gives a one-field form no handlerName (\"\"), and the page's key names still work for its first field", async () => {
+      const e = await seed({ fields: [{ label: "Car reg", identity: true }] });
+      expect(ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "AB12 CDE" }))).toMatchObject({ dogName: "AB12 CDE", handlerName: "", fields: [{ label: "Car reg", value: "AB12 CDE" }] });
+    });
   });
 });

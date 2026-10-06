@@ -29,10 +29,13 @@ const draft = (over: Record<string, unknown> = {}) => ({
 });
 const seed = () => insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z", sessionMinutes: 15 });
 
+/** A booking of the Dog and Handler form as the admin API shows it: labelled values, and TRANSITIONAL(6b) `dogName` and `handlerName`. */
+const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }], dogName: dog, handlerName: handler });
+
 interface Body {
   slots: { start: string; end: string }[];
   suggestions: { breakIndex: number; breakLabel: string; suggestedLocal: { start: string; end: string } }[];
-  affected: { id: number; slotStart: string; dogName: string; handlerName: string; lane: { id: number; name: string } }[];
+  affected: { id: number; slotStart: string; dogName: string; handlerName: string; fields: { label: string; value: string }[]; lane: { id: number; name: string } }[];
   placeCount: number;
 }
 
@@ -48,8 +51,8 @@ describe("POST /api/admin/events/[slug]/preview", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     const body = (await res.json()) as Body;
     expect(body.affected).toEqual([
-      { id: early, slotStart: "2026-10-24T10:30:00Z", dogName: "Early", handlerName: "Eve", lane: { id: expect.any(Number), name: "" } },
-      { id: late, slotStart: "2026-10-24T10:45:00Z", dogName: "Late", handlerName: "Lena", lane: { id: expect.any(Number), name: "" } },
+      { id: early, slotStart: "2026-10-24T10:30:00Z", ...dh("Early", "Eve"), lane: { id: expect.any(Number), name: "" } },
+      { id: late, slotStart: "2026-10-24T10:45:00Z", ...dh("Late", "Lena"), lane: { id: expect.any(Number), name: "" } },
     ]);
     expect(body.affected.map((a) => a.id)).not.toContain(kept);
     expect(body.slots).toHaveLength(10);

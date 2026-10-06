@@ -17,8 +17,8 @@ export interface BookingIcsInput {
   uid: string;
   dtstamp: string;
   slot: { start: string; end: string };
-  dogName: string;
-  handlerName: string;
+  /** What the booking form collected, a value for each field that has one, in the form's order. The first is the booking's name in the calendar. */
+  fields: { label: string; value: string }[];
   eventName: string;
   venuePostcode: string;
   costPence: number;
@@ -112,8 +112,7 @@ export function buildBookingIcs(input: BookingIcsInput): string {
   const clubName = input.clubName?.trim();
   const description = [
     ...(clubName ? [clubName] : []),
-    `Dog: ${input.dogName}`,
-    `Handler: ${input.handlerName}`,
+    ...input.fields.map((f) => `${f.label}: ${f.value}`),
     `Slot: ${s.hour}:${s.minute}–${e.hour}:${e.minute}${input.laneName ? `, ${input.laneName}` : ""}`,
     `Cost: ${cost}`,
   ];
@@ -148,7 +147,7 @@ export function buildBookingIcs(input: BookingIcsInput): string {
     `DTSTAMP:${new Date(stamp).toISOString().replace(/[-:]|\.000/g, "")}`,
     `DTSTART;TZID=${TZID}:${localStamp(s)}`,
     `DTEND;TZID=${TZID}:${localStamp(e)}`,
-    `SUMMARY:${escapeText(`${input.dogName} – ${input.eventName}`)}`,
+    `SUMMARY:${escapeText(`${input.fields[0].value} – ${input.eventName}`)}`,
     `LOCATION:${escapeText(input.venuePostcode)}`,
     `DESCRIPTION:${escapeText(description.join("\n"))}`,
     "STATUS:CONFIRMED",

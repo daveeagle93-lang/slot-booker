@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestEnv, insertBooking, insertBreak, insertEvent, insertsBooking, interceptBatches, type TestEnv } from "../test/db";
+import { createTestEnv, insertBooking, insertBookingOf, insertBreak, insertEvent, insertsBooking, interceptBatches, type TestEnv } from "../test/db";
 import { addBooking, moveBooking } from "./admin-bookings";
 import { createBooking, validateBookingInput } from "./bookings";
 import { eventDetail, loadBookings, saveEventEdit } from "./admin-event-edit";
@@ -7,6 +7,9 @@ import { parseEventDraft, type EventDraft } from "./admin-events";
 import { loadEventBySlug } from "./events";
 
 const NOW = new Date("2026-10-01T12:00:00Z");
+
+/** A booking of the Dog and Handler form as the admin API shows it: labelled values, and TRANSITIONAL(6b) `dogName` and `handlerName`. */
+const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }], dogName: dog, handlerName: handler });
 
 let t: TestEnv;
 beforeAll(async () => { t = await createTestEnv(); });
@@ -79,8 +82,8 @@ describe("saveEventEdit: a booking lands between the read and the save", () => {
     expect(result).toEqual({
       kind: "bookings_affected",
       affected: [
-        { id: newcomer, slotStart: "2026-10-24T10:30:00Z", dogName: "Delta", handlerName: "Dee", lane: { id: e.laneId, name: "" } },
-        { id: e.c, slotStart: "2026-10-24T10:45:00Z", dogName: "Charlie", handlerName: "Cat", lane: { id: e.laneId, name: "" } },
+        { id: newcomer, slotStart: "2026-10-24T10:30:00Z", ...dh("Delta", "Dee"), lane: { id: e.laneId, name: "" } },
+        { id: e.c, slotStart: "2026-10-24T10:45:00Z", ...dh("Charlie", "Cat"), lane: { id: e.laneId, name: "" } },
       ],
     });
     // Event fields not updated, breaks not replaced, the confirmed booking not deleted: only the newcomer is new.
@@ -166,7 +169,7 @@ describe("bookings of an event with several lanes and places", () => {
     const r2p1 = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "R2P1", "H", { laneId: l2, place: 1 });
     const r1p2 = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "R1P2", "H", { laneId: l1, place: 2 });
     const r1p1 = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "R1P1", "H", { laneId: l1, place: 1 });
-    expect((await loadBookings(t.env.DB, e.id)).map((b) => b.id)).toEqual([r1p1, r1p2, r2p1, late]);
+    expect((await loadBookings(t.env.DB, { id: e.id, fields: [] })).map((b) => b.id)).toEqual([r1p1, r1p2, r2p1, late]);
   });
 
   it("the schedule detail's `booking` is null for several lanes (the bookings are in `places`), and the lineup text has one line per place, by time, lane and place", async () => {
@@ -562,7 +565,7 @@ describe("saveEventEdit: races on the layout", () => {
 
 describe("an edit of the layout racing the booking tools", () => {
   const input = (event: Awaited<ReturnType<typeof load>>, slot: string, dog: string) => {
-    const r = validateBookingInput({ slot, laneId: event.lanes[0].id, dogName: dog, handlerName: "H", idempotencyKey: `idem-${dog}-aaaaaaaaaaaaaaaaaaaa` }, event);
+    const r = validateBookingInput({ slot, laneId: event.lanes[0].id, field1: dog, field2: "H", idempotencyKey: `idem-${dog}-aaaaaaaaaaaaaaaaaaaa` }, event);
     if (!("slot" in r)) throw new Error(JSON.stringify(r));
     return r;
   };
@@ -638,5 +641,186 @@ describe("an edit of the layout racing the booking tools", () => {
     const event = await load(e.slug);
     expect((await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { name: "Renamed event", costPence: 100 }), [])).kind).toBe("saved");
     expect((await createBooking(t.env.DB, event, { start: S[0], end: S[1] }, input(event, S[0], "Rex"), NOW)).kind).toBe("created");
+  });
+});
+
+describe("saveEventEdit: the booking form's fields and the identity limit", () => {
+  const F = (label: string, over: Record<string, unknown> = {}) => ({ label, required: true, maxLength: 80, identity: false, ...over });
+  const RIDER_PONY = [F("Rider", { identity: true }), F("Pony", { identity: true }), F("Phone", { required: false, maxLength: 12 })];
+
+  async function seedForm(o: Pick<NonNullable<Parameters<typeof insertEvent>[1]>, "fields" | "identityLimit"> = {}) {
+    return insertEvent(t.env.DB, { startUtc: S[0], endUtc: "2026-10-24T09:00:00Z", sessionMinutes: 15, ...o });
+  }
+  const edit = async (e: { slug: string; laneIds: number[] }, over: Record<string, unknown>, remove: number[] = [], hooks = {}) =>
+    saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, over, 1), remove, hooks);
+  const formOf = async (id: number) => (await t.env.DB.prepare("SELECT position, label, required, max_length, in_identity FROM event_fields WHERE event_id = ? ORDER BY position").bind(id).all()).results;
+  const revOf = async (id: number) => (await layoutRows(id)).layout!.config_rev;
+  const limitOf = async (id: number) => (await t.env.DB.prepare("SELECT identity_limit FROM event_layout WHERE event_id = ?").bind(id).first<{ identity_limit: number }>())!.identity_limit;
+
+  it("replaces the fields as a whole, in order, and returns the event with them", async () => {
+    const e = await seedForm();
+    const r = await edit(e, { fields: RIDER_PONY });
+    expect(r.kind).toBe("saved");
+    expect(await formOf(e.id)).toEqual([
+      { position: 1, label: "Rider", required: 1, max_length: 80, in_identity: 1 },
+      { position: 2, label: "Pony", required: 1, max_length: 80, in_identity: 1 },
+      { position: 3, label: "Phone", required: 0, max_length: 12, in_identity: 0 },
+    ]);
+    if (r.kind !== "saved") return;
+    expect(r.event.fields).toEqual([
+      { position: 1, label: "Rider", required: true, maxLength: 80, identity: true },
+      { position: 2, label: "Pony", required: true, maxLength: 80, identity: true },
+      { position: 3, label: "Phone", required: false, maxLength: 12, identity: false },
+    ]);
+    expect(r.event).toEqual(await load(e.slug));
+  });
+
+  it("leaves the fields and the limit alone when the draft doesn't send them", async () => {
+    const e = await seedForm({ identityLimit: 3 });
+    expect((await edit(e, { name: "Only the name" })).kind).toBe("saved");
+    expect((await formOf(e.id)).map((f) => f.label)).toEqual(["Dog", "Handler"]);
+    expect(await limitOf(e.id)).toBe(3);
+    expect(await revOf(e.id)).toBe(0);
+  });
+
+  describe("the revision (config_rev)", () => {
+    it("goes up for a changed number of fields, identity set, required flag, longest value or identity limit, and not for a label or the same form again", async () => {
+      const e = await seedForm();
+      const step = async (over: Record<string, unknown>) => {
+        const before = await revOf(e.id);
+        expect((await edit(e, over)).kind, JSON.stringify(over)).toBe("saved");
+        return (await revOf(e.id)) - before;
+      };
+      const dog = F("Dog", { identity: true }), handler = F("Handler", { identity: true });
+      expect(await step({ fields: [dog, handler] })).toBe(0); // the same form again
+      expect(await step({ fields: [F("Horse", { identity: true }), F("Rider", { identity: true })] })).toBe(0); // labels only
+      expect(await step({ fields: [F("Horse", { identity: true }), F("Rider", { identity: true }), F("Notes", { required: false })] })).toBe(1); // a field added
+      expect(await step({ fields: [F("Horse", { identity: true }), F("Rider", { identity: true }), F("Notes", { required: true })] })).toBe(1); // required
+      expect(await step({ fields: [F("Horse", { identity: true }), F("Rider", { identity: true }), F("Notes", { maxLength: 10 })] })).toBe(1); // longest value
+      expect(await step({ fields: [F("Horse", { identity: true }), F("Rider"), F("Notes", { maxLength: 10 })] })).toBe(1); // identity set
+      expect(await step({ identityLimit: 4 })).toBe(1);
+      expect(await step({ identityLimit: 4 })).toBe(0);
+      expect(await step({ fields: [F("Horse", { identity: true })], identityLimit: 2 })).toBe(1); // two changes, one step
+      expect(await revOf(e.id)).toBe(6);
+    });
+
+    it("makes a booking that read the form before the edit fail its guard and write nothing", async () => {
+      const e = await seedForm();
+      const stale = await load(e.slug);
+      expect((await edit(e, { fields: [F("Dog", { identity: true }), F("Handler", { identity: false, required: false })] })).kind).toBe("saved");
+      const r = validateBookingInput({ slot: S[0], laneId: e.laneId, field1: "Rex", field2: "Sam", idempotencyKey: "k".repeat(22) }, stale);
+      if (!("values" in r)) throw new Error(JSON.stringify(r));
+      expect(await createBooking(t.env.DB, stale, { start: S[0], end: S[1] }, r, NOW)).toEqual({ kind: "schedule_changed" });
+      expect(await placesOf(e.id)).toEqual([]);
+    });
+
+    it("does not stop a booking that read the form before a label-only edit", async () => {
+      const e = await seedForm();
+      const stale = await load(e.slug);
+      expect((await edit(e, { fields: [F("Hound", { identity: true }), F("Handler", { identity: true })] })).kind).toBe("saved");
+      const r = validateBookingInput({ slot: S[0], laneId: e.laneId, field1: "Rex", field2: "Sam", idempotencyKey: "k".repeat(22) }, stale);
+      if (!("values" in r)) throw new Error(JSON.stringify(r));
+      expect((await createBooking(t.env.DB, stale, { start: S[0], end: S[1] }, r, NOW)).kind).toBe("created");
+    });
+  });
+
+  describe("an event with no bookings", () => {
+    it("may change the number of fields and the identity fields freely", async () => {
+      const e = await seedForm();
+      expect((await edit(e, { fields: [F("Car reg", { identity: true })] })).kind).toBe("saved");
+      expect((await formOf(e.id)).map((f) => f.label)).toEqual(["Car reg"]);
+      expect((await edit(e, { fields: [F("Rider"), F("Pony", { identity: true })] })).kind).toBe("saved");
+      expect((await formOf(e.id)).map((f) => [f.label, f.in_identity])).toEqual([["Rider", 0], ["Pony", 1]]);
+    });
+
+    it("swaps two labels without meeting the unique label index half-way", async () => {
+      const e = await seedForm();
+      expect((await edit(e, { fields: [F("Handler", { identity: true }), F("Dog", { identity: true })] })).kind).toBe("saved");
+      expect((await formOf(e.id)).map((f) => f.label)).toEqual(["Handler", "Dog"]);
+    });
+  });
+
+  describe("an event with bookings: fields_locked", () => {
+    async function booked() {
+      const e = await seedForm({ fields: RIDER_PONY.map(({ label, required, maxLength, identity }) => ({ label, required, maxLength, identity })) });
+      await insertBooking(t.env.DB, e.id, S[0], "Ann", "Biscuit");
+      return e;
+    }
+
+    it("refuses a changed number of fields and a changed identity set, writing nothing", async () => {
+      const e = await booked();
+      const before = await snapshot(e.id);
+      const form = await formOf(e.id);
+      for (const fields of [
+        [F("Rider", { identity: true }), F("Pony", { identity: true })], // one fewer
+        [...RIDER_PONY, F("Notes", { required: false })], // one more
+        [F("Rider", { identity: true }), F("Pony"), F("Phone", { required: false, maxLength: 12 })], // another identity set
+        [F("Rider", { identity: true }), F("Pony", { identity: true }), F("Phone", { identity: true })], // a third identity field
+      ]) {
+        expect(await edit(e, { name: "Not saved", fields }), JSON.stringify(fields)).toEqual({ kind: "fields_locked" });
+      }
+      expect(await snapshot(e.id)).toBe(before);
+      expect(await formOf(e.id)).toEqual(form);
+      expect(await revOf(e.id)).toBe(0);
+    });
+
+    it("still lets labels, required flags, longest values and the identity limit change, and bumps config_rev for what matters", async () => {
+      const e = await booked();
+      const r = await edit(e, { name: "Saved", identityLimit: 2, fields: [F("Horse rider", { identity: true }), F("Pony name", { identity: true, maxLength: 30 }), F("Mobile", { required: true, maxLength: 15 })] });
+      expect(r.kind).toBe("saved");
+      expect((await formOf(e.id)).map((f) => [f.label, f.required, f.max_length, f.in_identity])).toEqual([
+        ["Horse rider", 1, 80, 1], ["Pony name", 1, 30, 1], ["Mobile", 1, 15, 0],
+      ]);
+      expect(await limitOf(e.id)).toBe(2);
+      expect(await revOf(e.id)).toBe(1);
+      expect((await load(e.slug)).name).toBe("Saved");
+    });
+
+    it("lets a draft that doesn't send the fields save, whatever the bookings", async () => {
+      const e = await booked();
+      expect((await edit(e, { name: "Fine" })).kind).toBe("saved");
+    });
+
+    it("says fields_locked rather than listing stranded bookings, and a send of the same shape is not locked", async () => {
+      const e = await booked();
+      expect(await edit(e, { end: "09:30", fields: [F("Rider", { identity: true })] })).toEqual({ kind: "fields_locked" });
+      expect((await edit(e, { fields: RIDER_PONY.map((f) => ({ ...f })) })).kind).toBe("saved");
+    });
+
+    it("stops a booking that lands between the read and the save too: the batch writes nothing and the answer is fields_locked", async () => {
+      const e = await seedForm();
+      const before = await snapshot(e.id);
+      const result = await edit(e, { name: "Not saved", fields: [F("Car reg", { identity: true })] }, [], {
+        afterRead: async () => { await insertBooking(t.env.DB, e.id, S[1], "Rex", "Sam"); },
+      });
+      expect(result).toEqual({ kind: "fields_locked" });
+      expect(JSON.parse(await snapshot(e.id))[0]).toEqual(JSON.parse(before)[0]);
+      expect((await formOf(e.id)).map((f) => f.label)).toEqual(["Dog", "Handler"]);
+      expect(await revOf(e.id)).toBe(0);
+    });
+
+    it("stops the removal of the last booking in the same save: clear the booking first, then change the form", async () => {
+      const e = await booked();
+      expect(await edit(e, { fields: [F("Car reg", { identity: true })] }, [(await placesOf(e.id))[0].id])).toEqual({ kind: "fields_locked" });
+      expect(await placesOf(e.id)).toHaveLength(1);
+    });
+  });
+
+  it("makes a draft that sends the fields fail with layout_changed when the form was edited after the event was read", async () => {
+    const e = await seedForm();
+    const stale = await load(e.slug);
+    expect((await edit(e, { fields: [F("Dog", { identity: true }), F("Handler", { identity: true }), F("Notes", { required: false })] })).kind).toBe("saved");
+    const before = await snapshot(e.id);
+    expect(await saveEventEdit(t.env.DB, stale, draftFor(e, { name: "Stale", fields: [F("Mine", { identity: true })] }, 1), [])).toEqual({ kind: "layout_changed" });
+    expect(await saveEventEdit(t.env.DB, stale, draftFor(e, { name: "Stale", identityLimit: 5 }, 1), [])).toEqual({ kind: "layout_changed" });
+    expect(await snapshot(e.id)).toBe(before);
+    expect((await formOf(e.id)).map((f) => f.label)).toEqual(["Dog", "Handler", "Notes"]);
+  });
+
+  it("lists a stranded booking with its labelled values", async () => {
+    const e = await seedForm({ fields: [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Phone", required: false }] });
+    await insertBookingOf(t.env.DB, e.id, [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Phone" }], S[3], ["Ann", "Biscuit", "111"]);
+    const r = await edit(e, { end: "09:30" });
+    expect(r).toMatchObject({ kind: "bookings_affected", affected: [{ fields: [{ label: "Rider", value: "Ann" }, { label: "Pony", value: "Biscuit" }, { label: "Phone", value: "111" }], dogName: "Ann", handlerName: "Biscuit" }] });
   });
 });

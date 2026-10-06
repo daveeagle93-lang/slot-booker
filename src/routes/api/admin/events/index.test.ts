@@ -83,6 +83,7 @@ describe("POST /api/admin/events", () => {
         startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z", sessionMinutes: 15, gapMinutes: 0,
         costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water", shareMessage: "",
         lanes: [{ id: expect.any(Number), name: "" }], capacity: 1,
+        fields: [{ label: "Name", required: true, maxLength: 80, identity: true }], identityLimit: 1,
       },
       path: `/e/${body.event.slug}`,
       slotCount: 9, // 09:00 09:15 09:30 09:45, then 10:30 10:45, then 11:10 11:25 11:40
@@ -113,6 +114,13 @@ describe("POST /api/admin/events", () => {
     expect(await t.env.DB.prepare("SELECT capacity, identity_limit, config_rev FROM event_layout WHERE event_id = ?").bind(id).all().then((r) => r.results))
       .toEqual([{ capacity: 1, identity_limit: 1, config_rev: 0 }]);
     expect((await t.env.DB.prepare("SELECT position, name FROM event_lanes WHERE event_id = ?").bind(id).all()).results).toEqual([{ position: 1, name: "" }]);
+  });
+
+  it("gives an event whose body leaves out `fields` one required field, Name, that identifies a booking", async () => {
+    const { event } = await create();
+    const id = (await t.env.DB.prepare("SELECT id FROM events WHERE slug = ?").bind(event.slug).first<{ id: number }>())!.id;
+    expect((await t.env.DB.prepare("SELECT position, label, required, max_length, in_identity FROM event_fields WHERE event_id = ?").bind(id).all()).results)
+      .toEqual([{ position: 1, label: "Name", required: 1, max_length: 80, in_identity: 1 }]);
   });
 
   it("stores an explicit listed: true as listed", async () => {
@@ -171,7 +179,7 @@ describe("POST /api/admin/events", () => {
     const res = await book({
       request: new Request(`http://localhost/api/events/${event.slug}/bookings`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slot: slot.start, dogName: "Rex", handlerName: "Sam Jones", idempotencyKey: generateBookingToken() }),
+        body: JSON.stringify({ slot: slot.start, field1: "Sam Jones", idempotencyKey: generateBookingToken() }),
       }),
       env: t.env, params: { slug: event.slug },
     } as unknown as Parameters<typeof book>[0]);
@@ -512,6 +520,7 @@ describe("GET /api/admin/events", () => {
       slug, name: "Show", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z", costPence: 900,
       venuePostcode: "ZZ9 9ZZ", details: "private notes", shareMessage: "", slotCount: 10, bookedCount: 2, archived: false, listed: true, full: false,
       laneCount: 1, lanes: [{ name: "" }], capacity: 1, placeCount: 10, bookings: { open: true, closesAt: "2026-06-13T07:00:00Z" }, path: `/e/${slug}`,
+      fields: [{ label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }], identityLimit: 1,
     });
     expect(events[1]).toMatchObject({ slotCount: 4, bookedCount: 0 });
     vi.setSystemTime(new Date("2026-06-13T07:00:00Z"));
@@ -830,7 +839,7 @@ describe("GET /api/admin/events: details, cost, share message and the default sh
       request: new Request("http://localhost/api/admin/events"), env: { DB: db }, data: ADMIN,
     } as unknown as Parameters<typeof onRequestGet>[0]);
     expect(res.status).toBe(200);
-    expect([batches, statements]).toEqual([1, 8]);
+    expect([batches, statements]).toEqual([1, 9]);
   });
 });
 
@@ -872,5 +881,136 @@ describe("POST /api/admin/events: lanes and capacity", () => {
       capacity: "Enter a whole number of places from 1 to 50.", "lanes.1.name": "Enter the lane name.",
     });
     expect(await countRows(t.env.DB, "events")).toBe(events);
+  });
+});
+
+describe("POST /api/admin/events: the booking form's fields and the identity limit", () => {
+  const F = (label: string, over: Record<string, unknown> = {}) => ({ label, required: true, maxLength: 80, identity: false, ...over });
+  const fieldsOf = async (res: Response) => ((await res.json()) as { fields: Record<string, string> }).fields;
+  const post400 = async (over: Record<string, unknown>) => {
+    const events = await countRows(t.env.DB, "events");
+    const res = await post(draft(over));
+    expect(res.status, JSON.stringify(over)).toBe(400);
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+    return fieldsOf(res);
+  };
+
+  it("creates the fields in order with the identity limit, stores them, and answers with them", async () => {
+    const fields = [F("Rider", { identity: true }), F("Pony", { identity: true, maxLength: 30 }), F("Phone", { required: false, maxLength: 12 })];
+    const body = await create({ fields, identityLimit: 2 });
+    expect(body.event).toMatchObject({ fields, identityLimit: 2 });
+    const id = (await t.env.DB.prepare("SELECT id FROM events WHERE slug = ?").bind(body.event.slug).first<{ id: number }>())!.id;
+    expect((await t.env.DB.prepare("SELECT position, label, required, max_length, in_identity FROM event_fields WHERE event_id = ? ORDER BY position").bind(id).all()).results).toEqual([
+      { position: 1, label: "Rider", required: 1, max_length: 80, in_identity: 1 },
+      { position: 2, label: "Pony", required: 1, max_length: 30, in_identity: 1 },
+      { position: 3, label: "Phone", required: 0, max_length: 12, in_identity: 0 },
+    ]);
+    expect(await t.env.DB.prepare("SELECT identity_limit FROM event_layout WHERE event_id = ?").bind(id).first()).toEqual({ identity_limit: 2 });
+    const pub = (await publicEvent(body.event.slug)) as unknown as { event: { fields: unknown[] } };
+    expect(pub.event.fields).toEqual([
+      { position: 1, label: "Rider", required: true, maxLength: 80 }, { position: 2, label: "Pony", required: true, maxLength: 30 }, { position: 3, label: "Phone", required: false, maxLength: 12 },
+    ]);
+  });
+
+  it("answers a retry (same key, same fields) with the same body and an Idempotent-Replayed header, and changed fields or limit with 422", async () => {
+    const first = draft({ fields: [F("Car reg", { identity: true })], identityLimit: 2 });
+    const one = await post(first);
+    expect(one.status).toBe(201);
+    const events = await countRows(t.env.DB, "events");
+    const fieldRows = await countRows(t.env.DB, "event_fields");
+    const again = await post(first);
+    expect(again.status).toBe(201);
+    expect(again.headers.get("idempotent-replayed")).toBe("true");
+    expect(await again.json()).toEqual(await one.json());
+    for (const changed of [{ fields: [F("Car reg", { identity: true, maxLength: 10 })] }, { fields: [F("Registration", { identity: true })] }, { identityLimit: 3 }, { fields: undefined }]) {
+      const res = await post({ ...first, ...changed });
+      expect(res.status, JSON.stringify(changed)).toBe(422);
+      expect(((await res.json()) as { error: { code: string } }).error.code).toBe("idempotency_key_reuse");
+    }
+    expect([await countRows(t.env.DB, "events"), await countRows(t.env.DB, "event_fields")]).toEqual([events, fieldRows]);
+  });
+
+  it("answers a retry of a body that left the fields out as the same event, with the default Name field", async () => {
+    const first = draft();
+    const one = await post(first);
+    const again = await post(first);
+    expect(again.status).toBe(201);
+    expect(await again.json()).toEqual(await one.json());
+  });
+
+  describe("validation", () => {
+    it("needs a list of one to four fields", async () => {
+      expect(await post400({ fields: "Dog" })).toEqual({ fields: "Fields must be a list." });
+      expect(await post400({ fields: {} })).toEqual({ fields: "Fields must be a list." });
+      expect(await post400({ fields: [] })).toEqual({ fields: "A booking form needs at least one field." });
+      expect(await post400({ fields: [1, 2, 3, 4, 5].map((i) => F(`F${i}`, { identity: i === 1 })) })).toEqual({ fields: "You can have at most 4 fields." });
+      expect((await post(draft({ fields: [1, 2, 3, 4].map((i) => F(`F${i}`, { identity: i === 1 })) }))).status).toBe(201);
+    });
+
+    it("needs each field to be an object, keyed fields.N (counting from 0)", async () => {
+      expect(await post400({ fields: [F("A", { identity: true }), "B", null] })).toEqual({ "fields.1": "Each field needs a label.", "fields.2": "Each field needs a label." });
+    });
+
+    it("checks the label like an event name: text, at most 40 characters, no invisible, control or line-separating characters", async () => {
+      const bad = async (label: unknown) => (await post400({ fields: [F(label as string, { identity: true })] }))["fields.0.label"];
+      expect(await bad(undefined)).toBe("Enter the field label.");
+      expect(await bad(7)).toBe("Enter the field label.");
+      expect(await bad("")).toBe("Enter the field label.");
+      expect(await bad("   ")).toBe("Enter the field label.");
+      expect(await bad("x".repeat(41))).toBe("The field label must be at most 40 characters.");
+      expect(await bad("Do\u200Bg")).toContain("The field label can't contain invisible or direction-changing characters.");
+      expect(await bad("Do\u2028g")).toBe("The field label can't contain line or paragraph separators.");
+      expect(await bad("Do\u0007g")).toBe("The field label can't contain control characters.");
+      expect(await bad("Do\ud800g")).toBe("The field label can't contain unpaired surrogate characters.");
+      expect((await post(draft({ fields: [F("é".repeat(40), { identity: true })] }))).status).toBe(201);
+    });
+
+    it("trims a label and refuses two that are the same ignoring case, Unicode form and spacing at the ends", async () => {
+      expect((await create({ fields: [F("  Dog  ", { identity: true })] })).event.fields).toEqual([F("Dog", { identity: true })]);
+      expect(await post400({ fields: [F("Dog", { identity: true }), F("dog")] })).toEqual({ "fields.1.label": "Two fields can't have the same label." });
+      expect(await post400({ fields: [F("Zo\u00EB", { identity: true }), F("ZOE\u0308")] })).toEqual({ "fields.1.label": "Two fields can't have the same label." });
+      expect(await post400({ fields: [F("Dog", { identity: true }), F("Handler"), F("DOG ")] })).toEqual({ "fields.2.label": "Two fields can't have the same label." });
+    });
+
+    it("needs a longest value of a whole number from 1 to 80", async () => {
+      for (const maxLength of [0, 81, 1.5, "10", null, undefined, -1]) {
+        expect(await post400({ fields: [F("Dog", { identity: true, maxLength })] }), String(maxLength)).toEqual({ "fields.0.maxLength": "Enter a whole number of characters from 1 to 80." });
+      }
+      expect((await post(draft({ fields: [F("A", { identity: true, maxLength: 1 }), F("B", { maxLength: 80 })] }))).status).toBe(201);
+    });
+
+    it("needs required and identity to be true or false", async () => {
+      expect(await post400({ fields: [F("Dog", { identity: true, required: "yes" })] })).toEqual({ "fields.0.required": "Required must be true or false." });
+      expect(await post400({ fields: [F("Dog", { identity: "yes" })] })).toEqual({ "fields.0.identity": "Identifies a booking must be true or false." });
+      expect(await post400({ fields: [{ label: "Dog" }] })).toEqual({
+        "fields.0.maxLength": "Enter a whole number of characters from 1 to 80.", "fields.0.required": "Required must be true or false.", "fields.0.identity": "Identifies a booking must be true or false.",
+      });
+    });
+
+    it("makes the first field required, and every field that identifies a booking", async () => {
+      expect(await post400({ fields: [F("Dog", { required: false, identity: false }), F("Handler", { identity: true })] })).toEqual({ "fields.0.required": "The first field must be required." });
+      expect(await post400({ fields: [F("Dog", { required: false, identity: true })] })).toEqual({ "fields.0.required": "The first field must be required." });
+      expect(await post400({ fields: [F("Dog", { identity: true }), F("Handler", { required: false, identity: true })] })).toEqual({ "fields.1.required": "A field that identifies a booking must be required." });
+      expect((await post(draft({ fields: [F("Dog", { identity: true }), F("Handler", { required: false, identity: false })] }))).status).toBe(201);
+    });
+
+    it("needs at least one field that identifies a booking", async () => {
+      expect(await post400({ fields: [F("Dog"), F("Handler")] })).toEqual({ fields: "At least one field must identify a booking." });
+    });
+
+    it("needs an identity limit of a whole number from 1 to 20", async () => {
+      for (const identityLimit of [0, 21, 1.5, "2", null, -3]) {
+        expect(await post400({ identityLimit }), String(identityLimit)).toEqual({ identityLimit: "Enter a whole number of bookings from 1 to 20." });
+      }
+      expect((await create({ identityLimit: 20 })).event.identityLimit).toBe(20);
+      expect((await create({ identityLimit: 1 })).event.identityLimit).toBe(1);
+    });
+
+    it("reports every error at once, with the other fields' errors", async () => {
+      expect(await post400({ name: "", fields: [F("", { identity: true }), F("Dog", { maxLength: 0 })], identityLimit: 0 })).toEqual({
+        name: "Enter the event name.", "fields.0.label": "Enter the field label.", "fields.1.maxLength": "Enter a whole number of characters from 1 to 80.",
+        identityLimit: "Enter a whole number of bookings from 1 to 20.",
+      });
+    });
   });
 });

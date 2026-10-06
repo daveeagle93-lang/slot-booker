@@ -79,7 +79,8 @@ describe("copyText", () => {
     name: "Trial Day", costPence: 1500, venuePostcode: "SW1A 1AA", details: "Bring water.\nBe kind.",
   };
   const booking = {
-    slot: { start: "2026-06-13T08:20:00Z", end: "2026-06-13T08:35:00Z" }, dogName: "Biscuit", handlerName: "Ann Lee",
+    slot: { start: "2026-06-13T08:20:00Z", end: "2026-06-13T08:35:00Z" },
+    fields: [{ label: "Dog", value: "Biscuit" }, { label: "Handler", value: "Ann Lee" }],
   };
 
   it("builds the plain-text summary", () => {
@@ -96,6 +97,14 @@ describe("copyText", () => {
 
   it("is unchanged for an unnamed lane", () => {
     expect(copyText(event, { ...booking, lane: { id: 7, name: "" } })).toBe(copyText(event, booking));
+  });
+
+  it("has a `Label: value` line for each value the booking has, in the form's order, whatever the labels", () => {
+    const fields = [{ label: "Rider", value: "Ann Lee" }, { label: "Pony", value: "Biscuit" }, { label: "Phone", value: "07700 900123" }];
+    expect(copyText(event, { ...booking, fields })).toBe(
+      "Trial Day\nSaturday 13 June 2026, 09:20–09:35\nRider: Ann Lee\nPony: Biscuit\nPhone: 07700 900123\nVenue: SW1A 1AA\nCost: £15.00\nBring water.\nBe kind.",
+    );
+    expect(copyText(event, { ...booking, fields: [{ label: "Car reg", value: "AB12 CDE" }] })).toContain("\nCar reg: AB12 CDE\nVenue:");
   });
 
   it("omits empty details", () => {

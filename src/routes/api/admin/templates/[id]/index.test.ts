@@ -126,6 +126,7 @@ describe("PUT /api/admin/templates/:id", () => {
     expect(saved).toEqual({
       id: made.id, name: "Sunday", isDefault: true, details: "New details", venuePostcode: "CD3 4EF", costPence: 2000, start: "10:00", end: "13:00",
       sessionMinutes: 20, gapMinutes: 5, shareMessage: "New {event}", lanes: [{ name: "" }], capacity: 1,
+      fields: [{ label: "Name", required: true, maxLength: 80, identity: true }], identityLimit: 1,
       breaks: [{ start: "11:00", end: "11:15", label: "" }, { start: "12:00", end: "12:15", label: "Tea" }],
     });
     expect(((await (await get(made.id)).json()) as { template: Made }).template).toEqual(saved);
@@ -450,6 +451,14 @@ describe("templates: lanes and capacity on update and in a round trip to an even
     expect(await stored(id)).toMatchObject({ layout: { capacity: 3 } });
   });
 
+  it("reads a template with no field rows as the Dog and Handler form", async () => {
+    const { id } = await insertTemplate(t.env.DB);
+    await t.env.DB.prepare("DELETE FROM event_template_fields WHERE template_id = ?").bind(id).run();
+    expect(((await (await get(id)).json()) as { template: { fields: unknown } }).template.fields).toEqual([
+      { label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true },
+    ]);
+  });
+
   it("reads a template with no lane or layout rows as one unnamed lane and capacity 1", async () => {
     const { id } = await insertTemplate(t.env.DB);
     await t.env.DB.prepare("DELETE FROM event_template_lanes WHERE template_id = ?").bind(id).run();
@@ -477,5 +486,77 @@ describe("templates: lanes and capacity on update and in a round trip to an even
     expect((await put(tpl.id, body({ lanes: [{ name: "Changed" }], capacity: 9 }))).status).toBe(200);
     const row = await t.env.DB.prepare("SELECT (SELECT COUNT(*) FROM event_lanes WHERE event_id = e.id) AS lanes, (SELECT capacity FROM event_layout WHERE event_id = e.id) AS capacity FROM events e WHERE slug = ?").bind(event.slug).first();
     expect(row).toEqual({ lanes: 2, capacity: 2 });
+  });
+});
+
+describe("templates: the booking form's fields on update and in a round trip to an event", () => {
+  const F = (label: string, over: Record<string, unknown> = {}) => ({ label, required: true, maxLength: 80, identity: false, ...over });
+  const RIDER_PONY = [F("Rider", { identity: true }), F("Pony", { identity: true, maxLength: 30 }), F("Phone", { required: false, maxLength: 12 })];
+  const made = async (over: Record<string, unknown> = {}) => {
+    const res = await post(body({ fields: RIDER_PONY, identityLimit: 2, ...over }));
+    expect(res.status).toBe(201);
+    return ((await res.json()) as { template: { id: number; fields: unknown[]; identityLimit: number } }).template;
+  };
+  const stored = async (id: number) => ({
+    fields: (await t.env.DB.prepare("SELECT label, required, max_length, in_identity FROM event_template_fields WHERE template_id = ? ORDER BY position").bind(id).all<{ label: string }>()).results.map((f) => f.label),
+    limit: (await t.env.DB.prepare("SELECT identity_limit, capacity FROM event_template_layout WHERE template_id = ?").bind(id).first<{ identity_limit: number; capacity: number }>()),
+  });
+
+  it("replaces the fields as a whole and the limit when sent, and leaves them when not (and the capacity alone leaves the limit)", async () => {
+    const tpl = await made();
+    expect((await put(tpl.id, body({ fields: [F("Car reg", { identity: true })], identityLimit: 5 }))).status).toBe(200);
+    expect(await stored(tpl.id)).toEqual({ fields: ["Car reg"], limit: { identity_limit: 5, capacity: 1 } });
+    expect((await put(tpl.id, body({ name: "Renamed" }))).status).toBe(200);
+    expect(await stored(tpl.id)).toEqual({ fields: ["Car reg"], limit: { identity_limit: 5, capacity: 1 } });
+    expect((await put(tpl.id, body({ capacity: 3 }))).status).toBe(200);
+    expect(await stored(tpl.id)).toEqual({ fields: ["Car reg"], limit: { identity_limit: 5, capacity: 3 } });
+    expect((await put(tpl.id, body({ identityLimit: 1, fields: [F("B", { identity: true }), F("A")] }))).status).toBe(200);
+    expect(await stored(tpl.id)).toEqual({ fields: ["B", "A"], limit: { identity_limit: 1, capacity: 3 } });
+    expect(((await (await get(tpl.id)).json()) as { template: { fields: unknown } }).template.fields).toEqual([F("B", { identity: true }), F("A")]);
+  });
+
+  it("swaps two labels on update without meeting the unique label index half-way", async () => {
+    const tpl = await made({ fields: [F("A", { identity: true }), F("B")] });
+    expect((await put(tpl.id, body({ fields: [F("B", { identity: true }), F("A")] }))).status).toBe(200);
+    expect((await stored(tpl.id)).fields).toEqual(["B", "A"]);
+  });
+
+  it("refuses bad fields on update with field errors and changes nothing", async () => {
+    const tpl = await made();
+    const res = await put(tpl.id, body({ name: "Changed", fields: [F("A"), F("a")], identityLimit: 99 }));
+    expect(res.status).toBe(400);
+    expect(await stored(tpl.id)).toEqual({ fields: ["Rider", "Pony", "Phone"], limit: { identity_limit: 2, capacity: 1 } });
+  });
+
+  it("recreates a template's layout row if a hand-made template has none (an update with the limit)", async () => {
+    const { id } = await insertTemplate(t.env.DB);
+    await t.env.DB.prepare("DELETE FROM event_template_layout WHERE template_id = ?").bind(id).run();
+    expect((await put(id, body({ name: "Hand made", identityLimit: 4 }))).status).toBe(200);
+    expect((await stored(id)).limit).toEqual({ identity_limit: 4, capacity: 1 });
+  });
+
+  it("round trip: an event created from a template's fields and limit has its own copy, which a later template edit doesn't touch", async () => {
+    const tpl = await made();
+    const fetched = ((await (await get(tpl.id)).json()) as { template: { fields: unknown[]; identityLimit: number } }).template;
+    const res = await createEventRoute({
+      request: new Request("http://localhost/api/admin/events", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          idempotencyKey: "template-fields-aaaaaaaa", name: "From template", date: "2026-10-24", start: "09:00", end: "12:00", sessionMinutes: 15, gapMinutes: 0,
+          costPence: 0, venuePostcode: "AB1 2CD", details: "", breaks: [], fields: fetched.fields, identityLimit: fetched.identityLimit,
+        }),
+      }),
+      env: t.env, data: ADMIN,
+    } as unknown as Parameters<typeof createEventRoute>[0]);
+    expect(res.status).toBe(201);
+    const event = ((await res.json()) as { event: { slug: string; fields: unknown[]; identityLimit: number } }).event;
+    expect(event.fields).toEqual(RIDER_PONY);
+    expect(event.identityLimit).toBe(2);
+    expect((await put(tpl.id, body({ fields: [F("Changed", { identity: true })], identityLimit: 9 }))).status).toBe(200);
+    const row = await t.env.DB.prepare(
+      `SELECT (SELECT group_concat(label, '|') FROM (SELECT label FROM event_fields WHERE event_id = e.id ORDER BY position)) AS labels,
+              (SELECT identity_limit FROM event_layout WHERE event_id = e.id) AS identity_limit FROM events e WHERE slug = ?`,
+    ).bind(event.slug).first();
+    expect(row).toEqual({ labels: "Rider|Pony|Phone", identity_limit: 2 });
   });
 });

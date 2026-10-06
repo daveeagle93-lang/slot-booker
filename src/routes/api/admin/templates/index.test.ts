@@ -98,6 +98,7 @@ describe("POST /api/admin/templates", () => {
         id: expect.any(Number), name: "Saturday trial", isDefault: true, details: "Bring water", venuePostcode: "AB1 2CD", costPence: 1500,
         start: "09:00", end: "12:00", sessionMinutes: 15, gapMinutes: 0, breaks: [{ start: "10:00", end: "10:30", label: "Lunch" }],
         shareMessage: "Book {event}", lanes: [{ name: "" }], capacity: 1,
+        fields: [{ label: "Name", required: true, maxLength: 80, identity: true }], identityLimit: 1,
       },
     });
     expect(await listed()).toHaveLength(1);
@@ -127,7 +128,7 @@ describe("POST /api/admin/templates", () => {
     const made = await create({ id: 99, createdAt: "x", listed: "nope", date: "not a date", idempotencyKey: "k", extra: { a: 1 } });
     expect(made.id).not.toBe(99);
     expect(Object.keys(made).sort()).toEqual([
-      "breaks", "capacity", "costPence", "details", "end", "gapMinutes", "id", "isDefault", "lanes", "name", "sessionMinutes", "shareMessage", "start", "venuePostcode",
+      "breaks", "capacity", "costPence", "details", "end", "fields", "gapMinutes", "id", "identityLimit", "isDefault", "lanes", "name", "sessionMinutes", "shareMessage", "start", "venuePostcode",
     ]);
   });
 
@@ -389,5 +390,44 @@ describe("templates: lanes and capacity", () => {
     if (!("draft" in parsed)) throw new Error("rejected");
     await createTemplate(t.env.DB, { ...parsed.draft, lanes: [{ name: "A" }, { name: "a" }] });
     expect([await countRows(t.env.DB, "event_templates"), await countRows(t.env.DB, "event_template_lanes"), await countRows(t.env.DB, "event_template_layout")]).toEqual([0, 0, 0]);
+  });
+});
+
+describe("templates: the booking form's fields and the identity limit", () => {
+  const F = (label: string, over: Record<string, unknown> = {}) => ({ label, required: true, maxLength: 80, identity: false, ...over });
+  const RIDER_PONY = [F("Rider", { identity: true }), F("Pony", { identity: true, maxLength: 30 }), F("Phone", { required: false, maxLength: 12 })];
+
+  it("stores the fields in order and the identity limit, and the list and the stored rows show them", async () => {
+    const made = await create({ fields: RIDER_PONY, identityLimit: 3 });
+    expect(made).toMatchObject({ fields: RIDER_PONY, identityLimit: 3 });
+    expect((await listed())[0]).toMatchObject({ fields: RIDER_PONY, identityLimit: 3 });
+    expect((await t.env.DB.prepare("SELECT position, label, required, max_length, in_identity FROM event_template_fields WHERE template_id = ? ORDER BY position").bind(made.id).all()).results).toEqual([
+      { position: 1, label: "Rider", required: 1, max_length: 80, in_identity: 1 },
+      { position: 2, label: "Pony", required: 1, max_length: 30, in_identity: 1 },
+      { position: 3, label: "Phone", required: 0, max_length: 12, in_identity: 0 },
+    ]);
+    expect(await t.env.DB.prepare("SELECT capacity, identity_limit FROM event_template_layout WHERE template_id = ?").bind(made.id).first()).toEqual({ capacity: 1, identity_limit: 3 });
+  });
+
+  it("makes one required field, Name, that identifies a booking, and identity limit 1, when the body says nothing", async () => {
+    expect(await create()).toMatchObject({ fields: [{ label: "Name", required: true, maxLength: 80, identity: true }], identityLimit: 1 });
+  });
+
+  it("validates through the event's rules: the same keys and messages", async () => {
+    expect(await fieldsOf(await post(body({ fields: [F("Dog", { identity: true }), F("dog", { required: false, identity: true })], identityLimit: 0 })))).toEqual({
+      "fields.1.label": "Two fields can't have the same label.", "fields.1.required": "A field that identifies a booking must be required.",
+      identityLimit: "Enter a whole number of bookings from 1 to 20.",
+    });
+    expect(await fieldsOf(await post(body({ fields: [] })))).toEqual({ fields: "A booking form needs at least one field." });
+    expect(await fieldsOf(await post(body({ fields: [F("Dog")] })))).toEqual({ fields: "At least one field must identify a booking." });
+    expect(await fieldsOf(await post(body({ fields: [F("Do\u200Bg", { identity: true })] })))).toEqual({ "fields.0.label": INVISIBLE("field label") });
+    expect(await countRows(t.env.DB, "event_templates")).toBe(0);
+  });
+
+  it("is atomic: nothing is left of a template whose fields the database refuses (validation bypassed)", async () => {
+    const parsed = parseTemplateDraft(body({ fields: [F("A", { identity: true }), F("B")] }));
+    if (!("draft" in parsed)) throw new Error("rejected");
+    await createTemplate(t.env.DB, { ...parsed.draft, fields: [F("A", { identity: true }), F("a")] }); // any UNIQUE failure of the batch answers duplicate_name
+    expect([await countRows(t.env.DB, "event_templates"), await countRows(t.env.DB, "event_template_fields"), await countRows(t.env.DB, "event_template_layout")]).toEqual([0, 0, 0]);
   });
 });

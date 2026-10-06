@@ -3,10 +3,14 @@ import { createTestEnv, insertBooking, insertEvent, interceptBatches, type TestE
 import { bookingWindow, computeSlotViews, eventSummary, isSlotBookable, loadEventBySlug, type EventRow } from "./events";
 
 const START = "2026-06-13T08:00:00Z";
+const DOG_HANDLER_FIELDS: EventRow["fields"] = [
+  { position: 1, label: "Dog", required: true, maxLength: 80, identity: true },
+  { position: 2, label: "Handler", required: true, maxLength: 80, identity: true },
+];
 const event = (o: Partial<EventRow> = {}): EventRow => ({
   id: 1, slug: "x", name: "Test", startUtc: START, endUtc: "2026-06-13T11:00:00Z", sessionMinutes: 15, gapMinutes: 0,
   costPence: 0, venuePostcode: "AB1 2CD", details: "", shareMessage: "", archived: false, listed: true, breaks: [],
-  lanes: [{ id: 1, position: 1, name: "" }], capacity: 1, identityLimit: 1, configRev: 0, ...o,
+  lanes: [{ id: 1, position: 1, name: "" }], fields: DOG_HANDLER_FIELDS, capacity: 1, identityLimit: 1, configRev: 0, ...o,
 });
 const at = (iso: string) => new Date(iso);
 
@@ -67,8 +71,11 @@ describe("loadEventBySlug and computeSlotViews with lanes and places", () => {
   const NOW = new Date("2026-06-01T00:00:00Z");
   const DAY = { startUtc: START, endUtc: "2026-06-13T09:00:00Z", sessionMinutes: 15 }; // 08:00 08:15 08:30 08:45
 
-  it("loads the event, its breaks, lanes in order, capacity, identity limit and revision in ONE batch", async () => {
-    const e = await insertEvent(t.env.DB, { ...DAY, capacity: 3, identityLimit: 2, lanes: ["Ring 2", "Ring 1"] });
+  it("loads the event, its breaks, lanes in order, fields, capacity, identity limit and revision in ONE batch", async () => {
+    const e = await insertEvent(t.env.DB, {
+      ...DAY, capacity: 3, identityLimit: 2, lanes: ["Ring 2", "Ring 1"],
+      fields: [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Notes", required: false, maxLength: 20 }],
+    });
     await t.env.DB.prepare("UPDATE event_layout SET config_rev = 7 WHERE event_id = ?").bind(e.id).run();
     let batches = 0;
     let singles = 0;
@@ -79,9 +86,14 @@ describe("loadEventBySlug and computeSlotViews with lanes and places", () => {
     expect(loaded).toMatchObject({
       id: e.id, capacity: 3, identityLimit: 2, configRev: 7,
       lanes: [{ id: e.laneIds[0], position: 1, name: "Ring 2" }, { id: e.laneIds[1], position: 2, name: "Ring 1" }],
+      fields: [
+        { position: 1, label: "Rider", required: true, maxLength: 80, identity: true },
+        { position: 2, label: "Pony", required: true, maxLength: 80, identity: true },
+        { position: 3, label: "Notes", required: false, maxLength: 20, identity: false },
+      ],
     });
     expect(batches).toBe(1);
-    expect(singles).toBe(4); // the four statements of that one batch, and no query of its own
+    expect(singles).toBe(5); // the five statements of that one batch, and no query of its own
   });
 
   it("gives an event with no layout row capacity 1, limit 1, revision 0, and a lane-less event no lanes", async () => {
@@ -93,9 +105,23 @@ describe("loadEventBySlug and computeSlotViews with lanes and places", () => {
     expect(await loadEventBySlug(t.env.DB, e.slug)).toMatchObject({ capacity: 1, identityLimit: 1, configRev: 0, lanes: [] });
   });
 
+  it("gives an event with no field rows the Dog and Handler form (an event made by the previous version between the migration and the deploy), and books it as such", async () => {
+    const e = await insertEvent(t.env.DB, DAY);
+    await t.env.DB.prepare("DELETE FROM event_fields WHERE event_id = ?").bind(e.id).run();
+    expect((await loadEventBySlug(t.env.DB, e.slug))!.fields).toEqual(DOG_HANDLER_FIELDS);
+  });
+
   it("returns null for an unknown event, a malformed slug", async () => {
     expect(await loadEventBySlug(t.env.DB, "nosuchevent0000000000")).toBeNull();
     expect(await loadEventBySlug(t.env.DB, "bad slug")).toBeNull();
+  });
+
+  it("offers the fields (position, label, required, longest value) publicly, and not which of them identify a booking", async () => {
+    const e = await insertEvent(t.env.DB, { ...DAY, fields: [{ label: "Rider", identity: true }, { label: "Notes", required: false, maxLength: 20 }] });
+    const summary = eventSummary((await loadEventBySlug(t.env.DB, e.slug))!);
+    expect(summary.fields).toEqual([
+      { position: 1, label: "Rider", required: true, maxLength: 80 }, { position: 2, label: "Notes", required: false, maxLength: 20 },
+    ]);
   });
 
   it("offers the lanes (id and name) and capacity publicly, and nothing else about them", async () => {

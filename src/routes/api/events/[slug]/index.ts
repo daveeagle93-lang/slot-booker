@@ -13,7 +13,7 @@ export const onRequestGet: RouteHandler<"slug"> = async ({ env, params }) => {
       event: eventSummary(event),
       slots,
       bookings: bookingWindow(event, bookingCutoffOffsetMinutes(env.BOOKING_CUTOFF_OFFSET_MINUTES), now),
-      privacyNotice: privacyNotice(env.PRIVACY_NOTICE),
+      privacyNotice: privacyNotice(env.PRIVACY_NOTICE, event.fields.map((f) => f.label)),
     },
     200,
     { "Cache-Control": "no-store" },

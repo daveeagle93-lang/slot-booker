@@ -10,7 +10,7 @@ const MIGRATIONS = join(import.meta.dirname, "../../migrations");
 export interface StagedDb {
   /** The database as it is now (a new connection after every applyThrough). */
   readonly env: { DB: D1Database };
-  /** Applies migrations up to and including this number ("0017") with the real `wrangler d1 migrations apply --local`. */
+  /** Applies migrations up to and including this number ("0018") with the real `wrangler d1 migrations apply --local`. */
   applyThrough(last: string): Promise<void>;
   /** Opens the connection; only fork needs it (a new StagedDb starts closed until applyThrough). */
   reopen(): Promise<void>;
