@@ -4,13 +4,15 @@ import { generateSchedule, type TimeRange } from "../core/schedule";
 import { defaultShareMessageStatement, previewSchedule, type EventDraft } from "./admin-events";
 import { noStore } from "./bookings";
 import { guard, isGuardFailure } from "./db-guard";
-import type { EventRow } from "./events";
+import { loadEventBySlug, type EventRow } from "./events";
 import { errorResponse } from "./http";
 import { loadSettings } from "./settings";
 
 export type EditResult =
   | { kind: "saved"; event: EventRow; slotCount: number; removed: BookingRef[] }
   | { kind: "bookings_affected"; affected: BookingRef[] }
+  /** The lanes or capacity were edited by someone else after the event was read, and this request would have overwritten that. */
+  | { kind: "layout_changed" }
   | { kind: "not_found" };
 
 export const eventNotFound = (): Response => errorResponse(404, "not_found", "Event not found", {}, noStore);
@@ -21,7 +23,12 @@ export const editFailed = (what: string, e: unknown): Response => {
 };
 
 /** A booking as the edit screens list it. `slotStart` is a UTC instant; the slot's end isn't needed. */
-export interface BookingRef { id: number; slotStart: string; dogName: string; handlerName: string }
+export interface BookingRef { id: number; slotStart: string; dogName: string; handlerName: string; lane: { id: number; name: string } }
+
+/** A booking with what deciding a clash needs: its place and when it was made. */
+export interface StoredBooking extends BookingRef { place: number; createdAt: string }
+
+export const toRef = (b: StoredBooking): BookingRef => ({ id: b.id, slotStart: b.slotStart, dogName: b.dogName, handlerName: b.handlerName, lane: b.lane });
 
 /** The event as the edit form uses it: London-local date and times next to the stored UTC instants. */
 export const eventView = (e: EventRow) => ({
@@ -30,26 +37,66 @@ export const eventView = (e: EventRow) => ({
   sessionMinutes: e.sessionMinutes, gapMinutes: e.gapMinutes, costPence: e.costPence,
   venuePostcode: e.venuePostcode, details: e.details, shareMessage: e.shareMessage,
   startUtc: e.startUtc, endUtc: e.endUtc,
+  lanes: e.lanes.map((l) => ({ id: l.id, name: l.name })), capacity: e.capacity,
   breaks: [...e.breaks].sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0))
     .map((b) => ({ start: utcToLondon(b.start).time, end: utcToLondon(b.end).time, label: b.label, startUtc: b.start, endUtc: b.end })),
 });
 
 /** Every booking of the event, in slot, lane and place order: one query. The booking form's two fields are value_1 and value_2. */
-export async function loadBookings(db: D1Database, eventId: number): Promise<BookingRef[]> {
+export async function loadBookings(db: D1Database, eventId: number): Promise<StoredBooking[]> {
   const { results } = await db
     .prepare(
-      `SELECT b.id, b.slot_start_utc, b.value_1, b.value_2 FROM bookings b JOIN event_lanes l ON l.id = b.lane_id
+      `SELECT b.id, b.slot_start_utc, b.value_1, b.value_2, b.lane_id, l.name AS lane_name, b.place, b.created_at
+       FROM bookings b JOIN event_lanes l ON l.id = b.lane_id
        WHERE b.event_id = ? ORDER BY b.slot_start_utc, l.position, b.place, b.id`,
     )
     .bind(eventId)
-    .all<{ id: number; slot_start_utc: string; value_1: string; value_2: string }>();
-  return results.map((r) => ({ id: r.id, slotStart: r.slot_start_utc, dogName: r.value_1, handlerName: r.value_2 }));
+    .all<{ id: number; slot_start_utc: string; value_1: string; value_2: string; lane_id: number; lane_name: string; place: number; created_at: string }>();
+  return results.map((r) => ({
+    id: r.id, slotStart: r.slot_start_utc, dogName: r.value_1, handlerName: r.value_2, lane: { id: r.lane_id, name: r.lane_name },
+    place: r.place, createdAt: r.created_at,
+  }));
 }
 
-/** The bookings whose slot is not among these slots: what a schedule change would orphan. */
-export const bookingsOutside = (bookings: BookingRef[], slots: TimeRange[]): BookingRef[] => {
+/** What a draft would leave of the event: the slots, the lanes (by id) and the places per lane per time. */
+export interface LayoutPlan { slots: TimeRange[]; laneIds: ReadonlySet<number>; capacity: number }
+
+/** The plan for saving `draft` over `event`: a draft that doesn't list the lanes or the capacity keeps the event's. */
+export const planOf = (event: Pick<EventRow, "lanes" | "capacity">, draft: Pick<EventDraft, "lanes" | "capacity">, slots: TimeRange[]): LayoutPlan => ({
+  slots,
+  laneIds: new Set(draft.lanes ? draft.lanes.flatMap((l) => (l.id === undefined ? [] : [l.id])) : event.lanes.map((l) => l.id)),
+  capacity: draft.capacity ?? event.capacity,
+});
+
+/**
+ * The bookings that would not survive the plan, in the order given. A booking is stranded when its slot is not in the new
+ * schedule, or its lane is removed, or it is over the new capacity: of the bookings that stay in one lane at one time, the
+ * `capacity` made first stay (ties by id) and the later ones are stranded, so the booker who was there first keeps the place.
+ */
+export function strandedBookings(bookings: StoredBooking[], plan: LayoutPlan): StoredBooking[] {
+  const starts = new Set(plan.slots.map((s) => s.start));
+  const stranded = new Set<number>();
+  const groups = new Map<string, StoredBooking[]>();
+  for (const b of bookings) {
+    if (!starts.has(b.slotStart) || !plan.laneIds.has(b.lane.id)) {
+      stranded.add(b.id);
+      continue;
+    }
+    const key = `${b.lane.id}|${b.slotStart}`;
+    groups.set(key, [...(groups.get(key) ?? []), b]);
+  }
+  for (const group of groups.values()) {
+    const byAge = [...group].sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id - b.id));
+    for (const b of byAge.slice(plan.capacity)) stranded.add(b.id);
+  }
+  return bookings.filter((b) => stranded.has(b.id));
+}
+
+/** The bookings that are not where the event can hold them now: at a time that isn't a slot, in a lane it doesn't have, or at a place beyond its capacity. */
+export const orphanBookings = (bookings: StoredBooking[], event: Pick<EventRow, "lanes" | "capacity">, slots: TimeRange[]): StoredBooking[] => {
   const starts = new Set(slots.map((s) => s.start));
-  return bookings.filter((b) => !starts.has(b.slotStart));
+  const lanes = new Set(event.lanes.map((l) => l.id));
+  return bookings.filter((b) => !starts.has(b.slotStart) || !lanes.has(b.lane.id) || b.place > event.capacity);
 };
 
 /**
@@ -75,7 +122,7 @@ export async function eventDetail(db: D1Database, event: EventRow) {
   return {
     event: eventView(event),
     slots: withBookings,
-    orphans: bookingsOutside(bookings, slots),
+    orphans: orphanBookings(bookings, event, slots).map(toRef),
     defaultShareMessage: defaultMessage?.share_message ?? "",
     lineup: buildLineup({ clubName, name: event.name, venuePostcode: event.venuePostcode, startUtc: event.startUtc, slots: withBookings, breaks: event.breaks }),
   };
@@ -97,63 +144,152 @@ export interface SaveHooks { afterRead?: () => Promise<void> }
 /**
  * Saves the draft over the event, removing the bookings the admin confirmed.
  *
- * The bookings that would lose their slot are worked out from a read; if any of them was not confirmed,
- * nothing is changed and they are returned. Otherwise one batch updates the event, replaces its breaks and
- * deletes exactly those bookings. Its first statement is a guard that fails the whole batch if any booking
- * now sits on a slot the new schedule lacks without being one of those: a booking made after the read
- * (the batch writes nothing then, and the fresh list is returned). A second guard fails the batch if the event
- * was deleted after the read (not_found, nothing written). Event fields are last write wins.
+ * The bookings that would be stranded are worked out from a read (strandedBookings: their time leaves the schedule, their lane
+ * is removed, or they are over a lowered capacity, the latest made first); if any of them was not confirmed, nothing is changed
+ * and they are returned. Otherwise one batch updates the event, replaces its breaks, deletes exactly those bookings, renumbers
+ * the places of the bookings that stay when the capacity went down (all parked above 10000 first, so UNIQUE is never hit half-way),
+ * and rewrites the lanes and the layout. Its leading guards fail the whole batch if any booking now sits where the new schedule
+ * or lanes can't hold it without being one of those (a booking made after the read: nothing is written and the fresh list is
+ * returned), if a booking in the list has moved since (the read is repeated), or if the event was deleted after the read
+ * (not_found, nothing written). A draft that lists the lanes or the capacity is written over the layout it was made from, so it
+ * also fails (layout_changed) if the layout was edited after the event was read; every edit that changes the lanes or the
+ * capacity increases event_layout.config_rev in the same batch, which is how a booking request that read the old layout fails
+ * its own guard (db-guard.ts). Other event fields are last write wins.
  */
 export async function saveEventEdit(
   db: D1Database, event: EventRow, draft: EventDraft, confirmedIds: number[], hooks: SaveHooks = {},
 ): Promise<EditResult> {
   const { slots } = previewSchedule(draft);
-  const affected = bookingsOutside(await loadBookings(db, event.id), slots);
   const confirmed = new Set(confirmedIds);
-  if (affected.some((b) => !confirmed.has(b.id))) return { kind: "bookings_affected", affected };
-  await hooks.afterRead?.();
+  const touchesLayout = draft.lanes !== undefined || draft.capacity !== undefined;
+  let current = event;
+  for (let attempt = 0; ; attempt++) {
+    const affected = strandedBookings(await loadBookings(db, current.id), planOf(current, draft, slots));
+    if (affected.some((b) => !confirmed.has(b.id)) || attempt >= MAX_ATTEMPTS) return { kind: "bookings_affected", affected: affected.map(toRef) };
+    if (attempt === 0) await hooks.afterRead?.();
+    try {
+      return await writeEdit(db, current, draft, slots, affected);
+    } catch (e) {
+      if (!isGuardFailure(e)) throw e;
+      const fresh = await loadEventBySlug(db, event.slug);
+      if (!fresh) return { kind: "not_found" };
+      if (touchesLayout && fresh.configRev !== event.configRev) return { kind: "layout_changed" };
+      current = fresh;
+    }
+  }
+}
 
+/** A guard failure that is only a booking having moved is retried from a fresh read; this many tries, then the list is returned. */
+const MAX_ATTEMPTS = 3;
+
+/** The batch of saveEventEdit for one read: `affected` are the confirmed bookings to remove. Throws the guard's error if the database moved on. */
+async function writeEdit(
+  db: D1Database, event: EventRow, draft: EventDraft, slots: TimeRange[], affected: StoredBooking[],
+): Promise<EditResult> {
   // A request without `listed` (or `shareMessage`) leaves it as it is in the database now (COALESCE with null), not as it was when the event was loaded.
   const listed = draft.listed ?? event.listed;
   const starts = JSON.stringify(slots.map((s) => s.start));
   const ids = JSON.stringify(affected.map((b) => b.id));
   const outside = "slot_start_utc NOT IN (SELECT value FROM json_each(?))";
-  try {
-    const results = await db.batch([
-      guard(db, "EXISTS (SELECT 1 FROM events WHERE id = ?)", event.id),
+  const lanes = draft.lanes;
+  const capacity = draft.capacity ?? event.capacity;
+  const lanesChanged = lanes !== undefined
+    && (lanes.length !== event.lanes.length || lanes.some((l, i) => l.id !== event.lanes[i].id || l.name !== event.lanes[i].name));
+  const layoutChanged = lanesChanged || capacity !== event.capacity;
+
+  const batch: D1PreparedStatement[] = [
+    guard(db, "EXISTS (SELECT 1 FROM events WHERE id = ?)", event.id),
+    ...(lanes === undefined && draft.capacity === undefined ? [] : [
+      guard(db, "COALESCE((SELECT config_rev FROM event_layout WHERE event_id = ?), 0) = ?", event.id, event.configRev),
+    ]),
+    guard(
+      db,
+      `NOT EXISTS (SELECT 1 FROM bookings WHERE event_id = ? AND ${outside} AND id NOT IN (SELECT value FROM json_each(?)))`,
+      event.id, starts, ids,
+    ),
+    ...(lanes === undefined ? [] : [
       guard(
         db,
-        `NOT EXISTS (SELECT 1 FROM bookings WHERE event_id = ? AND ${outside} AND id NOT IN (SELECT value FROM json_each(?)))`,
-        event.id, starts, ids,
+        "NOT EXISTS (SELECT 1 FROM bookings WHERE event_id = ? AND lane_id NOT IN (SELECT value FROM json_each(?)) AND id NOT IN (SELECT value FROM json_each(?)))",
+        event.id, JSON.stringify(lanes.flatMap((l) => (l.id === undefined ? [] : [l.id]))), ids,
       ),
+    ]),
+    // Every booking to be removed must still be where it was read: one that has moved is a different clash (the read is repeated).
+    // One that is already gone is fine, so a retried save finds nothing left to remove.
+    guard(
+      db,
+      `NOT EXISTS (SELECT 1 FROM bookings b JOIN json_each(?) j ON b.id = json_extract(j.value, '$[0]') WHERE b.event_id = ?
+         AND (b.lane_id <> json_extract(j.value, '$[1]') OR b.slot_start_utc <> json_extract(j.value, '$[2]') OR b.place <> json_extract(j.value, '$[3]')))`,
+      JSON.stringify(affected.map((b) => [b.id, b.lane.id, b.slotStart, b.place])), event.id,
+    ),
+    db.prepare(
+      `UPDATE events SET name = ?, start_utc = ?, end_utc = ?, session_minutes = ?, gap_minutes = ?, cost_pence = ?,
+         venue_postcode = ?, details = ?, share_message = COALESCE(?, share_message), listed = COALESCE(?, listed) WHERE id = ?`,
+    ).bind(draft.name, draft.startUtc, draft.endUtc, draft.sessionMinutes, draft.gapMinutes, draft.costPence,
+      draft.venuePostcode, draft.details, draft.shareMessage ?? null, draft.listed === undefined ? null : draft.listed ? 1 : 0, event.id),
+    db.prepare("DELETE FROM breaks WHERE event_id = ?").bind(event.id),
+    ...draft.breaks.map((b) =>
+      db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (?, ?, ?, ?)").bind(event.id, b.startUtc, b.endUtc, b.label)),
+  ];
+  const deleteAt = batch.length;
+  batch.push(
+    db.prepare(
+      "DELETE FROM bookings WHERE event_id = ? AND id IN (SELECT value FROM json_each(?)) RETURNING id, slot_start_utc, lane_id, value_1, value_2",
+    ).bind(event.id, ids),
+  );
+  if (capacity < event.capacity) {
+    // No group may be over the new capacity once the confirmed bookings are gone, then every group is numbered 1, 2, ... in its old order.
+    batch.push(
+      guard(db, "NOT EXISTS (SELECT 1 FROM bookings WHERE event_id = ? GROUP BY lane_id, slot_start_utc HAVING COUNT(*) > ?)", event.id, capacity),
+      db.prepare("UPDATE bookings SET place = place + 10000 WHERE event_id = ?").bind(event.id),
       db.prepare(
-        `UPDATE events SET name = ?, start_utc = ?, end_utc = ?, session_minutes = ?, gap_minutes = ?, cost_pence = ?,
-           venue_postcode = ?, details = ?, share_message = COALESCE(?, share_message), listed = COALESCE(?, listed) WHERE id = ?`,
-      ).bind(draft.name, draft.startUtc, draft.endUtc, draft.sessionMinutes, draft.gapMinutes, draft.costPence,
-        draft.venuePostcode, draft.details, draft.shareMessage ?? null, draft.listed === undefined ? null : draft.listed ? 1 : 0, event.id),
-      db.prepare("DELETE FROM breaks WHERE event_id = ?").bind(event.id),
-      ...draft.breaks.map((b) =>
-        db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (?, ?, ?, ?)").bind(event.id, b.startUtc, b.endUtc, b.label)),
-      db.prepare(
-        `DELETE FROM bookings WHERE event_id = ? AND ${outside} AND id IN (SELECT value FROM json_each(?))
-         RETURNING id, slot_start_utc, value_1, value_2`,
-      ).bind(event.id, starts, ids),
-    ]);
-    const deleted = results[results.length - 1].results as { id: number; slot_start_utc: string; value_1: string; value_2: string }[];
-    return {
-      kind: "saved", slotCount: slots.length,
-      event: {
-        ...event, name: draft.name, startUtc: draft.startUtc, endUtc: draft.endUtc, sessionMinutes: draft.sessionMinutes,
-        gapMinutes: draft.gapMinutes, costPence: draft.costPence, venuePostcode: draft.venuePostcode, details: draft.details,
-        shareMessage: draft.shareMessage ?? event.shareMessage, listed,
-        breaks: draft.breaks.map((b) => ({ start: b.startUtc, end: b.endUtc, label: b.label })),
-      },
-      removed: deleted.map((r) => ({ id: r.id, slotStart: r.slot_start_utc, dogName: r.value_1, handlerName: r.value_2 }))
-        .sort((a, b) => (a.slotStart < b.slotStart ? -1 : a.slotStart > b.slotStart ? 1 : a.id - b.id)),
-    };
-  } catch (e) {
-    if (!isGuardFailure(e)) throw e;
-    if (!(await db.prepare("SELECT 1 AS n FROM events WHERE id = ?").bind(event.id).first())) return { kind: "not_found" };
-    return { kind: "bookings_affected", affected: bookingsOutside(await loadBookings(db, event.id), slots) };
+        `UPDATE bookings SET place = n.rn FROM (
+           SELECT id, ROW_NUMBER() OVER (PARTITION BY lane_id, slot_start_utc ORDER BY place, id) AS rn FROM bookings WHERE event_id = ?
+         ) AS n WHERE bookings.id = n.id`,
+      ).bind(event.id),
+    );
   }
+  if (lanes && lanesChanged) {
+    // Lanes not listed go first (the guard above saw to it that none has a booking). The rest are parked at a position above 100
+    // under a name nobody can type (U+001F), so renames and reorders that swap names or positions never clash half-way.
+    batch.push(
+      db.prepare("DELETE FROM event_lanes WHERE event_id = ? AND id NOT IN (SELECT value FROM json_each(?))")
+        .bind(event.id, JSON.stringify(lanes.flatMap((l) => (l.id === undefined ? [] : [l.id])))),
+      db.prepare("UPDATE event_lanes SET position = position + 100, name = char(31) || id WHERE event_id = ?").bind(event.id),
+      ...lanes.flatMap((l, i) => (l.id === undefined ? [] : [
+        db.prepare("UPDATE event_lanes SET position = ?, name = ? WHERE id = ? AND event_id = ?").bind(i + 1, l.name, l.id, event.id),
+      ])),
+      ...lanes.flatMap((l, i) => (l.id !== undefined ? [] : [
+        db.prepare("INSERT INTO event_lanes (event_id, position, name) VALUES (?, ?, ?)").bind(event.id, i + 1, l.name),
+      ])),
+    );
+  }
+  if (layoutChanged) {
+    batch.push(
+      db.prepare(
+        `INSERT INTO event_layout (event_id, capacity, config_rev) VALUES (?, ?, 1)
+         ON CONFLICT (event_id) DO UPDATE SET capacity = excluded.capacity, config_rev = config_rev + 1`,
+      ).bind(event.id, capacity),
+    );
+  }
+
+  const results = await db.batch(batch);
+  const deleted = results[deleteAt].results as { id: number; slot_start_utc: string; lane_id: number; value_1: string; value_2: string }[];
+  const laneName = new Map(event.lanes.map((l) => [l.id, l.name]));
+  const newLanes = lanesChanged
+    ? (await db.prepare("SELECT id, position, name FROM event_lanes WHERE event_id = ? ORDER BY position").bind(event.id).all<EventRow["lanes"][number]>()).results
+    : event.lanes;
+  return {
+    kind: "saved", slotCount: slots.length,
+    event: {
+      ...event, name: draft.name, startUtc: draft.startUtc, endUtc: draft.endUtc, sessionMinutes: draft.sessionMinutes,
+      gapMinutes: draft.gapMinutes, costPence: draft.costPence, venuePostcode: draft.venuePostcode, details: draft.details,
+      shareMessage: draft.shareMessage ?? event.shareMessage, listed,
+      breaks: draft.breaks.map((b) => ({ start: b.startUtc, end: b.endUtc, label: b.label })),
+      lanes: newLanes, capacity, configRev: layoutChanged ? event.configRev + 1 : event.configRev,
+    },
+    removed: deleted.map((r) => ({
+      id: r.id, slotStart: r.slot_start_utc, dogName: r.value_1, handlerName: r.value_2, lane: { id: r.lane_id, name: laneName.get(r.lane_id) ?? "" },
+    })).sort((a, b) => (a.slotStart < b.slotStart ? -1 : a.slotStart > b.slotStart ? 1 : a.id - b.id)),
+  };
 }

@@ -5,7 +5,7 @@ import { generateSlug } from "../core/slug";
 import { ANCHOR_CODE_POINTS, FORMAT_CODE_POINTS, hex, ORDINARY_NAMES } from "../test/format-chars";
 import { countRows, createTestEnv, type TestEnv } from "../test/db";
 import { loadEventBySlug } from "./events";
-import { insertEventWithBreaks, parseEventDraft, previewSchedule, type EventDraft } from "./admin-events";
+import { createdBody, createEvent, findEventByKey, insertEventWithBreaks, listAdminEvents, parseEventDraft, placeCountOf, previewSchedule, type EventDraft } from "./admin-events";
 
 const NOW = new Date("2026-10-01T12:00:00Z");
 
@@ -447,6 +447,113 @@ describe("parseEventDraft: shareMessage", () => {
   });
 });
 
+describe("parseEventDraft: lanes and capacity", () => {
+  const named = (...names: string[]) => names.map((name) => ({ name }));
+
+  it("leaves lanes and capacity unset when the input has none (create: one unnamed lane and 1; edit: unchanged)", () => {
+    expect(draftOf().lanes).toBeUndefined();
+    expect(draftOf().capacity).toBeUndefined();
+  });
+
+  it("accepts a single lane unnamed, whether the name is missing, null or blank, and tidies names", () => {
+    for (const lane of [{}, { name: null }, { name: "" }, { name: "  \t " }]) expect(draftOf({ lanes: [lane] }).lanes).toEqual([{ name: "" }]);
+    expect(draftOf({ lanes: named("  Ring 1 ") }).lanes).toEqual([{ name: "Ring 1" }]);
+  });
+
+  it("accepts 2 to 10 named lanes, in order, and capacity 1 to 50", () => {
+    expect(draftOf({ lanes: named("Ring 1", "Ring 2"), capacity: 3 })).toMatchObject({ lanes: named("Ring 1", "Ring 2"), capacity: 3 });
+    expect(draftOf({ lanes: named(...Array.from({ length: 10 }, (_, i) => `Ring ${i + 1}`)), capacity: 1 }).lanes).toHaveLength(10);
+    expect(draftOf({ capacity: 50, end: "09:30" }).capacity).toBe(50);
+  });
+
+  it.each([
+    ["not a list", "Ring 1", { lanes: "Lanes must be a list." }],
+    ["empty", [], { lanes: "An event needs at least one lane." }],
+    ["eleven", Array.from({ length: 11 }, (_, i) => ({ name: `R${i}` })), { lanes: "You can have at most 10 lanes." }],
+  ])("refuses lanes that are %s, under `lanes`", (_n, lanes, expected) => {
+    expect(fieldsOf({ lanes })).toEqual(expected);
+  });
+
+  it("refuses a lane that is not an object, under `lanes.N`", () => {
+    expect(fieldsOf({ lanes: [{ name: "A" }, "B"] })).toEqual({ "lanes.1": "Each lane needs a name." });
+  });
+
+  it("needs every lane named once there are two, under `lanes.N.name`", () => {
+    expect(fieldsOf({ lanes: [{ name: "A" }, { name: "" }] })).toEqual({ "lanes.1.name": "Enter the lane name." });
+    expect(fieldsOf({ lanes: [{}, { name: "B" }] })).toEqual({ "lanes.0.name": "Enter the lane name." });
+    expect(fieldsOf({ lanes: [{ name: 5 }] })).toEqual({ "lanes.0.name": "Enter the lane name." });
+  });
+
+  it("refuses names that differ only in case, or in Unicode form, naming the second", () => {
+    expect(fieldsOf({ lanes: named("Ring 1", "RING 1") })).toEqual({ "lanes.1.name": "Two lanes can't have the same name." });
+    expect(fieldsOf({ lanes: named("Zo\u00eb", "ZOE\u0308") })).toEqual({ "lanes.1.name": "Two lanes can't have the same name." });
+  });
+
+  it("allows 40 characters and refuses 41, counted in code points", () => {
+    expect(ok({ lanes: named("a".repeat(40)) })).toBe(true);
+    expect(ok({ lanes: named("\u{1F415}".repeat(40)) })).toBe(true);
+    expect(fieldsOf({ lanes: named("a".repeat(41)) })).toEqual({ "lanes.0.name": "The lane name must be at most 40 characters." });
+  });
+
+  it("applies the text hygiene of event names to lane names: Cf, controls, separators, unpaired surrogates", () => {
+    expect(fieldsOf({ lanes: named("Ri\u200Bng") })["lanes.0.name"]).toMatch(/lane name can't contain invisible/);
+    expect(fieldsOf({ lanes: named("Ri\u0007ng") })["lanes.0.name"]).toMatch(/lane name can't contain control/);
+    expect(fieldsOf({ lanes: named("Ri\u2028ng") })["lanes.0.name"]).toMatch(/line or paragraph separators/);
+    expect(fieldsOf({ lanes: named("Ri\ud800ng") })["lanes.0.name"]).toMatch(/unpaired surrogate/);
+    // A lane named only with an invisible character is refused even when it is the only lane (it is not blank).
+    expect(fieldsOf({ lanes: named("\u200B") })["lanes.0.name"]).toMatch(/invisible/);
+  });
+
+  it.each([[0], [51], [1.5], ["3"], [null], [true]])("refuses capacity %j, under `capacity`", (capacity) => {
+    expect(fieldsOf({ capacity })).toEqual({ capacity: "Enter a whole number of places from 1 to 50." });
+  });
+
+  it("reports lane and capacity errors together with other fields", () => {
+    expect(Object.keys(fieldsOf({ name: "", capacity: 0, lanes: [] })).sort()).toEqual(["capacity", "lanes", "name"]);
+  });
+
+  it("refuses a lane id on a new event or template, accepts known ids on an edit, and refuses unknown or repeated ones", () => {
+    expect(fieldsOf({ lanes: [{ id: 7, name: "A" }] })).toEqual({ "lanes.0.id": "A new event's lanes don't have an id." });
+    expect(draftOf({ lanes: [{ id: null, name: "A" }] }).lanes).toEqual([{ name: "A" }]);
+    const layout = { laneIds: [7, 8], capacity: 1 };
+    const edit = (lanes: unknown) => parseEventDraft(valid({ lanes }), { now: NOW, requireFuture: false, layout });
+    expect(edit([{ id: 8, name: "B" }, { name: "New" }, { id: 7, name: "A" }])).toMatchObject({ draft: { lanes: [{ id: 8, name: "B" }, { name: "New" }, { id: 7, name: "A" }] } });
+    expect(edit([{ id: 9, name: "A" }, { id: 7, name: "B" }])).toEqual({ fields: { "lanes.0.id": "That isn't one of this event's lanes." } });
+    expect(edit([{ id: "7", name: "A" }, { name: "B" }])).toEqual({ fields: { "lanes.0.id": "That isn't one of this event's lanes." } });
+    expect(edit([{ id: 7, name: "A" }, { id: 7, name: "B" }])).toEqual({ fields: { "lanes.1.id": "That lane is listed twice." } });
+  });
+
+  describe("the limit on places, with the slots (a 09:00 to 12:00 event with 15-minute sessions has 12)", () => {
+    it("allows exactly 2000 and refuses more, keyed by what the request set", () => {
+      // 09:00-18:00 in 5-minute sessions is 108 slots; 108 x 1 x 18 = 1944 is fine, 108 x 1 x 19 = 2052 is not.
+      const day = { end: "18:00", sessionMinutes: 5 };
+      expect(ok({ ...day, capacity: 18 })).toBe(true);
+      expect(fieldsOf({ ...day, capacity: 19 }).capacity).toMatch(/would make 2052 places.*at most 2000/);
+      expect(fieldsOf({ ...day, lanes: named("A", "B", "C", "D", "E", "F", "G", "H", "I", "J"), capacity: 2 }).capacity).toMatch(/2160 places/);
+      expect(ok({ ...day, lanes: named(...Array.from({ length: 10 }, (_, i) => `L${i}`)), capacity: 1 })).toBe(true); // 1080 places
+    });
+
+    it("counts the lanes of the draft, the capacity of the draft, and what an omitted one keeps on an edit", () => {
+      const day = { end: "18:00", sessionMinutes: 5 };
+      const edit = (over: Record<string, unknown>, layout: { laneIds: number[]; capacity: number }) =>
+        parseEventDraft(valid({ ...day, ...over }), { now: NOW, requireFuture: false, layout });
+      expect(edit({}, { laneIds: [1], capacity: 18 })).toHaveProperty("draft");
+      // the capacity is left out: the stored 19 applies, and the error is keyed to the field that is the cause of this request
+      expect(edit({}, { laneIds: [1], capacity: 19 })).toEqual({ fields: { sessionMinutes: expect.stringContaining("2052 places") } });
+      expect(edit({ lanes: [{ id: 1, name: "A" }, { name: "B" }] }, { laneIds: [1], capacity: 10 })).toEqual({ fields: { lanes: expect.stringContaining("2160 places") } });
+      expect(edit({ capacity: 1 }, { laneIds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], capacity: 50 })).toHaveProperty("draft");
+    });
+
+    it("keeps the existing limit of 500 slots, checked first", () => {
+      expect(fieldsOf({ end: "23:00", sessionMinutes: 1, capacity: 50 })).toEqual({ sessionMinutes: "That would make more than 500 slots." });
+    });
+  });
+
+  it("placeCountOf is slots times lanes times capacity", () => {
+    expect(placeCountOf(12, 3, 2)).toBe(72);
+  });
+});
+
 describe("insertEventWithBreaks", () => {
   let t: TestEnv;
   beforeAll(async () => { t = await createTestEnv(); });
@@ -533,5 +640,90 @@ describe("event name, break name and details: format characters (Unicode categor
     for (const text of ORDINARY_NAMES) {
       expect(draftOf({ name: text, details: text, breaks: [{ start: "10:00", end: "10:30", label: text }] })).toMatchObject({ name: text, details: text });
     }
+  });
+});
+
+describe("creating an event with lanes and places", () => {
+  let t: TestEnv;
+  beforeAll(async () => { t = await createTestEnv(); });
+  afterAll(async () => { await t.dispose(); });
+
+  const lanes = (...names: string[]) => names.map((name) => ({ name }));
+  const layoutOf = async (slug: string) => {
+    const event = (await loadEventBySlug(t.env.DB, slug))!;
+    return { lanes: event.lanes.map((l) => [l.position, l.name]), capacity: event.capacity, identityLimit: event.identityLimit, configRev: event.configRev };
+  };
+
+  it("stores one unnamed lane and capacity 1 for a draft that says nothing, and the lanes and capacity it does say, in order", async () => {
+    const plain = await createEvent(t.env.DB, draftOf(), "create-key-aaaaaaaaaaaaaa");
+    expect(await layoutOf(plain.saved.slug)).toEqual({ lanes: [[1, ""]], capacity: 1, identityLimit: 1, configRev: 0 });
+    expect(plain.saved.lanes).toEqual([{ id: expect.any(Number), name: "" }]);
+    const made = await createEvent(t.env.DB, draftOf({ lanes: lanes("Ring 2", "Ring 1", "Ring 3"), capacity: 4 }), "create-key-bbbbbbbbbbbbbb");
+    expect(made.kind).toBe("created");
+    expect(await layoutOf(made.saved.slug)).toEqual({ lanes: [[1, "Ring 2"], [2, "Ring 1"], [3, "Ring 3"]], capacity: 4, identityLimit: 1, configRev: 0 });
+    const event = (await loadEventBySlug(t.env.DB, made.saved.slug))!;
+    expect(made.saved.lanes).toEqual(event.lanes.map((l) => ({ id: l.id, name: l.name })));
+    expect(createdBody(made.saved).event).toMatchObject({ lanes: made.saved.lanes, capacity: 4 });
+  });
+
+  it("answers a retry with the same lanes and capacity as a replay, whatever the lane ids are", async () => {
+    const d = draftOf({ lanes: lanes("Ring 1", "Ring 2"), capacity: 2 });
+    const first = await createEvent(t.env.DB, d, "create-key-cccccccccccccc");
+    const again = await createEvent(t.env.DB, d, "create-key-cccccccccccccc");
+    expect(again.kind).toBe("replayed");
+    expect(createdBody(again.saved)).toEqual(createdBody(first.saved));
+    expect(again.saved.lanes).toEqual(first.saved.lanes);
+    expect((await findEventByKey(t.env.DB, "create-key-cccccccccccccc", d))?.kind).toBe("replayed");
+  });
+
+  it.each([
+    ["other lanes", { lanes: lanes("Ring 1", "Ring 3"), capacity: 2 }],
+    ["lanes in another order", { lanes: lanes("Ring 2", "Ring 1"), capacity: 2 }],
+    ["another case", { lanes: lanes("ring 1", "Ring 2"), capacity: 2 }],
+    ["another lane count", { lanes: lanes("Ring 1"), capacity: 2 }],
+    ["another capacity", { lanes: lanes("Ring 1", "Ring 2"), capacity: 3 }],
+    ["no lanes or capacity", {}],
+  ])("reports the key as reused when the retry has %s, carrying the event as stored", async (name, over) => {
+    const key = `reuse-key-${name.replace(/\W/g, "-")}`;
+    const first = await createEvent(t.env.DB, draftOf({ lanes: lanes("Ring 1", "Ring 2"), capacity: 2 }), key);
+    const again = await createEvent(t.env.DB, draftOf(over), key);
+    expect(again.kind).toBe("idempotency_key_reuse");
+    expect(again.saved.lanes.map((l) => l.name)).toEqual(["Ring 1", "Ring 2"]);
+    expect(again.saved.capacity).toBe(2);
+    expect(again.saved.slug).toBe(first.saved.slug);
+  });
+
+  it("treats a draft with no lanes or capacity as the same as one unnamed lane and capacity 1", async () => {
+    const first = await createEvent(t.env.DB, draftOf(), "create-key-dddddddddddddd");
+    expect((await createEvent(t.env.DB, draftOf({ lanes: lanes(""), capacity: 1 }), "create-key-dddddddddddddd")).kind).toBe("replayed");
+    expect(first.kind).toBe("created");
+  });
+
+  it("is atomic: a lane the database refuses leaves no event, no layout and no lanes", async () => {
+    const bad: EventDraft = { ...draftOf(), lanes: lanes("Same", "same") }; // validation would refuse this; the unique index must too
+    const before = [await countRows(t.env.DB, "events"), await countRows(t.env.DB, "event_layout"), await countRows(t.env.DB, "event_lanes")];
+    await expect(insertEventWithBreaks(t.env.DB, generateSlug(), bad, "create-key-eeeeeeeeeeeeee")).rejects.toThrow(/UNIQUE/);
+    expect([await countRows(t.env.DB, "events"), await countRows(t.env.DB, "event_layout"), await countRows(t.env.DB, "event_lanes")]).toEqual(before);
+  });
+});
+
+describe("listAdminEvents: lanes and places", () => {
+  let t: TestEnv;
+  beforeAll(async () => { t = await createTestEnv(); });
+  afterAll(async () => { await t.dispose(); });
+
+  it("adds laneCount, capacity and placeCount, and is full only when every place is booked", async () => {
+    const { insertBooking, insertEvent } = await import("../test/db");
+    const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:30:00Z", capacity: 2, lanes: ["A", "B"] });
+    const list = async () => (await listAdminEvents(t.env.DB, NOW, 0)).events.find((x) => x.slug === e.slug)!;
+    expect(await list()).toMatchObject({ slotCount: 2, bookedCount: 0, laneCount: 2, capacity: 2, placeCount: 8, full: false });
+    for (const [i, lane] of [e.laneIds[0], e.laneIds[0], e.laneIds[1], e.laneIds[1]].entries()) {
+      await insertBooking(t.env.DB, e.id, i < 2 ? "2026-10-24T08:00:00Z" : "2026-10-24T08:15:00Z", `D${i}`, "H", { laneId: lane });
+    }
+    expect(await list()).toMatchObject({ bookedCount: 4, placeCount: 8, full: false });
+    for (const [i, lane] of [e.laneIds[1], e.laneIds[1], e.laneIds[0], e.laneIds[0]].entries()) {
+      await insertBooking(t.env.DB, e.id, i < 2 ? "2026-10-24T08:00:00Z" : "2026-10-24T08:15:00Z", `E${i}`, "H", { laneId: lane });
+    }
+    expect(await list()).toMatchObject({ bookedCount: 8, full: true });
   });
 });

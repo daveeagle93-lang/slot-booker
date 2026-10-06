@@ -21,8 +21,9 @@ export const onRequestGet: RouteHandler<"slug"> = async ({ env, data, params }) 
 
 /**
  * Saves the event as the form describes it. Removing bookings needs their ids in `removeBookingIds`: the
- * server works out which bookings the new schedule would orphan itself and refuses (409) unless every one
- * is listed, so the confirmation is enforced here, not only in the page. A retry of a save that already
+ * server works out which bookings the new schedule, lanes or capacity would strand itself and refuses (409) unless every one
+ * is listed, so the confirmation is enforced here, not only in the page. `lanes` and `capacity` are optional (left out, they
+ * stay as they are); a draft that sends them is refused with 409 `event_changed` if they were edited since the event was read. A retry of a save that already
  * went through finds nothing left to remove and answers 200 with `removed: []`.
  * Two admins saving at once: the last write wins on the event's fields (there is no version column); the
  * bookings are still protected, by the guard inside the save's batch.
@@ -38,16 +39,20 @@ export const onRequestPut: RouteHandler<"slug"> = async ({ request, env, data, p
     const remove = checkRemoveIds(body.removeBookingIds);
     const now = new Date();
     const stored = { name: event.name, details: event.details, shareMessage: event.shareMessage, breakLabels: event.breaks.map((b) => b.label) };
-    const parsed = parseEventDraft(body, { now, requireFuture: false, stored });
+    const layout = { laneIds: event.lanes.map((l) => l.id), capacity: event.capacity };
+    const parsed = parseEventDraft(body, { now, requireFuture: false, stored, layout });
     if ("fields" in parsed) return invalidInput({ ...parsed.fields, ...("message" in remove ? { removeBookingIds: remove.message } : {}) });
     if ("message" in remove) return invalidInput({ removeBookingIds: remove.message });
     // Only a start that changes has to be in the future: a running or finished event can still be corrected.
     if (parsed.draft.startUtc !== event.startUtc) {
-      const strict = parseEventDraft(body, { now, requireFuture: true, stored });
+      const strict = parseEventDraft(body, { now, requireFuture: true, stored, layout });
       if ("fields" in strict) return invalidInput(strict.fields);
     }
     const result = await saveEventEdit(env.DB, event, parsed.draft, remove.ids);
     if (result.kind === "not_found") return eventNotFound();
+    if (result.kind === "layout_changed") {
+      return errorResponse(409, "event_changed", "The lanes or places of this event were edited while you were working. Reload the page.", {}, noStore);
+    }
     if (result.kind === "bookings_affected") {
       const message = "Some bookings are on slots this change would remove. Check the list and confirm to remove them.";
       return errorResponse(409, "bookings_affected", message, { affected: result.affected }, noStore);

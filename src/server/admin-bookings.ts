@@ -23,10 +23,13 @@ const eventChanged = () => fail(409, "event_changed", "The event was edited whil
 /** Test seam: runs after the handler's reads and before the batch, where another request could change things. */
 export interface MutationHooks { afterRead?: () => Promise<void> }
 
-interface Row { id: number; slot_start_utc: string; dog_name: string; handler_name: string }
+interface Row { id: number; slot_start_utc: string; lane_id: number; dog_name: string; handler_name: string }
 // The booking form's two fields are stored in value_1 and value_2; the aliases keep the names the rest of this file uses.
-const COLUMNS = "id, slot_start_utc, value_1 AS dog_name, value_2 AS handler_name";
-const ref = (r: Row): BookingRef => ({ id: r.id, slotStart: r.slot_start_utc, dogName: r.dog_name, handlerName: r.handler_name });
+const COLUMNS = "id, slot_start_utc, lane_id, value_1 AS dog_name, value_2 AS handler_name";
+const ref = (r: Row, event: Pick<EventRow, "lanes">): BookingRef => ({
+  id: r.id, slotStart: r.slot_start_utc, dogName: r.dog_name, handlerName: r.handler_name,
+  lane: { id: r.lane_id, name: event.lanes.find((l) => l.id === r.lane_id)?.name ?? "" },
+});
 
 /** A guard failure is either the event being edited or a booking having moved: say which. */
 async function guardFailed(db: D1Database, event: EventRow): Promise<Failure> {
@@ -81,7 +84,7 @@ export async function addBooking(
   });
   switch (outcome.kind) {
     case "placed":
-      return { ok: ref(outcome.value) };
+      return { ok: ref(outcome.value, event) };
     case "schedule_changed":
       return eventChanged();
     case "full": {
@@ -90,14 +93,14 @@ export async function addBooking(
       if (holder.identity_key !== key) {
         return fail(409, "slot_taken", "That slot is already taken.", { booking: { id: holder.id, dogName: holder.dog_name, handlerName: holder.handler_name } });
       }
-      return fail(409, "duplicate_booking", "That dog and handler already have a booking for this event.", { booking: ref(holder) });
+      return fail(409, "duplicate_booking", "That dog and handler already have a booking for this event.", { booking: ref(holder, event) });
     }
     case "identity_limit": {
       const existing = await db
         .prepare(`SELECT ${COLUMNS} FROM bookings WHERE event_id = ? AND identity_key = ? ORDER BY identity_seq LIMIT 1`)
         .bind(event.id, key).first<Row>();
       if (!existing) return changed(); // whoever caused the clash has gone again
-      return fail(409, "duplicate_booking", "That dog and handler already have a booking for this event.", { booking: ref(existing) });
+      return fail(409, "duplicate_booking", "That dog and handler already have a booking for this event.", { booking: ref(existing, event) });
     }
     case "gave_up":
     case "settled":
@@ -110,7 +113,7 @@ export async function clearBooking(db: D1Database, event: EventRow, id: number):
   const row = await db
     .prepare(`DELETE FROM bookings WHERE id = ? AND event_id = ? RETURNING ${COLUMNS}`)
     .bind(id, event.id).first<Row>();
-  return row ? { ok: ref(row) } : notFound();
+  return row ? { ok: ref(row, event) } : notFound();
 }
 
 /**
@@ -148,7 +151,7 @@ export async function moveBooking(
   });
   switch (outcome.kind) {
     case "placed": {
-      if (outcome.value) return { ok: ref(outcome.value) };
+      if (outcome.value) return { ok: ref(outcome.value, event) };
       const exists = await db.prepare("SELECT 1 AS n FROM bookings WHERE id = ? AND event_id = ?").bind(id, event.id).first();
       return exists ? changed() : notFound();
     }

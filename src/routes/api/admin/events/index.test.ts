@@ -82,6 +82,7 @@ describe("POST /api/admin/events", () => {
         slug: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/), name: "Saturday trial day",
         startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z", sessionMinutes: 15, gapMinutes: 0,
         costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water", shareMessage: "",
+        lanes: [{ id: expect.any(Number), name: "" }], capacity: 1,
       },
       path: `/e/${body.event.slug}`,
       slotCount: 9, // 09:00 09:15 09:30 09:45, then 10:30 10:45, then 11:10 11:25 11:40
@@ -510,7 +511,7 @@ describe("GET /api/admin/events", () => {
     expect(events[0]).toEqual({
       slug, name: "Show", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z", costPence: 900,
       venuePostcode: "ZZ9 9ZZ", details: "private notes", shareMessage: "", slotCount: 10, bookedCount: 2, archived: false, listed: true, full: false,
-      bookings: { open: true, closesAt: "2026-06-13T07:00:00Z" }, path: `/e/${slug}`,
+      laneCount: 1, capacity: 1, placeCount: 10, bookings: { open: true, closesAt: "2026-06-13T07:00:00Z" }, path: `/e/${slug}`,
     });
     expect(events[1]).toMatchObject({ slotCount: 4, bookedCount: 0 });
     vi.setSystemTime(new Date("2026-06-13T07:00:00Z"));
@@ -830,5 +831,46 @@ describe("GET /api/admin/events: details, cost, share message and the default sh
     } as unknown as Parameters<typeof onRequestGet>[0]);
     expect(res.status).toBe(200);
     expect([batches, statements]).toEqual([1, 8]);
+  });
+});
+
+describe("POST /api/admin/events: lanes and capacity", () => {
+  it("creates the lanes in order with the capacity, and answers with them, ids included", async () => {
+    const body = await create({ lanes: [{ name: "Ring 2" }, { name: "Ring 1" }], capacity: 3 });
+    expect(body.event).toMatchObject({ capacity: 3, lanes: [{ id: expect.any(Number), name: "Ring 2" }, { id: expect.any(Number), name: "Ring 1" }] });
+    const pub = (await publicEvent(body.event.slug)) as unknown as { event: { capacity: number; lanes: { name: string }[] } };
+    expect(pub.event.capacity).toBe(3);
+    expect(pub.event.lanes.map((l) => l.name)).toEqual(["Ring 2", "Ring 1"]);
+  });
+
+  it("creates one unnamed lane and capacity 1 when the body says nothing", async () => {
+    const body = await create();
+    expect(body.event).toMatchObject({ capacity: 1, lanes: [{ id: expect.any(Number), name: "" }] });
+  });
+
+  it("answers a retry (same key, same lanes and capacity) with the same body and an Idempotent-Replayed header, and a changed layout with 422", async () => {
+    const first = draft({ lanes: [{ name: "A" }, { name: "B" }], capacity: 2 });
+    const one = await post(first);
+    expect(one.status).toBe(201);
+    const events = await countRows(t.env.DB, "events");
+    const lanes = await countRows(t.env.DB, "event_lanes");
+    const again = await post(first);
+    expect(again.status).toBe(201);
+    expect(again.headers.get("idempotent-replayed")).toBe("true");
+    expect(await again.json()).toEqual(await one.json());
+    const changed = await post({ ...first, capacity: 3 });
+    expect(changed.status).toBe(422);
+    expect(((await changed.json()) as { error: { code: string } }).error.code).toBe("idempotency_key_reuse");
+    expect([await countRows(t.env.DB, "events"), await countRows(t.env.DB, "event_lanes")]).toEqual([events, lanes]);
+  });
+
+  it("refuses bad lanes or capacity with field errors and stores nothing", async () => {
+    const events = await countRows(t.env.DB, "events");
+    const res = await post(draft({ lanes: [{ name: "A" }, { name: "" }], capacity: 99 }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: Record<string, string> }).fields).toEqual({
+      capacity: "Enter a whole number of places from 1 to 50.", "lanes.1.name": "Enter the lane name.",
+    });
+    expect(await countRows(t.env.DB, "events")).toBe(events);
   });
 });

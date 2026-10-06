@@ -64,7 +64,7 @@ describe("POST /api/admin/events/[slug]/bookings", () => {
     const res = await add(e.slug, { slot: S[2], dogName: "Rex", handlerName: "Sam Smith" });
     expect(res.status).toBe(201);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await body(res)).toEqual({ booking: { id: expect.any(Number), slotStart: S[2], dogName: "Rex", handlerName: "Sam Smith" } });
+    expect(await body(res)).toEqual({ booking: { id: expect.any(Number), slotStart: S[2], dogName: "Rex", handlerName: "Sam Smith", lane: { id: expect.any(Number), name: "" } } });
     expect(await stored(e.id)).toHaveLength(1);
   });
 
@@ -154,7 +154,7 @@ describe("DELETE /api/admin/events/[slug]/bookings/[id]", () => {
     const res = await clear(e.slug, a, { confirm: true });
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await body(res)).toEqual({ removed: { id: a, slotStart: S[0], dogName: "Rex", handlerName: "Sam" } });
+    expect(await body(res)).toEqual({ removed: { id: a, slotStart: S[0], dogName: "Rex", handlerName: "Sam", lane: { id: expect.any(Number), name: "" } } });
     expect((await stored(e.id)).map((r) => r.id)).toEqual([b]);
   });
 
@@ -213,7 +213,7 @@ describe("POST /api/admin/events/[slug]/bookings/[id]/move", () => {
     const res = await move(e.slug, a, { fromSlot: S[0], toSlot: S[5] });
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await body(res)).toEqual({ booking: { id: a, slotStart: S[5], dogName: "Rex", handlerName: "Sam" } });
+    expect(await body(res)).toEqual({ booking: { id: a, slotStart: S[5], dogName: "Rex", handlerName: "Sam", lane: { id: expect.any(Number), name: "" } } });
   });
 
   it("answers 409 slot_taken with the holder, 409 changed for a stale fromSlot, 400 for same_slot and invalid_slot, 404 otherwise", async () => {

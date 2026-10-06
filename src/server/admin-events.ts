@@ -11,6 +11,11 @@ const MAX_DETAILS_CODE_POINTS = 2000;
 const MAX_SHARE_MESSAGE_CODE_POINTS = 1000;
 const MAX_BREAKS = 20;
 const MAX_SLOTS = 500;
+const MAX_LANES = 10;
+const MAX_LANE_NAME_CODE_POINTS = 40;
+const MAX_CAPACITY = 50;
+/** Time slots times lanes times places per lane: the most places one event may have. */
+const MAX_PLACES = 2000;
 const MAX_DAYS_AHEAD = 730;
 const MAX_LIST = 100;
 const MAX_BODY_BYTES = 32_768;
@@ -29,7 +34,20 @@ export interface EventDraft {
   listed?: boolean;
   startUtc: string; endUtc: string;
   breaks: { start: string; end: string; label: string; startUtc: string; endUtc: string }[];
+  /**
+   * The lanes in order; undefined when the request didn't say (create: one unnamed lane; edit: unchanged). On an edit a lane
+   * with an `id` is that lane of the event (renamed or moved), one without is new, and a lane of the event that is not listed
+   * is removed. A new event's and a template's lanes have no ids.
+   */
+  lanes?: LaneDraft[];
+  /** Places per lane per time; undefined when the request didn't say (create: 1; edit: unchanged). */
+  capacity?: number;
 }
+
+export interface LaneDraft { id?: number; name: string }
+
+/** What an edit knows of the stored layout: the lane ids a request may name, and the numbers an omitted `lanes` or `capacity` keeps. */
+export interface StoredLayout { laneIds: readonly number[]; capacity: number }
 
 type Fields = Record<string, string>;
 
@@ -127,8 +145,68 @@ const checkInteger = (value: unknown, min: number, max: number): number | null =
 const asRecord = (v: unknown): Record<string, unknown> | null =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 
+/** A lane's `id`: absent or null means a new lane; otherwise one of the stored lane ids, listed once. */
+function checkLaneId(value: unknown, stored: StoredLayout | undefined, seen: Set<number>): { id?: number } | { message: string } {
+  if (value === undefined || value === null) return {};
+  if (!stored) return { message: "A new event's lanes don't have an id." };
+  if (typeof value !== "number" || !stored.laneIds.includes(value)) return { message: "That isn't one of this event's lanes." };
+  if (seen.has(value)) return { message: "That lane is listed twice." };
+  seen.add(value);
+  return { id: value };
+}
+
+/**
+ * The lanes of a create, an edit or a template. One lane may be unnamed (the name is ""); with two or more every lane needs a
+ * name, and names must differ ignoring case (the database's index only ignores ASCII case, so this is the stricter rule).
+ * Errors are keyed `lanes` (the list), `lanes.N` (an item) and `lanes.N.name` or `lanes.N.id`.
+ */
+function parseLanes(value: unknown, stored: StoredLayout | undefined, fields: Fields): LaneDraft[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) fields.lanes = "Lanes must be a list.";
+  else if (value.length === 0) fields.lanes = "An event needs at least one lane.";
+  else if (value.length > MAX_LANES) fields.lanes = `You can have at most ${MAX_LANES} lanes.`;
+  else {
+    const lanes: LaneDraft[] = [];
+    const seenIds = new Set<number>();
+    const seenNames = new Set<string>();
+    let ok = true;
+    value.forEach((item, i) => {
+      const lane = asRecord(item);
+      if (!lane) {
+        fields[`lanes.${i}`] = "Each lane needs a name.";
+        ok = false;
+        return;
+      }
+      const id = checkLaneId(lane.id, stored, seenIds);
+      if ("message" in id) {
+        fields[`lanes.${i}.id`] = id.message;
+        ok = false;
+      }
+      const unnamed = value.length === 1 && (lane.name === undefined || lane.name === null || (typeof lane.name === "string" && lane.name.trim() === ""));
+      const name = unnamed ? { name: "" } : checkName(lane.name, undefined, "lane name", MAX_LANE_NAME_CODE_POINTS);
+      if ("message" in name) {
+        fields[`lanes.${i}.name`] = name.message;
+        ok = false;
+      } else if (name.name !== "") {
+        const same = name.name.normalize("NFC").toLowerCase();
+        if (seenNames.has(same)) {
+          fields[`lanes.${i}.name`] = "Two lanes can't have the same name.";
+          ok = false;
+        }
+        seenNames.add(same);
+      }
+      if (ok) lanes.push({ ...("id" in id ? { id: id.id } : {}), name: (name as { name: string }).name });
+    });
+    if (ok) return lanes;
+  }
+  return undefined;
+}
+
+/** How many places the event would have: its time slots, times its lanes, times the places in each. */
+export const placeCountOf = (slotCount: number, laneCount: number, capacity: number): number => slotCount * laneCount * capacity;
+
 export function parseEventDraft(
-  raw: Record<string, unknown>, opts: { now: Date; requireFuture: boolean; stored?: StoredText },
+  raw: Record<string, unknown>, opts: { now: Date; requireFuture: boolean; stored?: StoredText; layout?: StoredLayout },
 ): { draft: EventDraft } | { fields: Fields } {
   const fields: Fields = {};
 
@@ -171,6 +249,13 @@ export function parseEventDraft(
     else shareMessage = message.text;
   }
   if (raw.listed !== undefined && typeof raw.listed !== "boolean") fields.listed = "Listed must be true or false.";
+  const lanes = parseLanes(raw.lanes, opts.layout, fields);
+  let capacity: number | undefined;
+  if (raw.capacity !== undefined) {
+    const c = checkInteger(raw.capacity, 1, MAX_CAPACITY);
+    if (c === null) fields.capacity = `Enter a whole number of places from 1 to ${MAX_CAPACITY}.`;
+    else capacity = c;
+  }
 
   const breaks: EventDraft["breaks"] = [];
   if (!Array.isArray(raw.breaks)) fields.breaks = "Breaks must be a list.";
@@ -201,11 +286,17 @@ export function parseEventDraft(
     name: (name as { name: string }).name, date: dateText, start: raw.start as string, end: raw.end as string,
     sessionMinutes: sessionMinutes!, gapMinutes: gapMinutes!, costPence: costPence!,
     venuePostcode: (postcode as { postcode: string }).postcode, details: (details as { details: string }).details,
-    shareMessage, listed: raw.listed as boolean | undefined, startUtc: startUtc!, endUtc: endUtc!, breaks,
+    shareMessage, listed: raw.listed as boolean | undefined, startUtc: startUtc!, endUtc: endUtc!, breaks, lanes, capacity,
   };
   const slotCount = previewSchedule(draft).slots.length;
   if (slotCount === 0) return { fields: { end: "No sessions fit between the start and end." } };
   if (slotCount > MAX_SLOTS) return { fields: { sessionMinutes: `That would make more than ${MAX_SLOTS} slots.` } };
+  // The places are checked with the slots, using what an omitted lanes or capacity keeps (one lane and one place for a new event).
+  const places = placeCountOf(slotCount, lanes?.length ?? opts.layout?.laneIds.length ?? 1, capacity ?? opts.layout?.capacity ?? 1);
+  if (places > MAX_PLACES) {
+    const key = capacity !== undefined ? "capacity" : lanes ? "lanes" : "sessionMinutes";
+    return { fields: { [key]: `That would make ${places} places (time slots times lanes times places per lane). An event can have at most ${MAX_PLACES}; use fewer lanes or places, or longer sessions.` } };
+  }
   return { draft };
 }
 
@@ -215,11 +306,11 @@ export const readEventBody = (request: Request): Promise<Record<string, unknown>
 export const invalidInput = (fields: Fields): Response =>
   errorResponse(400, "invalid_input", "Check the highlighted fields.", { fields }, noStore);
 
-/** Reads and validates a draft from the request body, or returns the error response to send. */
-export async function readEventDraft(request: Request, requireFuture: boolean): Promise<EventDraft | Response> {
+/** Reads and validates a draft from the request body, or returns the error response to send. `layout` is the stored one when the draft is for an existing event. */
+export async function readEventDraft(request: Request, requireFuture: boolean, layout?: StoredLayout): Promise<EventDraft | Response> {
   const body = await readEventBody(request);
   if (body instanceof Response) return body;
-  const parsed = parseEventDraft(body, { now: new Date(), requireFuture });
+  const parsed = parseEventDraft(body, { now: new Date(), requireFuture, layout });
   if ("fields" in parsed) return invalidInput(parsed.fields);
   return parsed.draft;
 }
@@ -275,6 +366,8 @@ export interface SavedEvent {
   slug: string; name: string; startUtc: string; endUtc: string; sessionMinutes: number; gapMinutes: number;
   costPence: number; venuePostcode: string; details: string; shareMessage: string; listed: boolean;
   breaks: { startUtc: string; endUtc: string; label: string }[];
+  lanes: { id: number; name: string }[];
+  capacity: number;
 }
 
 export interface CreateEventResult { kind: "created" | "replayed" | "idempotency_key_reuse"; saved: SavedEvent }
@@ -284,7 +377,7 @@ export const createdBody = (e: SavedEvent) => ({
   event: {
     slug: e.slug, name: e.name, startUtc: e.startUtc, endUtc: e.endUtc, sessionMinutes: e.sessionMinutes,
     gapMinutes: e.gapMinutes, costPence: e.costPence, venuePostcode: e.venuePostcode, details: e.details,
-    shareMessage: e.shareMessage,
+    shareMessage: e.shareMessage, lanes: e.lanes, capacity: e.capacity,
   },
   path: `/e/${e.slug}`,
   slotCount: generateSchedule({
@@ -292,6 +385,9 @@ export const createdBody = (e: SavedEvent) => ({
     breaks: e.breaks.map((b) => ({ start: b.startUtc, end: b.endUtc })),
   }).slots.length,
 });
+
+/** The lanes a create request means: the ones it lists, or the one unnamed lane. */
+const lanesOf = (d: EventDraft): { name: string }[] => d.lanes ?? [{ name: "" }];
 
 const breakKey = (b: { startUtc: string; endUtc: string; label: string }): string => JSON.stringify([b.startUtc, b.endUtc, b.label]);
 
@@ -302,7 +398,8 @@ function sameEvent(saved: SavedEvent, d: EventDraft): boolean {
   return saved.name === d.name && saved.startUtc === d.startUtc && saved.endUtc === d.endUtc
     && saved.sessionMinutes === d.sessionMinutes && saved.gapMinutes === d.gapMinutes && saved.costPence === d.costPence
     && saved.venuePostcode === d.venuePostcode && saved.details === d.details && saved.shareMessage === (d.shareMessage ?? "")
-    && saved.listed === (d.listed ?? true)
+    && saved.listed === (d.listed ?? true) && saved.capacity === (d.capacity ?? 1)
+    && JSON.stringify(saved.lanes.map((l) => l.name)) === JSON.stringify(lanesOf(d).map((l) => l.name))
     && mine.length === theirs.length && mine.every((k, i) => k === theirs[i]);
 }
 
@@ -314,15 +411,15 @@ function sameEvent(saved: SavedEvent, d: EventDraft): boolean {
 export async function findEventByKey(
   db: D1Database, key: string, d: EventDraft,
 ): Promise<{ kind: "replayed" | "idempotency_key_reuse"; saved: SavedEvent } | null> {
-  const [events, breaks] = await db.batch([
+  const idOf = "(SELECT id FROM events WHERE idempotency_key = ?)";
+  const [events, breaks, lanes, layout] = await db.batch([
     db.prepare(
       `SELECT slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, share_message, listed
        FROM events WHERE idempotency_key = ?`,
     ).bind(key),
-    db.prepare(
-      `SELECT start_utc, end_utc, label FROM breaks
-       WHERE event_id = (SELECT id FROM events WHERE idempotency_key = ?) ORDER BY start_utc, end_utc, label`,
-    ).bind(key),
+    db.prepare(`SELECT start_utc, end_utc, label FROM breaks WHERE event_id = ${idOf} ORDER BY start_utc, end_utc, label`).bind(key),
+    db.prepare(`SELECT id, name FROM event_lanes WHERE event_id = ${idOf} ORDER BY position`).bind(key),
+    db.prepare(`SELECT capacity FROM event_layout WHERE event_id = ${idOf}`).bind(key),
   ]);
   const e = (events.results as {
     slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number; gap_minutes: number;
@@ -335,6 +432,8 @@ export async function findEventByKey(
     shareMessage: e.share_message, listed: e.listed === 1,
     breaks: (breaks.results as { start_utc: string; end_utc: string; label: string }[])
       .map((b) => ({ startUtc: b.start_utc, endUtc: b.end_utc, label: b.label })),
+    lanes: lanes.results as { id: number; name: string }[],
+    capacity: (layout.results as { capacity: number }[])[0]?.capacity ?? 1,
   };
   return { kind: sameEvent(saved, d) ? "replayed" : "idempotency_key_reuse", saved };
 }
@@ -349,34 +448,41 @@ export async function createEvent(db: D1Database, d: EventDraft, key: string): P
   const prior = await findEventByKey(db, key, d);
   if (prior) return prior;
   const slug = generateSlug();
+  let laneIds: number[];
   try {
-    await insertEventWithBreaks(db, slug, d, key);
+    laneIds = await insertEventWithBreaks(db, slug, d, key);
   } catch (e) {
     if (!(e instanceof Error) || !e.message.includes("UNIQUE constraint failed")) throw e;
     const won = await findEventByKey(db, key, d);
     if (won) return won;
     throw e;
   }
-  return { kind: "created", saved: { ...d, shareMessage: d.shareMessage ?? "", listed: d.listed ?? true, slug } };
+  const lanes = lanesOf(d).map((l, i) => ({ id: laneIds[i], name: l.name }));
+  return { kind: "created", saved: { ...d, shareMessage: d.shareMessage ?? "", listed: d.listed ?? true, slug, lanes, capacity: d.capacity ?? 1 } };
 }
 
 /**
- * Inserts the event, its layout (capacity 1, identity limit 1), its one unnamed lane and all its breaks in one batch, so
- * either all of it is stored or none. Assumes a validated draft; the table CHECK constraints are the last line of defence.
+ * Inserts the event, its layout (the capacity, 1 if the draft has none; identity limit 1), its lanes (the draft's, or one
+ * unnamed lane) and all its breaks in one batch, so either all of it is stored or none. Returns the lane ids in order.
+ * Assumes a validated draft; the table CHECK constraints are the last line of defence.
  */
-export async function insertEventWithBreaks(db: D1Database, slug: string, d: EventDraft, idempotencyKey: string): Promise<void> {
-  await db.batch([
+export async function insertEventWithBreaks(db: D1Database, slug: string, d: EventDraft, idempotencyKey: string): Promise<number[]> {
+  const lanes = lanesOf(d);
+  const results = await db.batch([
     db.prepare(
       `INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, share_message, listed, idempotency_key)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(slug, d.name, d.startUtc, d.endUtc, d.sessionMinutes, d.gapMinutes, d.costPence, d.venuePostcode, d.details,
       d.shareMessage ?? "", d.listed === false ? 0 : 1, idempotencyKey),
-    db.prepare("INSERT INTO event_layout (event_id) VALUES ((SELECT id FROM events WHERE slug = ?))").bind(slug),
-    db.prepare("INSERT INTO event_lanes (event_id, position, name) VALUES ((SELECT id FROM events WHERE slug = ?), 1, '')").bind(slug),
+    db.prepare("INSERT INTO event_layout (event_id, capacity) VALUES ((SELECT id FROM events WHERE slug = ?), ?)").bind(slug, d.capacity ?? 1),
+    ...lanes.map((l, i) =>
+      db.prepare("INSERT INTO event_lanes (event_id, position, name) VALUES ((SELECT id FROM events WHERE slug = ?), ?, ?) RETURNING id")
+        .bind(slug, i + 1, l.name)),
     ...d.breaks.map((b) =>
       db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES ((SELECT id FROM events WHERE slug = ?), ?, ?, ?)")
         .bind(slug, b.startUtc, b.endUtc, b.label)),
   ]);
+  return results.slice(2, 2 + lanes.length).map((r) => (r.results as { id: number }[])[0].id);
 }
 
 interface ListedEvent { id: number; slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number; gap_minutes: number; cost_pence: number; venue_postcode: string; details: string; share_message: string; listed: number }
@@ -414,7 +520,8 @@ export const defaultShareMessageStatement = (db: D1Database): D1PreparedStatemen
  * now) and `archived`, each of the last two at most 100, most recently started first, with a HasMore flag.
  * One batch of eight queries: the upcoming events, their breaks, lanes, layouts and booking counts, then Past and
  * Archived, then the default template's share message (`defaultShareMessage`, "" if there is none). An upcoming event
- * is `full` when every place of every lane at every time is booked.
+ * is `full` when every place of every lane at every time is booked. `slotCount` is the number of times and `bookedCount` the
+ * number of bookings; `laneCount`, `capacity` and `placeCount` (times x lanes x places per lane) say how many places there are.
  */
 export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMinutes: number) {
   const nowIso = `${now.toISOString().slice(0, 19)}Z`;
@@ -454,11 +561,13 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
       start: row.startUtc, end: row.endUtc, sessionMinutes: row.sessionMinutes, gapMinutes: row.gapMinutes, breaks: row.breaks,
     }).slots.length;
     const bookedCount = bookedOf.get(e.id) ?? 0;
+    const placeCount = placeCountOf(slotCount, row.lanes.length, row.capacity);
     return {
       slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc, costPence: e.cost_pence,
       venuePostcode: e.venue_postcode, details: e.details, shareMessage: e.share_message, slotCount, bookedCount, archived: false,
       listed: e.listed === 1,
-      full: slotCount > 0 && bookedCount >= slotCount * row.lanes.length * row.capacity,
+      laneCount: row.lanes.length, capacity: row.capacity, placeCount,
+      full: slotCount > 0 && bookedCount >= placeCount,
       bookings: bookingWindow(row, cutoffOffsetMinutes, now),
       path: `/e/${e.slug}`,
     };

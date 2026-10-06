@@ -46,7 +46,7 @@ describe("addBooking", () => {
   it("adds the booking with a generated token, no idempotency key and identity keys, names trimmed", async () => {
     const e = await seed();
     const b = ok(await addBooking(t.env.DB, e.event, { slot: e.s[2], dogName: "  Rex ", handlerName: "Sam  Smith" }));
-    expect(b).toEqual({ id: expect.any(Number), slotStart: e.s[2], dogName: "Rex", handlerName: "Sam  Smith" });
+    expect(b).toEqual({ id: expect.any(Number), slotStart: e.s[2], dogName: "Rex", handlerName: "Sam  Smith", lane: { id: e.event.lanes[0].id, name: "" } });
     const row = (await rows(e.id))[0] as Record<string, unknown>;
     expect(row).toMatchObject({
       id: b.id, slot_start_utc: e.s[2], value_1: "Rex", value_2: "Sam  Smith", lane_id: e.event.lanes[0].id, place: 1,
@@ -226,7 +226,7 @@ describe("clearBooking", () => {
     const e = await seed();
     const a = await insertBooking(t.env.DB, e.id, e.s[0], "Rex", "Sam");
     const b = await insertBooking(t.env.DB, e.id, e.s[1], "Bella", "Alex");
-    expect(ok(await clearBooking(t.env.DB, e.event, a))).toEqual({ id: a, slotStart: e.s[0], dogName: "Rex", handlerName: "Sam" });
+    expect(ok(await clearBooking(t.env.DB, e.event, a))).toEqual({ id: a, slotStart: e.s[0], dogName: "Rex", handlerName: "Sam", lane: { id: e.event.lanes[0].id, name: "" } });
     expect(Object.keys(await slotsOf(e.id))).toEqual([String(b)]);
   });
 
@@ -260,7 +260,7 @@ describe("moveBooking", () => {
     const e = await seed();
     const a = await insertBooking(t.env.DB, e.id, e.s[0], "Rex", "Sam");
     const other = await insertBooking(t.env.DB, e.id, e.s[1], "Bella", "Alex");
-    expect(ok(await move(e, a, e.s[0], e.s[5]))).toEqual({ id: a, slotStart: e.s[5], dogName: "Rex", handlerName: "Sam" });
+    expect(ok(await move(e, a, e.s[0], e.s[5]))).toEqual({ id: a, slotStart: e.s[5], dogName: "Rex", handlerName: "Sam", lane: { id: e.event.lanes[0].id, name: "" } });
     expect(await slotsOf(e.id)).toEqual({ [a]: e.s[5], [other]: e.s[1] });
   });
 

@@ -3,7 +3,7 @@ import { buildLineup } from "../../../../../core/lineup";
 import { generateSlug } from "../../../../../core/slug";
 import type { AppEnv } from "../../../../../server/env";
 import { saveSettings } from "../../../../../server/settings";
-import { countRows, createTestEnv, insertBooking, insertBreak, insertEvent, insertTemplate, type TestEnv } from "../../../../../test/db";
+import { countRows, createTestEnv, insertBooking, insertBreak, insertEvent, insertTemplate, interceptBatches, type TestEnv } from "../../../../../test/db";
 import { onRequestPost as book } from "../../../events/[slug]/bookings";
 import { onRequestGet as publicGet } from "../../../events/[slug]/index";
 import { onRequestDelete as clearBooking } from "./bookings/[id]/index";
@@ -60,6 +60,7 @@ describe("GET /api/admin/events/[slug]", () => {
       sessionMinutes: 15, gapMinutes: 5, costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water", shareMessage: "",
       startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z",
       breaks: [{ start: "10:00", end: "10:30", label: "Lunch", startUtc: "2026-10-24T09:00:00Z", endUtc: "2026-10-24T09:30:00Z" }],
+      lanes: [{ id: expect.any(Number), name: "" }], capacity: 1,
     });
     expect(body.orphans).toEqual([]);
   });
@@ -119,7 +120,7 @@ describe("GET /api/admin/events/[slug]", () => {
     const { slots, orphans } = await detail(slug);
     expect(slots.every((s) => s.booking === null)).toBe(true);
     expect(orphans.map((o) => o.dogName)).toEqual(["Early", "Zed"]);
-    expect(orphans[0]).toEqual({ id: orphanId, slotStart: "2026-10-24T07:00:00Z", dogName: "Early", handlerName: "Eve" });
+    expect(orphans[0]).toEqual({ id: orphanId, slotStart: "2026-10-24T07:00:00Z", dogName: "Early", handlerName: "Eve", lane: { id: expect.any(Number), name: "" } });
   });
 
   it("includes the lineup text, equal to buildLineup on the same data, without orphans", async () => {
@@ -229,11 +230,11 @@ async function snapshot(eventId: number): Promise<string> {
 
 interface Saved {
   event: Record<string, unknown>; slotCount: number;
-  removed: { id: number; slotStart: string; dogName: string; handlerName: string }[];
+  removed: { id: number; slotStart: string; dogName: string; handlerName: string; lane: { id: number; name: string } }[];
 }
 interface Conflict {
   error: { code: string; message: string };
-  affected: { id: number; slotStart: string; dogName: string; handlerName: string }[];
+  affected: { id: number; slotStart: string; dogName: string; handlerName: string; lane: { id: number; name: string } }[];
 }
 const storedBreaks = async (eventId: number) =>
   (await t.env.DB.prepare("SELECT start_utc, end_utc, label FROM breaks WHERE event_id = ? ORDER BY start_utc").bind(eventId).all()).results;
@@ -255,6 +256,7 @@ describe("PUT /api/admin/events/[slug]: saving without bookings in the way", () 
       sessionMinutes: 20, gapMinutes: 5, costPence: 2000, venuePostcode: "CD3 4EF", details: "New details", shareMessage: "",
       startUtc: "2026-10-31T10:00:00Z", endUtc: "2026-10-31T13:00:00Z",
       breaks: [{ start: "11:00", end: "11:15", label: "Tea", startUtc: "2026-10-31T11:00:00Z", endUtc: "2026-10-31T11:15:00Z" }],
+      lanes: [{ id: expect.any(Number), name: "" }], capacity: 1,
     });
     expect(body.removed).toEqual([]);
     expect(body.slotCount).toBe(6); // 10:00 10:25 | 11:15 11:40 12:05 12:30 (10:50 would overrun the break, 12:55 the end)
@@ -387,8 +389,8 @@ describe("PUT /api/admin/events/[slug]: bookings that would lose their slot", ()
   }
   const shorter = (over: Record<string, unknown> = {}) => draft({ end: "11:30", ...over });
   const listOf = (e: { b: number; c: number }) => [
-    { id: e.b, slotStart: "2026-10-24T10:30:00Z", dogName: "Bravo", handlerName: "Bob" },
-    { id: e.c, slotStart: "2026-10-24T10:45:00Z", dogName: "Charlie", handlerName: "Cat" },
+    { id: e.b, slotStart: "2026-10-24T10:30:00Z", dogName: "Bravo", handlerName: "Bob", lane: { id: expect.any(Number), name: "" } },
+    { id: e.c, slotStart: "2026-10-24T10:45:00Z", dogName: "Charlie", handlerName: "Cat", lane: { id: expect.any(Number), name: "" } },
   ];
 
   it("saves a change to `listed` alone with bookings present: no 409, nothing removed, bookings kept", async () => {
@@ -937,5 +939,86 @@ describe("DELETE /api/admin/events/[slug]", () => {
     expect((await del(e.slug, undefined, { raw: "[1]" })).status).toBe(400);
     expect((await del(e.slug, { confirmName: NAME, padding: "x".repeat(40_000) })).status).toBe(413);
     expect(await rowsOf(e.id)).toEqual([1, 1, 2]);
+  });
+});
+
+describe("PUT /api/admin/events/[slug]: lanes and capacity", () => {
+  const lanesOf = async (id: number) => (await t.env.DB.prepare("SELECT id, name FROM event_lanes WHERE event_id = ? ORDER BY position").bind(id).all<{ id: number; name: string }>()).results;
+  const capacityOf = async (id: number) => (await t.env.DB.prepare("SELECT capacity, config_rev FROM event_layout WHERE event_id = ?").bind(id).first())!;
+
+  it("saves new lanes and a capacity, returns them with their ids, and the detail shows the same", async () => {
+    const e = await seed({ lanes: ["Ring 1"] });
+    const res = await put(e.slug, draft({ lanes: [{ id: e.laneIds[0], name: "Main" }, { name: "Side" }], capacity: 2 }));
+    expect(res.status).toBe(200);
+    const saved = (await res.json()) as Saved;
+    const stored = await lanesOf(e.id);
+    expect(stored.map((l) => l.name)).toEqual(["Main", "Side"]);
+    expect(saved.event).toMatchObject({ lanes: stored, capacity: 2 });
+    expect((await detail(e.slug)).event).toMatchObject({ lanes: stored, capacity: 2 });
+    expect(await capacityOf(e.id)).toEqual({ capacity: 2, config_rev: 1 });
+  });
+
+  it("answers 400 with field errors keyed lanes, lanes.N.name, lanes.N.id and capacity, changing nothing", async () => {
+    const e = await seed({ lanes: ["Ring 1", "Ring 2"] });
+    const before = await snapshot(e.id);
+    const other = await insertEvent(t.env.DB, { lanes: ["Elsewhere"] });
+    const res = await put(e.slug, draft({ lanes: [{ id: other.laneIds[0], name: "Stolen" }, { name: "stolen" }, { name: "" }], capacity: 51 }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string }; fields: Record<string, string> };
+    expect(body.error.code).toBe("invalid_input");
+    expect(body.fields).toEqual({
+      capacity: "Enter a whole number of places from 1 to 50.", "lanes.0.id": "That isn't one of this event's lanes.",
+      "lanes.1.name": "Two lanes can't have the same name.", "lanes.2.name": "Enter the lane name.",
+    });
+    expect(await snapshot(e.id)).toBe(before);
+    expect(await lanesOf(other.id)).toEqual([{ id: other.laneIds[0], name: "Elsewhere" }]);
+  });
+
+  it("refuses more than 2000 places, keyed capacity", async () => {
+    const e = await seed({ lanes: ["Ring 1"] });
+    const res = await put(e.slug, draft({ start: "09:00", end: "18:00", sessionMinutes: 5, breaks: [], capacity: 19 }));
+    expect(res.status).toBe(400);
+    expect(Object.keys(((await res.json()) as { fields: Record<string, string> }).fields)).toEqual(["capacity"]);
+  });
+
+  it("lists the bookings a lowered capacity or a removed lane would strand (409 bookings_affected) and removes exactly the confirmed ones", async () => {
+    const e = await seed({ lanes: ["Ring 1", "Ring 2"], capacity: 2 });
+    const a = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "A", "H", { laneId: e.laneIds[0] });
+    const b = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "B", "H", { laneId: e.laneIds[0] });
+    const c = await insertBooking(t.env.DB, e.id, "2026-10-24T08:15:00Z", "C", "H", { laneId: e.laneIds[1] });
+    const body = draft({ lanes: [{ id: e.laneIds[0], name: "Ring 1" }], capacity: 1 });
+    const refused = await put(e.slug, body);
+    expect(refused.status).toBe(409);
+    const conflict = (await refused.json()) as Conflict;
+    expect(conflict.error.code).toBe("bookings_affected");
+    expect(conflict.affected.map((x) => [x.id, x.lane.name])).toEqual([[b, "Ring 1"], [c, "Ring 2"]]);
+    expect((await lanesOf(e.id))).toHaveLength(2);
+    const saved = await put(e.slug, { ...body, removeBookingIds: [b, c] });
+    expect(saved.status).toBe(200);
+    expect(((await saved.json()) as Saved).removed.map((x) => x.id)).toEqual([b, c]);
+    expect(await bookingIds(e.id)).toEqual([a]);
+    expect(await lanesOf(e.id)).toEqual([{ id: e.laneIds[0], name: "Ring 1" }]);
+  });
+
+  it("answers 409 event_changed when the lanes were edited after the event was read and the body sends lanes", async () => {
+    const e = await seed({ lanes: ["Ring 1"] });
+    const res = await put(e.slug, draft({ lanes: [{ id: e.laneIds[0], name: "Mine" }] }), {
+      env: {
+        DB: interceptBatches(t.env.DB, async (sqls, run) => {
+          if (sqls.some((q) => q.startsWith("UPDATE events SET name"))) await t.env.DB.prepare("UPDATE event_layout SET config_rev = config_rev + 1 WHERE event_id = ?").bind(e.id).run();
+          return run();
+        }),
+      },
+    });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("event_changed");
+    expect(await lanesOf(e.id)).toEqual([{ id: e.laneIds[0], name: "Ring 1" }]);
+  });
+
+  it("keeps the lanes and capacity when the body doesn't send them", async () => {
+    const e = await seed({ lanes: ["Ring 1", "Ring 2"], capacity: 4 });
+    expect((await put(e.slug, draft({ name: "Only the name" }))).status).toBe(200);
+    expect(await lanesOf(e.id)).toEqual([{ id: e.laneIds[0], name: "Ring 1" }, { id: e.laneIds[1], name: "Ring 2" }]);
+    expect(await capacityOf(e.id)).toEqual({ capacity: 4, config_rev: 0 });
   });
 });

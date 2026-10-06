@@ -32,7 +32,8 @@ const seed = () => insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", end
 interface Body {
   slots: { start: string; end: string }[];
   suggestions: { breakIndex: number; breakLabel: string; suggestedLocal: { start: string; end: string } }[];
-  affected: { id: number; slotStart: string; dogName: string; handlerName: string }[];
+  affected: { id: number; slotStart: string; dogName: string; handlerName: string; lane: { id: number; name: string } }[];
+  placeCount: number;
 }
 
 describe("POST /api/admin/events/[slug]/preview", () => {
@@ -47,8 +48,8 @@ describe("POST /api/admin/events/[slug]/preview", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     const body = (await res.json()) as Body;
     expect(body.affected).toEqual([
-      { id: early, slotStart: "2026-10-24T10:30:00Z", dogName: "Early", handlerName: "Eve" },
-      { id: late, slotStart: "2026-10-24T10:45:00Z", dogName: "Late", handlerName: "Lena" },
+      { id: early, slotStart: "2026-10-24T10:30:00Z", dogName: "Early", handlerName: "Eve", lane: { id: expect.any(Number), name: "" } },
+      { id: late, slotStart: "2026-10-24T10:45:00Z", dogName: "Late", handlerName: "Lena", lane: { id: expect.any(Number), name: "" } },
     ]);
     expect(body.affected.map((a) => a.id)).not.toContain(kept);
     expect(body.slots).toHaveLength(10);
@@ -158,5 +159,36 @@ describe("POST /api/admin/events/[slug]/preview", () => {
       expect(res.status).toBe(401);
       expect(res.headers.get("cache-control")).toBe("no-store");
     }
+  });
+
+  it("gives placeCount for the lanes and capacity of the draft, or the event's own where the draft leaves them out", async () => {
+    const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z", sessionMinutes: 15, lanes: ["A", "B"], capacity: 3 });
+    const count = async (over: Record<string, unknown>) => ((await (await post(e.slug, draft(over))).json()) as Body).placeCount;
+    expect(await count({})).toBe(12 * 2 * 3);
+    expect(await count({ capacity: 1 })).toBe(12 * 2);
+    expect(await count({ lanes: [{ id: e.laneIds[0], name: "A" }] })).toBe(12 * 3);
+    expect(await count({ lanes: [{ name: "X" }, { name: "Y" }, { name: "Z" }], capacity: 2 })).toBe(12 * 3 * 2);
+  });
+
+  it("lists as affected what a removed lane or a lowered capacity would strand, as the save would (latest made first)", async () => {
+    const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z", sessionMinutes: 15, lanes: ["A", "B"], capacity: 2 });
+    const first = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "First", "H", { laneId: e.laneIds[0] });
+    const second = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Second", "H", { laneId: e.laneIds[0] });
+    const inB = await insertBooking(t.env.DB, e.id, "2026-10-24T08:15:00Z", "InB", "H", { laneId: e.laneIds[1] });
+    await t.env.DB.prepare("UPDATE bookings SET created_at = '2026-09-01T10:00:00Z' WHERE id = ?").bind(first).run();
+    await t.env.DB.prepare("UPDATE bookings SET created_at = '2026-09-01T10:05:00Z' WHERE id = ?").bind(second).run();
+    const affected = async (over: Record<string, unknown>) => ((await (await post(e.slug, draft(over))).json()) as Body).affected.map((a) => a.id);
+    expect(await affected({})).toEqual([]);
+    expect(await affected({ capacity: 1 })).toEqual([second]);
+    expect(await affected({ lanes: [{ id: e.laneIds[0], name: "A" }] })).toEqual([inB]);
+    expect(await affected({ lanes: [{ id: e.laneIds[0], name: "A" }], capacity: 1 })).toEqual([second, inB]);
+    expect(await affected({ capacity: 5 })).toEqual([]);
+  });
+
+  it("refuses a lane id that is not the event's, with field errors", async () => {
+    const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z", lanes: ["A"] });
+    const res = await post(e.slug, draft({ lanes: [{ id: e.laneIds[0] + 9999, name: "A" }] }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: Record<string, string> }).fields).toEqual({ "lanes.0.id": "That isn't one of this event's lanes." });
   });
 });

@@ -87,4 +87,19 @@ describe("POST /api/admin/events/preview", () => {
     expect(res.status).toBe(413);
     expect(res.headers.get("cache-control")).toBe("no-store");
   });
+
+  it("gives placeCount: slots times lanes times capacity, one lane and one place where the draft says nothing", async () => {
+    const count = async (over: Record<string, unknown>) => ((await (await post(draft({ breaks: [], end: "10:00", ...over }))).json()) as { placeCount: number }).placeCount;
+    expect(await count({})).toBe(4);
+    expect(await count({ capacity: 3 })).toBe(12);
+    expect(await count({ lanes: [{ name: "A" }, { name: "B" }], capacity: 3 })).toBe(24);
+  });
+
+  it("validates lanes and capacity like a create, and refuses a lane id", async () => {
+    const res = await post(draft({ lanes: [{ id: 3, name: "A" }, { name: "a" }], capacity: 0 }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: Record<string, string> }).fields).toEqual({
+      capacity: "Enter a whole number of places from 1 to 50.", "lanes.0.id": "A new event's lanes don't have an id.", "lanes.1.name": "Two lanes can't have the same name.",
+    });
+  });
 });

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { countRows, createTestEnv, insertBreak, insertEvent, insertTemplate, type TestEnv } from "../../../../../test/db";
+import { onRequestPost as createEventRoute } from "../../events/index";
 import { onRequestGet as listTemplates, onRequestPost } from "../index";
 import { onRequestDelete, onRequestGet, onRequestPut } from "./index";
 
@@ -124,7 +125,7 @@ describe("PUT /api/admin/templates/:id", () => {
     const saved = ((await res.json()) as { template: Made }).template;
     expect(saved).toEqual({
       id: made.id, name: "Sunday", isDefault: true, details: "New details", venuePostcode: "CD3 4EF", costPence: 2000, start: "10:00", end: "13:00",
-      sessionMinutes: 20, gapMinutes: 5, shareMessage: "New {event}",
+      sessionMinutes: 20, gapMinutes: 5, shareMessage: "New {event}", lanes: [{ name: "" }], capacity: 1,
       breaks: [{ start: "11:00", end: "11:15", label: "" }, { start: "12:00", end: "12:15", label: "Tea" }],
     });
     expect(((await (await get(made.id)).json()) as { template: Made }).template).toEqual(saved);
@@ -411,5 +412,70 @@ describe("templates and events are separate", () => {
       expect(results, table).toEqual([]);
     }
     expect((await t.env.DB.prepare("SELECT COUNT(*) AS n FROM pragma_foreign_key_list('events')").first<{ n: number }>())!.n).toBe(0);
+  });
+});
+
+describe("templates: lanes and capacity on update and in a round trip to an event", () => {
+  const made = async (over: Record<string, unknown> = {}) => {
+    const res = await post(body({ lanes: [{ name: "Ring 1" }, { name: "Ring 2" }], capacity: 2, ...over }));
+    expect(res.status).toBe(201);
+    return ((await res.json()) as { template: { id: number; lanes: { name: string }[]; capacity: number } }).template;
+  };
+  const stored = async (id: number) => ({
+    lanes: (await t.env.DB.prepare("SELECT name FROM event_template_lanes WHERE template_id = ? ORDER BY position").bind(id).all<{ name: string }>()).results.map((l) => l.name),
+    layout: await t.env.DB.prepare("SELECT capacity FROM event_template_layout WHERE template_id = ?").bind(id).first(),
+  });
+
+  it("replaces the lanes as a whole and the capacity when sent, and leaves them when not", async () => {
+    const tpl = await made();
+    expect((await put(tpl.id, body({ lanes: [{ name: "Only" }], capacity: 5 }))).status).toBe(200);
+    expect(await stored(tpl.id)).toEqual({ lanes: ["Only"], layout: { capacity: 5 } });
+    expect((await put(tpl.id, body({ name: "Renamed" }))).status).toBe(200);
+    expect(await stored(tpl.id)).toEqual({ lanes: ["Only"], layout: { capacity: 5 } });
+    expect((await put(tpl.id, body({ lanes: [{ name: "Z" }, { name: "Y" }, { name: "X" }] }))).status).toBe(200);
+    expect(await stored(tpl.id)).toEqual({ lanes: ["Z", "Y", "X"], layout: { capacity: 5 } });
+  });
+
+  it("refuses bad lanes on update with field errors and changes nothing", async () => {
+    const tpl = await made();
+    const res = await put(tpl.id, body({ name: "Changed", lanes: [{ name: "A" }, { name: "" }], capacity: 51 }));
+    expect(res.status).toBe(400);
+    expect(await stored(tpl.id)).toEqual({ lanes: ["Ring 1", "Ring 2"], layout: { capacity: 2 } });
+  });
+
+  it("recreates a template's layout row if a hand-made template has none (an update with capacity)", async () => {
+    const { id } = await insertTemplate(t.env.DB);
+    await t.env.DB.prepare("DELETE FROM event_template_layout WHERE template_id = ?").bind(id).run();
+    expect((await put(id, body({ name: "Hand made", capacity: 3 }))).status).toBe(200);
+    expect(await stored(id)).toMatchObject({ layout: { capacity: 3 } });
+  });
+
+  it("reads a template with no lane or layout rows as one unnamed lane and capacity 1", async () => {
+    const { id } = await insertTemplate(t.env.DB);
+    await t.env.DB.prepare("DELETE FROM event_template_lanes WHERE template_id = ?").bind(id).run();
+    await t.env.DB.prepare("DELETE FROM event_template_layout WHERE template_id = ?").bind(id).run();
+    expect(((await (await get(id)).json()) as { template: unknown }).template).toMatchObject({ lanes: [{ name: "" }], capacity: 1 });
+  });
+
+  it("round trip: an event created from a template's lanes and capacity has its own copy, which a later template edit doesn't touch", async () => {
+    const tpl = await made();
+    const fetched = ((await (await get(tpl.id)).json()) as { template: { lanes: { name: string }[]; capacity: number } }).template;
+    const res = await createEventRoute({
+      request: new Request("http://localhost/api/admin/events", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          idempotencyKey: "template-trip-aaaaaaaa", name: "From template", date: "2026-10-24", start: "09:00", end: "12:00", sessionMinutes: 15, gapMinutes: 0,
+          costPence: 0, venuePostcode: "AB1 2CD", details: "", breaks: [], lanes: fetched.lanes, capacity: fetched.capacity,
+        }),
+      }),
+      env: t.env, data: ADMIN,
+    } as unknown as Parameters<typeof createEventRoute>[0]);
+    expect(res.status).toBe(201);
+    const event = ((await res.json()) as { event: { slug: string; lanes: { name: string }[]; capacity: number } }).event;
+    expect(event.lanes.map((l) => l.name)).toEqual(["Ring 1", "Ring 2"]);
+    expect(event.capacity).toBe(2);
+    expect((await put(tpl.id, body({ lanes: [{ name: "Changed" }], capacity: 9 }))).status).toBe(200);
+    const row = await t.env.DB.prepare("SELECT (SELECT COUNT(*) FROM event_lanes WHERE event_id = e.id) AS lanes, (SELECT capacity FROM event_layout WHERE event_id = e.id) AS capacity FROM events e WHERE slug = ?").bind(event.slug).first();
+    expect(row).toEqual({ lanes: 2, capacity: 2 });
   });
 });

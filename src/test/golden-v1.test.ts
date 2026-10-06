@@ -38,6 +38,25 @@ const ALLOWED_ADDITIONS: Allowed[] = [
   { files: /^public-api\/post-(bookings|slot-started)\.json$/, path: "*.body.event.lanes", why: "the event summary in a booking answer carries the lanes, as the public event does" },
   { files: /^public-api\/post-(bookings|slot-started)\.json$/, path: "*.body.event.capacity", why: "the event summary in a booking answer carries the capacity, as the public event does" },
   { files: /^public-api\/post-(bookings|slot-started)\.json$/, path: "*.body.freeSlots[].places", why: "the free slots in a slot_taken or slot_started answer carry their places, as the public event's slots do" },
+  // Admin side: lanes and capacity are described next to the event, and every booking the admin API shows names its lane.
+  { files: /^admin-api\/events-list\.json$/, path: "body.events[].laneCount", why: "the admin list says how many lanes each upcoming event has" },
+  { files: /^admin-api\/events-list\.json$/, path: "body.events[].capacity", why: "the admin list says how many places each lane has at each time" },
+  { files: /^admin-api\/events-list\.json$/, path: "body.events[].placeCount", why: "the admin list says how many places the event has in all (times x lanes x places per lane)" },
+  { files: /^admin-api\/detail-/, path: "body.event.lanes", why: "the admin detail lists the event's lanes (id and name) for the edit form" },
+  { files: /^admin-api\/detail-/, path: "body.event.capacity", why: "the admin detail gives the places per lane per time for the edit form" },
+  { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.event.lanes", why: "an event as the admin API returns it (detail or saved edit) lists its lanes" },
+  { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.event.capacity", why: "an event as the admin API returns it (detail or saved edit) gives its capacity" },
+  { files: /^admin-api\/(detail-|orphan-actions)/, path: "body.orphans[].lane", why: "an orphan booking names its lane, as every booking in the admin API does" },
+  { files: /^admin-api\/orphan-actions\.json$/, path: "*.body.orphans[].lane", why: "an orphan booking names its lane, as every booking in the admin API does" },
+  { files: /^admin-api\/templates-list\.json$/, path: "body.templates[].lanes", why: "a template lists its lanes (names only)" },
+  { files: /^admin-api\/templates-list\.json$/, path: "body.templates[].capacity", why: "a template gives its places per lane per time" },
+  { files: /^admin-api\/template-\d+\.json$/, path: "body.template.lanes", why: "a template lists its lanes (names only)" },
+  { files: /^admin-api\/template-\d+\.json$/, path: "body.template.capacity", why: "a template gives its places per lane per time" },
+  { files: /^admin-api\/bookings-(add|move)\.json$/, path: "*.body.booking.lane", why: "a booking added or moved by the admin names its lane" },
+  { files: /^admin-api\/orphan-actions\.json$/, path: "*.body.booking.lane", why: "a booking added by the admin names its lane" },
+  { files: /^admin-api\/bookings-clear\.json$/, path: "*.body.removed.lane", why: "a booking cleared by the admin names its lane" },
+  { files: /^admin-api\/event-edit\.json$/, path: "*.body.affected[].lane", why: "a booking an edit would strand names its lane" },
+  { files: /^admin-api\/event-edit\.json$/, path: "*.body.removed[].lane", why: "a booking an edit removed names its lane" },
 ];
 
 // ---------------------------------------------------------------------------------------------------------------------

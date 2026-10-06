@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { countRows, createTestEnv, insertTemplate, type TestEnv } from "../../../../test/db";
+import { createTemplate, parseTemplateDraft } from "../../../../server/admin-templates";
 import { onRequestGet, onRequestPost } from "./index";
 
 const ADMIN = { admin: { identity: "test@example.com", csrfBinding: "x" } };
@@ -39,6 +40,7 @@ const body = (over: Record<string, unknown> = {}) => ({
 interface Made {
   id: number; name: string; isDefault: boolean; details: string; venuePostcode: string; costPence: number; start: string; end: string;
   sessionMinutes: number; gapMinutes: number; breaks: { start: string; end: string; label: string }[]; shareMessage: string;
+  lanes: { name: string }[]; capacity: number;
 }
 const listed = async (): Promise<Made[]> => ((await (await list()).json()) as { templates: Made[] }).templates;
 const defaults = async (): Promise<string[]> => (await listed()).filter((x) => x.isDefault).map((x) => x.name);
@@ -95,7 +97,7 @@ describe("POST /api/admin/templates", () => {
       template: {
         id: expect.any(Number), name: "Saturday trial", isDefault: true, details: "Bring water", venuePostcode: "AB1 2CD", costPence: 1500,
         start: "09:00", end: "12:00", sessionMinutes: 15, gapMinutes: 0, breaks: [{ start: "10:00", end: "10:30", label: "Lunch" }],
-        shareMessage: "Book {event}",
+        shareMessage: "Book {event}", lanes: [{ name: "" }], capacity: 1,
       },
     });
     expect(await listed()).toHaveLength(1);
@@ -125,7 +127,7 @@ describe("POST /api/admin/templates", () => {
     const made = await create({ id: 99, createdAt: "x", listed: "nope", date: "not a date", idempotencyKey: "k", extra: { a: 1 } });
     expect(made.id).not.toBe(99);
     expect(Object.keys(made).sort()).toEqual([
-      "breaks", "costPence", "details", "end", "gapMinutes", "id", "isDefault", "name", "sessionMinutes", "shareMessage", "start", "venuePostcode",
+      "breaks", "capacity", "costPence", "details", "end", "gapMinutes", "id", "isDefault", "lanes", "name", "sessionMinutes", "shareMessage", "start", "venuePostcode",
     ]);
   });
 
@@ -355,5 +357,37 @@ describe("POST /api/admin/templates: at most 20", () => {
     const results = await Promise.all([post(body({ name: "X" })), post(body({ name: "Y" }))]);
     expect(results.map((r) => r.status).sort()).toEqual([201, 422]);
     expect(await countRows(t.env.DB, "event_templates")).toBe(20);
+  });
+});
+
+describe("templates: lanes and capacity", () => {
+  it("stores the lanes in order and the capacity, and the list and the stored rows show them", async () => {
+    const made = await create({ lanes: [{ name: "Ring 2" }, { name: "Ring 1" }], capacity: 4 });
+    expect(made).toMatchObject({ lanes: [{ name: "Ring 2" }, { name: "Ring 1" }], capacity: 4 });
+    expect((await listed())[0]).toMatchObject({ lanes: [{ name: "Ring 2" }, { name: "Ring 1" }], capacity: 4 });
+    expect((await t.env.DB.prepare("SELECT position, name FROM event_template_lanes WHERE template_id = ? ORDER BY position").bind(made.id).all()).results)
+      .toEqual([{ position: 1, name: "Ring 2" }, { position: 2, name: "Ring 1" }]);
+    expect(await t.env.DB.prepare("SELECT capacity, identity_limit FROM event_template_layout WHERE template_id = ?").bind(made.id).first()).toEqual({ capacity: 4, identity_limit: 1 });
+  });
+
+  it("makes one unnamed lane and capacity 1 when the body says nothing", async () => {
+    expect(await create()).toMatchObject({ lanes: [{ name: "" }], capacity: 1 });
+  });
+
+  it("validates through the event's rules: the same keys and messages, lane ids refused, places checked against the template's slots", async () => {
+    expect(await fieldsOf(await post(body({ lanes: [{ name: "A" }, { name: "a" }, { id: 4, name: "C" }], capacity: 0 })))).toEqual({
+      capacity: "Enter a whole number of places from 1 to 50.", "lanes.1.name": "Two lanes can't have the same name.", "lanes.2.id": "A new event's lanes don't have an id.",
+    });
+    expect(await fieldsOf(await post(body({ lanes: [] })))).toEqual({ lanes: "An event needs at least one lane." });
+    expect(await fieldsOf(await post(body({ lanes: [{ name: "Ri\u200Bng" }] })))).toEqual({ "lanes.0.name": INVISIBLE("lane name") });
+    expect(await fieldsOf(await post(body({ start: "09:00", end: "18:00", sessionMinutes: 5, breaks: [], capacity: 19 })))).toEqual({ capacity: expect.stringContaining("2052 places") });
+    expect(await countRows(t.env.DB, "event_templates")).toBe(0);
+  });
+
+  it("is atomic: nothing is left of a template whose lanes the database refuses (validation bypassed)", async () => {
+    const parsed = parseTemplateDraft(body({ lanes: [{ name: "A" }, { name: "B" }] }));
+    if (!("draft" in parsed)) throw new Error("rejected");
+    await createTemplate(t.env.DB, { ...parsed.draft, lanes: [{ name: "A" }, { name: "a" }] });
+    expect([await countRows(t.env.DB, "event_templates"), await countRows(t.env.DB, "event_template_lanes"), await countRows(t.env.DB, "event_template_layout")]).toEqual([0, 0, 0]);
   });
 });

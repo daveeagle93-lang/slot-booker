@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../test/db";
+import { createTestEnv, insertBooking, insertBreak, insertEvent, insertsBooking, interceptBatches, type TestEnv } from "../test/db";
+import { addBooking, moveBooking } from "./admin-bookings";
+import { createBooking, validateBookingInput } from "./bookings";
 import { eventDetail, loadBookings, saveEventEdit } from "./admin-event-edit";
 import { parseEventDraft, type EventDraft } from "./admin-events";
 import { loadEventBySlug } from "./events";
@@ -77,8 +79,8 @@ describe("saveEventEdit: a booking lands between the read and the save", () => {
     expect(result).toEqual({
       kind: "bookings_affected",
       affected: [
-        { id: newcomer, slotStart: "2026-10-24T10:30:00Z", dogName: "Delta", handlerName: "Dee" },
-        { id: e.c, slotStart: "2026-10-24T10:45:00Z", dogName: "Charlie", handlerName: "Cat" },
+        { id: newcomer, slotStart: "2026-10-24T10:30:00Z", dogName: "Delta", handlerName: "Dee", lane: { id: e.laneId, name: "" } },
+        { id: e.c, slotStart: "2026-10-24T10:45:00Z", dogName: "Charlie", handlerName: "Cat", lane: { id: e.laneId, name: "" } },
       ],
     });
     // Event fields not updated, breaks not replaced, the confirmed booking not deleted: only the newcomer is new.
@@ -173,5 +175,456 @@ describe("bookings of an event with several lanes and places", () => {
     await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "First", "H", { laneId: e.laneIds[0], place: 1 });
     const detail = await eventDetail(t.env.DB, (await loadEventBySlug(t.env.DB, e.slug))!);
     expect(detail.slots.map((s) => s.booking?.dogName ?? null)).toEqual(["First", null]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Lanes and places: editing the layout, the clash diff, renumbering, the revision, and the races
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** 2026-10-24 (BST) 09:00-10:00, 15-minute sessions: four slots, s[0] to s[3] (08:00Z to 08:45Z). */
+const S = ["2026-10-24T08:00:00Z", "2026-10-24T08:15:00Z", "2026-10-24T08:30:00Z", "2026-10-24T08:45:00Z"];
+
+async function seedLanes(o: { lanes?: string[]; capacity?: number } = {}) {
+  const e = await insertEvent(t.env.DB, { startUtc: S[0], endUtc: "2026-10-24T09:00:00Z", sessionMinutes: 15, lanes: o.lanes ?? ["Ring 1", "Ring 2"], capacity: o.capacity ?? 3 });
+  return e;
+}
+
+/** A draft for the event: the same times (09:00-10:00 London), with the given lanes and capacity (omitted keys stay omitted). */
+function draftFor(event: { laneIds: number[] }, over: Record<string, unknown> = {}, capacity = 3): EventDraft {
+  const r = parseEventDraft({
+    name: "Edited", date: "2026-10-24", start: "09:00", end: "10:00", sessionMinutes: 15, gapMinutes: 0, costPence: 1250,
+    venuePostcode: "AB1 2CD", details: "Test details", breaks: [], ...over,
+  }, { now: NOW, requireFuture: false, layout: { laneIds: event.laneIds, capacity } });
+  if (!("draft" in r)) throw new Error(JSON.stringify(r.fields));
+  return r.draft;
+}
+
+const layoutRows = async (id: number) => ({
+  lanes: (await t.env.DB.prepare("SELECT id, position, name FROM event_lanes WHERE event_id = ? ORDER BY position").bind(id).all<{ id: number; position: number; name: string }>()).results,
+  layout: await t.env.DB.prepare("SELECT capacity, config_rev FROM event_layout WHERE event_id = ?").bind(id).first<{ capacity: number; config_rev: number }>(),
+});
+const placesOf = async (id: number) =>
+  (await t.env.DB.prepare("SELECT id, lane_id, slot_start_utc, place FROM bookings WHERE event_id = ? ORDER BY slot_start_utc, lane_id, place").bind(id).all<{ id: number; lane_id: number; slot_start_utc: string; place: number }>()).results;
+const bookedAt = (id: number, created: string) => t.env.DB.prepare("UPDATE bookings SET created_at = ? WHERE id = ?").bind(created, id).run();
+
+describe("saveEventEdit: lanes", () => {
+  it("renames a lane in place: same id, same bookings", async () => {
+    const e = await seedLanes();
+    const b = await insertBooking(t.env.DB, e.id, S[0], "Rex", "Sam", { laneId: e.laneIds[0] });
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: e.laneIds[0], name: "Main ring" }, { id: e.laneIds[1], name: "Ring 2" }] }), []);
+    expect(result.kind).toBe("saved");
+    expect((await layoutRows(e.id)).lanes).toEqual([{ id: e.laneIds[0], position: 1, name: "Main ring" }, { id: e.laneIds[1], position: 2, name: "Ring 2" }]);
+    expect((await placesOf(e.id)).map((r) => [r.id, r.lane_id])).toEqual([[b, e.laneIds[0]]]);
+    expect(result.kind === "saved" && result.event.lanes.map((l) => l.name)).toEqual(["Main ring", "Ring 2"]);
+  });
+
+  it("swaps the names of two lanes, and reorders them, without clashing half-way", async () => {
+    const e = await seedLanes({ lanes: ["A", "B", "C"] });
+    const [a, b, c] = e.laneIds;
+    const book = await insertBooking(t.env.DB, e.id, S[0], "Rex", "Sam", { laneId: b });
+    // B first, then C renamed "A", then A renamed "C": names and positions all move at once.
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: b, name: "B" }, { id: c, name: "A" }, { id: a, name: "C" }] }), []);
+    expect(result.kind).toBe("saved");
+    expect((await layoutRows(e.id)).lanes).toEqual([{ id: b, position: 1, name: "B" }, { id: c, position: 2, name: "A" }, { id: a, position: 3, name: "C" }]);
+    expect((await placesOf(e.id)).map((r) => [r.id, r.lane_id])).toEqual([[book, b]]);
+  });
+
+  it("renames to a name another lane had before, and to a name that differs only in case", async () => {
+    const e = await seedLanes({ lanes: ["Ring 1", "Ring 2"] });
+    const [a, b] = e.laneIds;
+    expect((await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: a, name: "Ring 2" }, { id: b, name: "ring 1" }] }), [])).kind).toBe("saved");
+    expect((await layoutRows(e.id)).lanes.map((l) => l.name)).toEqual(["Ring 2", "ring 1"]);
+  });
+
+  it("adds new lanes (new ids), keeping the listed ones", async () => {
+    const e = await seedLanes({ lanes: ["Ring 1"] });
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ name: "Ring 0" }, { id: e.laneIds[0], name: "Ring 1" }, { name: "Ring 2" }] }), []);
+    expect(result.kind).toBe("saved");
+    const lanes = (await layoutRows(e.id)).lanes;
+    expect(lanes.map((l) => [l.position, l.name])).toEqual([[1, "Ring 0"], [2, "Ring 1"], [3, "Ring 2"]]);
+    expect(lanes[1].id).toBe(e.laneIds[0]);
+    expect(new Set(lanes.map((l) => l.id)).size).toBe(3);
+  });
+
+  it("goes from one unnamed lane to several named ones and back to one unnamed", async () => {
+    const e = await seedLanes({ lanes: [""] });
+    expect((await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: e.laneIds[0], name: "North" }, { name: "South" }] }), [])).kind).toBe("saved");
+    expect((await layoutRows(e.id)).lanes.map((l) => l.name)).toEqual(["North", "South"]);
+    expect((await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: e.laneIds[0], name: "" }] }), [])).kind).toBe("saved");
+    expect((await layoutRows(e.id)).lanes).toEqual([{ id: e.laneIds[0], position: 1, name: "" }]);
+  });
+
+  it("removes an unlisted lane that has no bookings, and bumps nothing else", async () => {
+    const e = await seedLanes({ lanes: ["Ring 1", "Ring 2"] });
+    const keep = await insertBooking(t.env.DB, e.id, S[0], "Rex", "Sam", { laneId: e.laneIds[0] });
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: e.laneIds[0], name: "Ring 1" }] }), []);
+    expect(result).toMatchObject({ kind: "saved", removed: [] });
+    expect((await layoutRows(e.id)).lanes.map((l) => l.id)).toEqual([e.laneIds[0]]);
+    expect((await placesOf(e.id)).map((r) => r.id)).toEqual([keep]);
+  });
+
+  it("leaves lanes and capacity as they are when the draft doesn't send them", async () => {
+    const e = await seedLanes();
+    const was = await layoutRows(e.id);
+    expect((await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e), [])).kind).toBe("saved");
+    expect(await layoutRows(e.id)).toEqual(was);
+  });
+});
+
+describe("saveEventEdit: the layout revision (config_rev)", () => {
+  const revOf = async (id: number) => (await layoutRows(id)).layout!.config_rev;
+  const lanesOf = (e: { laneIds: number[] }, names: string[]) => names.map((name, i) => (e.laneIds[i] === undefined ? { name } : { id: e.laneIds[i], name }));
+
+  it("goes up by one for a rename, a reorder, an added lane, a removed lane and a capacity change, and not for anything else", async () => {
+    const e = await seedLanes({ lanes: ["A", "B"], capacity: 2 });
+    const [a, b] = e.laneIds;
+    const edit = async (over: Record<string, unknown>) => {
+      const before = await revOf(e.id);
+      const r = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, over, (await layoutRows(e.id)).layout!.capacity), []);
+      expect(r.kind).toBe("saved");
+      return (await revOf(e.id)) - before;
+    };
+    expect(await edit({ name: "Another name", costPence: 900, details: "x", listed: false })).toBe(0);
+    expect(await edit({ breaks: [{ start: "09:30", end: "09:45" }] })).toBe(0);
+    expect(await edit({ lanes: [{ id: a, name: "A" }, { id: b, name: "B" }], capacity: 2 })).toBe(0); // the same layout again
+    expect(await edit({ lanes: [{ id: a, name: "A2" }, { id: b, name: "B" }] })).toBe(1);
+    expect(await edit({ lanes: [{ id: a, name: "a2" }, { id: b, name: "B" }] })).toBe(1); // case only
+    expect(await edit({ lanes: [{ id: b, name: "B" }, { id: a, name: "a2" }] })).toBe(1);
+    expect(await edit({ capacity: 4 })).toBe(1);
+    expect(await edit({ lanes: [{ id: b, name: "B" }, { id: a, name: "a2" }, { name: "C" }] })).toBe(1);
+    expect(await edit({ lanes: [{ id: b, name: "B" }, { id: a, name: "a2" }] })).toBe(1);
+    expect(await edit({ capacity: 1, lanes: [{ id: a, name: "a2" }] })).toBe(1); // two changes in one save: one step
+    expect(await edit({ capacity: 1 })).toBe(0);
+    expect(await revOf(e.id)).toBe(7);
+  });
+
+  it("is also a step when the event has no layout row yet (an event inserted by hand): the row is made", async () => {
+    const e = await seedLanes({ lanes: ["A"] });
+    await t.env.DB.prepare("DELETE FROM event_layout WHERE event_id = ?").bind(e.id).run();
+    const r = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { capacity: 2 }, 1), []);
+    expect(r.kind).toBe("saved");
+    expect((await layoutRows(e.id)).layout).toEqual({ capacity: 2, config_rev: 1 });
+  });
+
+  it("returns the event with its new lanes, capacity and revision", async () => {
+    const e = await seedLanes({ lanes: ["A"] });
+    const r = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: lanesOf(e, ["A", "B"]), capacity: 2 }), []);
+    expect(r.kind).toBe("saved");
+    if (r.kind !== "saved") return;
+    expect(r.event).toMatchObject({ capacity: 2, configRev: 1 });
+    expect(r.event.lanes.map((l) => l.name)).toEqual(["A", "B"]);
+    expect(r.event).toEqual(await load(e.slug));
+  });
+});
+
+describe("saveEventEdit: the clash diff", () => {
+  /** Ring 1 and Ring 2, capacity 3, 4 slots. Returns the helpers and ids of the bookings made. */
+  async function crowd() {
+    const e = await seedLanes({ lanes: ["Ring 1", "Ring 2"], capacity: 3 });
+    const [r1, r2] = e.laneIds;
+    const book = async (slot: string, lane: number, dog: string, created: string, place?: number) => {
+      const id = await insertBooking(t.env.DB, e.id, slot, dog, "H", { laneId: lane, place });
+      await bookedAt(id, created);
+      return id;
+    };
+    return { ...e, r1, r2, book };
+  }
+  const idsOf = (r: Awaited<ReturnType<typeof saveEventEdit>>) => (r.kind === "bookings_affected" ? r.affected.map((b) => b.id) : []);
+
+  it("lowering the capacity with room: nobody is affected, and places are renumbered down so they stay 1..n", async () => {
+    const c = await crowd();
+    const a = await c.book(S[0], c.r1, "A", "2026-09-01T10:00:00Z", 1);
+    const b = await c.book(S[0], c.r1, "B", "2026-09-01T10:01:00Z", 3); // place 2 was cleared
+    const x = await c.book(S[1], c.r1, "X", "2026-09-01T10:02:00Z", 2); // the only one in its group, at place 2
+    const y = await c.book(S[0], c.r2, "Y", "2026-09-01T10:03:00Z", 1);
+    const result = await saveEventEdit(t.env.DB, await load(c.slug), draftFor(c, { capacity: 2 }), []);
+    expect(result).toMatchObject({ kind: "saved", removed: [] });
+    expect(await placesOf(c.id)).toEqual([
+      { id: a, lane_id: c.r1, slot_start_utc: S[0], place: 1 }, { id: b, lane_id: c.r1, slot_start_utc: S[0], place: 2 },
+      { id: y, lane_id: c.r2, slot_start_utc: S[0], place: 1 }, { id: x, lane_id: c.r1, slot_start_utc: S[1], place: 1 },
+    ].sort((p, q) => (p.slot_start_utc < q.slot_start_utc ? -1 : p.slot_start_utc > q.slot_start_utc ? 1 : p.lane_id - q.lane_id || p.place - q.place)));
+    expect((await layoutRows(c.id)).layout).toEqual({ capacity: 2, config_rev: 1 });
+  });
+
+  it("lowering the capacity without room: only the bookings that don't fit are affected, the latest made first, ties by id", async () => {
+    const c = await crowd();
+    const first = await c.book(S[0], c.r1, "First", "2026-09-01T10:00:00Z", 2); // earliest booked, though at place 2
+    const second = await c.book(S[0], c.r1, "Second", "2026-09-01T10:05:00Z", 1);
+    const tieA = await c.book(S[0], c.r1, "TieA", "2026-09-01T10:09:00Z", 3);
+    const tieB = await c.book(S[1], c.r1, "TieB", "2026-09-01T10:00:00Z", 1);
+    const tieC = await c.book(S[1], c.r1, "TieC", "2026-09-01T10:00:00Z", 2);
+    const fine = await c.book(S[0], c.r2, "Fine", "2026-09-01T10:00:00Z", 1);
+    const before = await placesOf(c.id);
+    const refused = await saveEventEdit(t.env.DB, await load(c.slug), draftFor(c, { capacity: 2 }), []);
+    expect(refused).toMatchObject({ kind: "bookings_affected" });
+    expect(idsOf(refused)).toEqual([tieA]); // Ring 1 at S[0] has 3 for 2 places; the latest made goes. S[1] has exactly 2.
+    expect(await placesOf(c.id)).toEqual(before);
+    expect((await layoutRows(c.id)).layout).toEqual({ capacity: 3, config_rev: 0 });
+    const saved = await saveEventEdit(t.env.DB, await load(c.slug), draftFor(c, { capacity: 2 }), [tieA]);
+    expect(saved).toMatchObject({ kind: "saved", removed: [{ id: tieA, lane: { id: c.r1, name: "Ring 1" } }] });
+    // Second was at place 1 and First at place 2: their order stays, now 1 and 2.
+    expect((await placesOf(c.id)).filter((r) => r.slot_start_utc === S[0] && r.lane_id === c.r1).map((r) => [r.id, r.place])).toEqual([[second, 1], [first, 2]]);
+    // The other groups are untouched apart from the renumbering: exactly 2 at S[1] and one in Ring 2.
+    expect((await placesOf(c.id)).filter((r) => [tieB, tieC, fine].includes(r.id)).map((r) => [r.id, r.place])).toEqual([[fine, 1], [tieB, 1], [tieC, 2]]);
+  });
+
+  it("flags the later id when two bookings were made at the same instant", async () => {
+    const c = await crowd();
+    await c.book(S[0], c.r1, "One", "2026-09-01T10:00:00Z", 1);
+    const t2 = await c.book(S[0], c.r1, "Two", "2026-09-01T10:00:00Z", 2);
+    const t3 = await c.book(S[0], c.r1, "Three", "2026-09-01T10:00:00Z", 3);
+    expect(idsOf(await saveEventEdit(t.env.DB, await load(c.slug), draftFor(c, { capacity: 1 }), []))).toEqual([t2, t3]);
+  });
+
+  it("a slot removed, a lane removed and a capacity lowered at once: each stranded booking is listed once, in slot, lane, place order", async () => {
+    const c = await crowd();
+    const gone = await c.book(S[3], c.r1, "SlotGone", "2026-09-01T10:00:00Z"); // the slot leaves (end 09:45)
+    const laneGone = await c.book(S[0], c.r2, "LaneGone", "2026-09-01T10:00:00Z"); // Ring 2 is removed
+    const slotAndLane = await c.book(S[3], c.r2, "Both", "2026-09-01T10:00:00Z");
+    const over1 = await c.book(S[1], c.r1, "Over1", "2026-09-01T10:00:00Z");
+    const over2 = await c.book(S[1], c.r1, "Over2", "2026-09-01T10:01:00Z");
+    const stays = await c.book(S[2], c.r1, "Stays", "2026-09-01T10:00:00Z");
+    const draft = draftFor(c, { end: "09:45", lanes: [{ id: c.r1, name: "Ring 1" }], capacity: 1 });
+    const refused = await saveEventEdit(t.env.DB, await load(c.slug), draft, []);
+    expect(idsOf(refused)).toEqual([laneGone, over2, gone, slotAndLane]); // by slot, then lane, then place; each once
+    const all = new Set(idsOf(refused));
+    const saved = await saveEventEdit(t.env.DB, await load(c.slug), draft, [...all]);
+    expect(saved.kind).toBe("saved");
+    expect((await placesOf(c.id)).map((r) => r.id).sort()).toEqual([over1, stays].sort());
+    expect((await layoutRows(c.id)).lanes.map((l) => l.id)).toEqual([c.r1]);
+    expect((await layoutRows(c.id)).layout).toEqual({ capacity: 1, config_rev: 1 });
+  });
+
+  it("refuses unless every stranded booking is confirmed, changing nothing; confirmed ids that aren't stranded are left alone", async () => {
+    const c = await crowd();
+    const a = await c.book(S[0], c.r1, "A", "2026-09-01T10:00:00Z");
+    const b = await c.book(S[0], c.r1, "B", "2026-09-01T10:01:00Z");
+    const d = await c.book(S[0], c.r2, "D", "2026-09-01T10:00:00Z");
+    const gone = await c.book(S[3], c.r1, "Gone", "2026-09-01T10:00:00Z");
+    const draft = draftFor(c, { end: "09:45", capacity: 1 });
+    const before = await snapshot(c.id);
+    expect(idsOf(await saveEventEdit(t.env.DB, await load(c.slug), draft, [gone]))).toEqual([b, gone]); // b is stranded too, and not confirmed
+    expect(await snapshot(c.id)).toBe(before);
+    // Confirming the stranded ones plus a booking that is not stranded (a stale or sloppy confirmation) removes only the stranded.
+    const saved = await saveEventEdit(t.env.DB, await load(c.slug), draft, [b, gone, a, d, 999999]);
+    expect(saved).toMatchObject({ kind: "saved" });
+    expect(saved.kind === "saved" && saved.removed.map((r) => r.id).sort()).toEqual([b, gone].sort());
+    expect((await placesOf(c.id)).map((r) => r.id).sort()).toEqual([a, d].sort());
+  });
+
+  it("raising the capacity strands nobody, renumbers nothing and leaves places as they are", async () => {
+    const c = await crowd();
+    await c.book(S[0], c.r1, "A", "2026-09-01T10:00:00Z", 1);
+    await c.book(S[0], c.r1, "B", "2026-09-01T10:01:00Z", 3);
+    const before = await placesOf(c.id);
+    expect((await saveEventEdit(t.env.DB, await load(c.slug), draftFor(c, { capacity: 5 }), [])).kind).toBe("saved");
+    expect(await placesOf(c.id)).toEqual(before);
+  });
+
+  it("renumbers every lane and time at once without a UNIQUE clash, keeping each group's order (many groups, places up to the old capacity)", async () => {
+    const e = await insertEvent(t.env.DB, { startUtc: S[0], endUtc: "2026-10-24T09:00:00Z", sessionMinutes: 15, lanes: ["A", "B"], capacity: 6 });
+    const expected = new Map<number, number>();
+    for (const slot of S) for (const lane of e.laneIds) {
+      // places 2, 4 and 6 are taken: after lowering to 3 they must become 1, 2, 3
+      for (const place of [6, 2, 4]) expected.set(await insertBooking(t.env.DB, e.id, slot, `D${expected.size}`, "H", { laneId: lane, place }), place === 2 ? 1 : place === 4 ? 2 : 3);
+    }
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { capacity: 3 }, 6), []);
+    expect(result).toMatchObject({ kind: "saved", removed: [] });
+    expect(new Map((await placesOf(e.id)).map((r) => [r.id, r.place]))).toEqual(expected);
+  });
+
+  it("a lowered capacity with the schedule shortened: bookings on removed slots are removed, the rest renumbered", async () => {
+    const c = await crowd();
+    const a = await c.book(S[0], c.r1, "A", "2026-09-01T10:00:00Z", 3);
+    const gone = await c.book(S[3], c.r1, "Gone", "2026-09-01T10:00:00Z", 1);
+    const saved = await saveEventEdit(t.env.DB, await load(c.slug), draftFor(c, { end: "09:45", capacity: 1 }), [gone]);
+    expect(saved.kind).toBe("saved");
+    expect(await placesOf(c.id)).toEqual([{ id: a, lane_id: c.r1, slot_start_utc: S[0], place: 1 }]);
+  });
+});
+
+describe("saveEventEdit: races on the layout", () => {
+  it("a booking that lands in a group the lowered capacity can't hold aborts the batch, writing nothing, and the newcomer is listed", async () => {
+    const e = await seedLanes({ lanes: ["Ring 1"], capacity: 2 });
+    const keep = await insertBooking(t.env.DB, e.id, S[0], "Keep", "H", { laneId: e.laneIds[0] });
+    await t.env.DB.prepare("UPDATE bookings SET created_at = '2026-09-01T10:00:00Z' WHERE id = ?").bind(keep).run();
+    let newcomer = 0;
+    const before = await snapshot(e.id);
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { capacity: 1 }, 2), [], {
+      afterRead: async () => { newcomer = await insertBooking(t.env.DB, e.id, S[0], "Late", "H", { laneId: e.laneIds[0] }); },
+    });
+    expect(result).toMatchObject({ kind: "bookings_affected", affected: [{ id: newcomer, dogName: "Late" }] });
+    expect(JSON.parse(await snapshot(e.id))[0]).toEqual(JSON.parse(before)[0]);
+    expect((await layoutRows(e.id)).layout).toEqual({ capacity: 2, config_rev: 0 });
+    expect((await placesOf(e.id)).map((r) => r.id)).toEqual([keep, newcomer]);
+  });
+
+  it("a booking that lands in a lane being removed aborts the batch with the newcomer listed", async () => {
+    const e = await seedLanes({ lanes: ["Ring 1", "Ring 2"] });
+    let newcomer = 0;
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: e.laneIds[0], name: "Ring 1" }] }), [], {
+      afterRead: async () => { newcomer = await insertBooking(t.env.DB, e.id, S[1], "Late", "H", { laneId: e.laneIds[1] }); },
+    });
+    expect(result).toMatchObject({ kind: "bookings_affected", affected: [{ id: newcomer, lane: { id: e.laneIds[1], name: "Ring 2" } }] });
+    expect((await layoutRows(e.id)).lanes).toHaveLength(2);
+  });
+
+  it("a booking that lands in a lane that stays, within capacity, saves normally", async () => {
+    const e = await seedLanes({ lanes: ["Ring 1", "Ring 2"] });
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: e.laneIds[0], name: "Ring 1" }], capacity: 2 }), [], {
+      afterRead: async () => { await insertBooking(t.env.DB, e.id, S[1], "Late", "H", { laneId: e.laneIds[0] }); },
+    });
+    expect(result.kind).toBe("saved");
+    expect((await placesOf(e.id)).map((r) => r.place)).toEqual([1]);
+  });
+
+  it("a confirmed booking that moved after the read is not removed from its new place: the read is repeated and it is no longer stranded", async () => {
+    const e = await seedLanes({ lanes: ["Ring 1"] });
+    const mover = await insertBooking(t.env.DB, e.id, S[3], "Mover", "H", { laneId: e.laneIds[0] });
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { end: "09:45" }), [mover], {
+      afterRead: async () => { await t.env.DB.prepare("UPDATE bookings SET slot_start_utc = ? WHERE id = ?").bind(S[0], mover).run(); },
+    });
+    expect(result).toMatchObject({ kind: "saved", removed: [] });
+    expect((await placesOf(e.id)).map((r) => [r.id, r.slot_start_utc])).toEqual([[mover, S[0]]]);
+  });
+
+  it("a confirmed booking that was swapped to another place after the read is listed again if it is still stranded", async () => {
+    const e = await seedLanes({ lanes: ["Ring 1"], capacity: 2 });
+    const a = await insertBooking(t.env.DB, e.id, S[0], "A", "H", { laneId: e.laneIds[0], place: 1 });
+    const b = await insertBooking(t.env.DB, e.id, S[0], "B", "H", { laneId: e.laneIds[0], place: 2 });
+    await t.env.DB.prepare("UPDATE bookings SET created_at = '2026-09-01T10:00:00Z' WHERE id = ?").bind(a).run();
+    await t.env.DB.prepare("UPDATE bookings SET created_at = '2026-09-01T10:05:00Z' WHERE id = ?").bind(b).run();
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { capacity: 1 }, 2), [b], {
+      afterRead: async () => {
+        await t.env.DB.batch([
+          t.env.DB.prepare("UPDATE bookings SET place = 9 WHERE id = ?").bind(a),
+          t.env.DB.prepare("UPDATE bookings SET place = 1 WHERE id = ?").bind(b),
+          t.env.DB.prepare("UPDATE bookings SET place = 2 WHERE id = ?").bind(a),
+        ]);
+      },
+    });
+    // b moved from place 2 to 1 under the edit's feet: the batch aborted, the read was repeated, b is still the later booking, and is removed.
+    expect(result).toMatchObject({ kind: "saved", removed: [{ id: b }] });
+    expect((await placesOf(e.id)).map((r) => [r.id, r.place])).toEqual([[a, 1]]);
+  });
+
+  it("another admin editing the lanes first makes a draft that sends lanes fail with layout_changed, writing nothing", async () => {
+    const e = await seedLanes({ lanes: ["Ring 1", "Ring 2"] });
+    const stale = await load(e.slug);
+    expect((await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: e.laneIds[0], name: "Renamed" }, { id: e.laneIds[1], name: "Ring 2" }] }), [])).kind).toBe("saved");
+    const before = await snapshot(e.id);
+    const result = await saveEventEdit(t.env.DB, stale, draftFor(e, { name: "Stale save", lanes: [{ id: e.laneIds[0], name: "Mine" }, { id: e.laneIds[1], name: "Ring 2" }] }), []);
+    expect(result).toEqual({ kind: "layout_changed" });
+    expect(await snapshot(e.id)).toBe(before);
+    expect((await layoutRows(e.id)).lanes.map((l) => l.name)).toEqual(["Renamed", "Ring 2"]);
+  });
+
+  it("the same, when only the capacity is sent, and when the stale draft sends a lane that was deleted meanwhile", async () => {
+    const e = await seedLanes({ lanes: ["Ring 1", "Ring 2"] });
+    const stale = await load(e.slug);
+    await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: e.laneIds[0], name: "Ring 1" }] }), []);
+    expect(await saveEventEdit(t.env.DB, stale, draftFor(e, { capacity: 2 }), [])).toEqual({ kind: "layout_changed" });
+    expect(await saveEventEdit(t.env.DB, stale, draftFor(e, { lanes: [{ id: e.laneIds[1], name: "Ring 2" }] }), [])).toEqual({ kind: "layout_changed" });
+  });
+
+  it("a draft that doesn't send the layout saves over a changed layout (last write wins on the other fields) and leaves the layout alone", async () => {
+    const e = await seedLanes({ lanes: ["Ring 1", "Ring 2"] });
+    const stale = await load(e.slug);
+    await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: e.laneIds[0], name: "Renamed" }, { id: e.laneIds[1], name: "Ring 2" }] }), []);
+    const result = await saveEventEdit(t.env.DB, stale, draftFor(e, { name: "Only the name" }), []);
+    expect(result.kind).toBe("saved");
+    expect((await layoutRows(e.id)).lanes.map((l) => l.name)).toEqual(["Renamed", "Ring 2"]);
+    expect((await load(e.slug)).name).toBe("Only the name");
+  });
+
+  it("the event deleted between the read and the save: not_found, nothing written, for a draft with lanes too", async () => {
+    const e = await seedLanes();
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: e.laneIds[0], name: "X" }], capacity: 2 }), [], {
+      afterRead: async () => { await t.env.DB.prepare("DELETE FROM events WHERE id = ?").bind(e.id).run(); },
+    });
+    expect(result).toEqual({ kind: "not_found" });
+    expect(await t.env.DB.prepare("SELECT COUNT(*) AS n FROM event_lanes WHERE event_id = ?").bind(e.id).first()).toEqual({ n: 0 });
+  });
+});
+
+describe("an edit of the layout racing the booking tools", () => {
+  const input = (event: Awaited<ReturnType<typeof load>>, slot: string, dog: string) => {
+    const r = validateBookingInput({ slot, laneId: event.lanes[0].id, dogName: dog, handlerName: "H", idempotencyKey: `idem-${dog}-aaaaaaaaaaaaaaaaaaaa` }, event);
+    if (!("slot" in r)) throw new Error(JSON.stringify(r));
+    return r;
+  };
+  const renameLane = async (e: Awaited<ReturnType<typeof seedLanes>>) =>
+    saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { lanes: [{ id: e.laneIds[0], name: "Renamed" }, { id: e.laneIds[1], name: "Ring 2" }] }), []);
+
+  it("a public booking that read the layout before the edit fails its guard and writes nothing", async () => {
+    const e = await seedLanes();
+    const event = await load(e.slug);
+    expect((await renameLane(e)).kind).toBe("saved");
+    const result = await createBooking(t.env.DB, event, { start: S[0], end: S[1] }, input(event, S[0], "Rex"), NOW);
+    expect(result).toEqual({ kind: "schedule_changed" });
+    expect(await placesOf(e.id)).toEqual([]);
+  });
+
+  it("the edit landing between the booking's read and its insert (inside the booking's own batch) aborts that insert", async () => {
+    const e = await seedLanes();
+    const event = await load(e.slug);
+    let edited = false;
+    const racing = interceptBatches(t.env.DB, async (sqls, run) => {
+      if (insertsBooking(sqls) && !edited) { edited = true; expect((await renameLane(e)).kind).toBe("saved"); }
+      return run();
+    });
+    const result = await createBooking(racing, event, { start: S[0], end: S[1] }, input(event, S[0], "Rex"), NOW);
+    expect(edited).toBe(true);
+    expect(result).toEqual({ kind: "schedule_changed" });
+    expect(await placesOf(e.id)).toEqual([]);
+  });
+
+  it("a public booking made after the edit's read, into a group the edit lowers, is listed and nothing is written", async () => {
+    const e = await seedLanes({ lanes: ["Ring 1"], capacity: 2 });
+    const event = await load(e.slug);
+    const first = await createBooking(t.env.DB, event, { start: S[0], end: S[1] }, input(event, S[0], "First"), NOW);
+    expect(first.kind).toBe("created");
+    let late: Awaited<ReturnType<typeof createBooking>> | undefined;
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { capacity: 1 }, 2), [], {
+      afterRead: async () => { late = await createBooking(t.env.DB, event, { start: S[0], end: S[1] }, input(event, S[0], "Late"), NOW); },
+    });
+    expect(late?.kind).toBe("created");
+    expect(result).toMatchObject({ kind: "bookings_affected", affected: [{ dogName: "Late" }] });
+    expect((await layoutRows(e.id)).layout).toEqual({ capacity: 2, config_rev: 0 });
+  });
+
+  it("an admin add that read the layout before the edit is refused as event_changed, and so is a move", async () => {
+    const e = await seedLanes();
+    const event = await load(e.slug);
+    const moving = await insertBooking(t.env.DB, e.id, S[0], "Mover", "H", { laneId: e.laneIds[0] });
+    expect((await renameLane(e)).kind).toBe("saved");
+    expect(await addBooking(t.env.DB, event, { slot: S[1], dogName: "Rex", handlerName: "Sam" })).toMatchObject({ code: "event_changed", status: 409 });
+    expect(await moveBooking(t.env.DB, event, moving, { fromSlot: S[0], toSlot: S[1] })).toMatchObject({ code: "event_changed", status: 409 });
+    expect((await placesOf(e.id)).map((r) => r.slot_start_utc)).toEqual([S[0]]);
+  });
+
+  it("an edit racing an admin move (the edit lands between the move's read and its batch): the move fails with event_changed and nothing moved", async () => {
+    const e = await seedLanes();
+    const event = await load(e.slug);
+    const moving = await insertBooking(t.env.DB, e.id, S[0], "Mover", "H", { laneId: e.laneIds[0] });
+    const result = await moveBooking(t.env.DB, event, moving, { fromSlot: S[0], toSlot: S[1] }, { afterRead: async () => { await renameLane(e); } });
+    expect(result).toMatchObject({ code: "event_changed", status: 409 });
+    expect((await placesOf(e.id)).map((r) => r.slot_start_utc)).toEqual([S[0]]);
+  });
+
+  it("an edit racing an admin add: the add fails with event_changed and writes nothing", async () => {
+    const e = await seedLanes();
+    const event = await load(e.slug);
+    const result = await addBooking(t.env.DB, event, { slot: S[1], dogName: "Rex", handlerName: "Sam" }, { afterRead: async () => { await renameLane(e); } });
+    expect(result).toMatchObject({ code: "event_changed", status: 409 });
+    expect(await placesOf(e.id)).toEqual([]);
+  });
+
+  it("an edit that changes nothing in the layout does not stop a booking that read the event before it", async () => {
+    const e = await seedLanes();
+    const event = await load(e.slug);
+    expect((await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { name: "Renamed event", costPence: 100 }), [])).kind).toBe("saved");
+    expect((await createBooking(t.env.DB, event, { start: S[0], end: S[1] }, input(event, S[0], "Rex"), NOW)).kind).toBe("created");
   });
 });
