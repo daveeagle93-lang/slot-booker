@@ -2,8 +2,8 @@
 
 main.admin { max-width: 40rem; }
 
-/* Navigation between the admin pages: above <main>, under the club header band. It wraps rather than overflowing, and the
-   current page is marked by a thicker underline and bold text as well as colour. */
+/* Navigation between the admin pages: above <main>, under the club header band. It wraps rather than overflowing (the
+   padding keeps the three links on one row at 320px), and the current page is marked by a thicker underline and bold text as well as colour. */
 .admin-nav {
   display: flex;
   flex-wrap: wrap;
@@ -17,7 +17,7 @@ main.admin { max-width: 40rem; }
   align-items: center;
   min-height: 48px;
   min-width: 48px;
-  padding: 0 0.75rem;
+  padding: 0 0.625rem;
   font-weight: 600;
   color: var(--accent);
   text-decoration: none;
