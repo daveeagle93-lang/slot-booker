@@ -1,0 +1,65 @@
+import { writeClipboard } from "./api.js";
+
+const SHARE_FAILED = "Sharing isn't available here. Use Copy message or Copy link.";
+const COPY_FAILED = "Couldn't copy automatically. Copy the selected text manually.";
+
+/**
+ * The Share control for one event, shared by the events list, the schedule page and the "Event created" page.
+ * With navigator.share (phones) it is a Share button that opens the native share sheet; without it, or if sharing
+ * fails, it is "Copy message" and "Copy link" buttons. `getMessage()` and `getLink()` are called at click time, so
+ * the text always follows the event as it is now; nothing is cached here. `label` (the event name) goes in the
+ * buttons' accessible names, as several controls can be on one page. Returns the element to insert.
+ * The message is plain text: it is only ever set with .value, textContent or handed to share and the clipboard.
+ */
+export function shareControls({ h, navigator, clipboard, getMessage, getLink, label }) {
+  const status = h("p", { class: "share-status", "aria-live": "polite" });
+  const manual = h("div", { class: "field", hidden: true });
+  const canShare = typeof navigator?.share === "function";
+  let timer;
+
+  const copyButton = (text, aria, read, makeField) => {
+    const button = h("button", { type: "button", class: "button", "aria-label": aria, hidden: canShare }, text);
+    button.addEventListener("click", async () => {
+      clearTimeout(timer);
+      const value = read();
+      if (await writeClipboard(clipboard, value)) {
+        manual.hidden = true;
+        status.textContent = "Copied";
+        timer = setTimeout(() => { status.textContent = ""; }, 2000);
+        return;
+      }
+      const field = makeField();
+      field.value = value;
+      manual.replaceChildren(field);
+      manual.hidden = false;
+      field.focus();
+      field.select();
+      status.textContent = COPY_FAILED;
+    });
+    return button;
+  };
+  const copyMessage = copyButton("Copy message", `Copy message for "${label}"`, getMessage,
+    () => h("textarea", { readonly: true, rows: "8", "aria-label": `Message for "${label}"` }));
+  const copyLink = copyButton("Copy link", `Copy link for "${label}"`, getLink,
+    () => h("input", { type: "text", readonly: true, "aria-label": `Booking link for "${label}"` }));
+
+  const buttons = [copyMessage, copyLink];
+  if (canShare) {
+    const share = h("button", { type: "button", class: "button", "aria-label": `Share "${label}"` }, "Share");
+    // No await and no request before navigator.share: iOS Safari only opens the sheet inside the tap itself.
+    share.addEventListener("click", () => {
+      clearTimeout(timer);
+      status.textContent = "";
+      // Only `text`, not `url` as well: the message already ends with the link, and with both fields iOS and
+      // Android WhatsApp add the url to the text again (the link twice), while some apps drop `url` altogether.
+      Promise.resolve(navigator.share({ text: getMessage() })).catch((error) => {
+        if (error?.name === "AbortError") return; // closed the sheet: nothing to report
+        copyMessage.hidden = false;
+        copyLink.hidden = false;
+        status.textContent = SHARE_FAILED;
+      });
+    });
+    buttons.unshift(share);
+  }
+  return h("div", { class: "share" }, h("div", { class: "share-actions" }, ...buttons), status, manual);
+}

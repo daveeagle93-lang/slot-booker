@@ -1,6 +1,8 @@
 import { brandPage, loadSettings } from "../branding.js";
 import { formatDate, formatTimeRange, isBookingPath } from "../lib.js";
+import { buildShareMessage, pickShareTemplate } from "../share-message.js";
 import { createApi, makeH, writeClipboard } from "./api.js";
+import { shareControls } from "./share.js";
 
 const OFFLINE = "We couldn't reach the server. Check your connection and try again.";
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -11,16 +13,22 @@ const linkable = (slug) => isBookingPath(`/e/${slug}`);
  * Wires the events page into `#app`: Upcoming events, and collapsed Past and Archived sections, with archive,
  * permanent delete (typed event name) and a bulk clear-out of Past (typed DELETE). The server enforces both
  * confirmations; the page only makes them hard to do by accident. Event names are user input: text nodes only.
+ * Upcoming events have a Share control (past and archived events' links are closed, so they have none); `settings`
+ * is the branding promise (see branding.js), whose club name heads the shared message once it has loaded.
  * Resolves once the first load has settled.
  */
-export async function init({ document, fetch, navigate, clipboard, location }) {
+export async function init({ document, fetch, navigate, clipboard, location, navigator = undefined, settings = null }) {
   const root = document.getElementById("app");
   const api = createApi({ fetch, navigate });
   const h = makeH(document);
 
+  // Not awaited: the list must not wait for the settings. They are long settled by the time Share is tapped.
+  let clubName = "";
+  settings?.then((s) => { if (s?.loaded) clubName = s.clubName ?? ""; }, () => {});
+
   const show = (...nodes) => root.replaceChildren(...nodes);
   let session = null;
-  let data = { events: [], past: [], archived: [], pastHasMore: false, archivedHasMore: false };
+  let data = { events: [], past: [], archived: [], pastHasMore: false, archivedHasMore: false, defaultShareMessage: "" };
   const selected = new Set(); // slugs ticked in Past
   const expanded = { past: false, archived: false };
   let busy = false;
@@ -61,6 +69,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     archived: Array.isArray(d.archived) ? d.archived : [],
     pastHasMore: d.pastHasMore === true,
     archivedHasMore: d.archivedHasMore === true,
+    defaultShareMessage: typeof d.defaultShareMessage === "string" ? d.defaultShareMessage : "",
   });
 
   function setBusy(on) {
@@ -344,11 +353,20 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     const schedule = h("a", { class: "button", href: `/admin/schedule?slug=${encodeURIComponent(ev.slug)}` }, "Schedule");
     const li = h("li", { class: "event-card" }, ...children);
     if (isBookingPath(ev.path)) {
-      li.append(...actions(location.origin + ev.path, ev.path, edit, schedule),
+      li.append(...actions(location.origin + ev.path, ev.path, edit, schedule), share(ev),
         h("div", { class: "manage" }, archiveButton(ev, true), deleteButton(ev, li)));
     }
     return li;
   }
+
+  /** Built from the event as it is now, each time it is tapped; the card is rebuilt from fresh data after every refresh. */
+  const share = (ev) => shareControls({
+    h, navigator, clipboard, label: ev.name,
+    getLink: () => location.origin + ev.path,
+    getMessage: () => buildShareMessage({
+      event: ev, clubName, link: location.origin + ev.path, template: pickShareTemplate(ev, data.defaultShareMessage),
+    }),
+  });
 
   function actions(url, path, edit, schedule) {
     const copyStatus = h("p", { class: "copy-status", "aria-live": "polite" });
@@ -383,9 +401,10 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
 
 // Browser entry only: the page opts in with data-autostart, so importing this module (tests) does nothing.
 if (globalThis.document?.getElementById("app")?.hasAttribute("data-autostart")) {
-  brandPage(document, loadSettings((...args) => fetch(...args)), { pageTitle: document.title, home: "/admin/" });
+  const settings = loadSettings((...args) => fetch(...args));
+  brandPage(document, settings, { pageTitle: document.title, home: "/admin/" });
   init({
-    document, location, clipboard: navigator.clipboard,
+    document, location, navigator, clipboard: navigator.clipboard, settings,
     fetch: (...args) => fetch(...args),
     navigate: (url) => location.assign(url),
   });

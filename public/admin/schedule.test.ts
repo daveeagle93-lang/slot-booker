@@ -30,7 +30,7 @@ const detail = (booked: Booking[] = [null, REX, null, FLO, null], orphans: unkno
 type Call = { url: string; method: string; body?: any };
 type Handler = (call: Call) => Response | Promise<Response> | undefined;
 
-interface Options { respond?: Handler; initial?: unknown; clipboard?: unknown; search?: string; getStatus?: number }
+interface Options { respond?: Handler; initial?: unknown; clipboard?: unknown; search?: string; getStatus?: number; navigator?: unknown; settings?: Promise<unknown> }
 
 async function start(o: Options = {}) {
   document.body.innerHTML = '<main id="app"></main>';
@@ -50,6 +50,7 @@ async function start(o: Options = {}) {
   await init({
     document, fetch: fetch as unknown as typeof globalThis.fetch, navigate,
     location: { origin: ORIGIN, search: o.search ?? `?slug=${SLUG}` }, clipboard: clipboard as never,
+    ...(o.navigator ? { navigator: o.navigator as never } : {}), ...(o.settings ? { settings: o.settings as never } : {}),
   });
   return {
     calls, navigate, clipboard: clipboard as { writeText: ReturnType<typeof vi.fn> },
@@ -511,5 +512,101 @@ describe("changes made while working, and requests in flight", () => {
     expect(calls.filter((c) => c.url === "/api/admin/session")).toHaveLength(2); // the first load, then the fresh one after csrf_failed
     expect(writes(calls)).toHaveLength(2);
     expect(statusText()).toContain("Cleared Rex");
+  });
+});
+
+describe("Share", () => {
+  const SHARE_EVENT = { ...EVENT, details: "Bring water", shareMessage: "", costPence: 1500 };
+  const BUILT_IN = `Trial Day\nSaturday 13 June 2026, 09:00–10:45\nVenue: AB1 2CD\nCost: £15.00\nBook your slot:\nhttps://club.example/e/${SLUG}`;
+  const withShare = () => ({ share: vi.fn(async () => {}) });
+  const shareButton = () => $$("button").find((b) => b.textContent === "Share") as HTMLButtonElement | undefined;
+  const withDetail = (event: unknown, defaultShareMessage?: string) => ({ ...detail(undefined, undefined, undefined, event), ...(defaultShareMessage === undefined ? {} : { defaultShareMessage }) });
+  const sent = (share: ReturnType<typeof vi.fn>, n = 0) => (share.mock.calls[n][0] as { text: string }).text;
+
+  it("sits under the date line, before the other actions", async () => {
+    await start({ navigator: withShare(), initial: withDetail(SHARE_EVENT) });
+    expect(shareButton()!.getAttribute("aria-label")).toBe('Share "Trial Day"');
+    expect($(".sched-date").nextElementSibling).toBe($(".share"));
+    expect($(".share").nextElementSibling!.className).toBe("actions");
+  });
+
+  it("is absent for an archived event", async () => {
+    await start({ navigator: withShare(), initial: withDetail({ ...SHARE_EVENT, archived: true }) });
+    expect($$(".share")).toHaveLength(0);
+    expect(shareButton()).toBeUndefined();
+    expect($$("button").map((b) => b.textContent)).not.toContain("Copy message");
+  });
+
+  it("shares the built-in message, as text only, in the tap itself", async () => {
+    const navigator = withShare();
+    await start({ navigator, initial: withDetail(SHARE_EVENT) });
+    shareButton()!.click();
+    expect(navigator.share).toHaveBeenCalledTimes(1);
+    expect(navigator.share.mock.calls[0]).toEqual([{ text: BUILT_IN }]);
+  });
+
+  it("prefers the event's own message, then the default template's, then the built-in one", async () => {
+    const own = withShare();
+    await start({ navigator: own, initial: withDetail({ ...SHARE_EVENT, shareMessage: "Own: {event} {details}" }, "Default: {event}") });
+    shareButton()!.click();
+    expect(sent(own.share)).toBe(`Own: Trial Day Bring water\nhttps://club.example/e/${SLUG}`);
+    const def = withShare();
+    await start({ navigator: def, initial: withDetail(SHARE_EVENT, "Default: {event} at {postcode}") });
+    shareButton()!.click();
+    expect(sent(def.share)).toBe(`Default: Trial Day at AB1 2CD\nhttps://club.example/e/${SLUG}`);
+    const none = withShare();
+    await start({ navigator: none, initial: withDetail(SHARE_EVENT, "") });
+    shareButton()!.click();
+    expect(sent(none.share)).toBe(BUILT_IN);
+  });
+
+  it("puts the club name first when the settings loaded with one", async () => {
+    const navigator = withShare();
+    await start({ navigator, initial: withDetail(SHARE_EVENT), settings: Promise.resolve({ clubName: "Hillside Dog Club", loaded: true }) });
+    shareButton()!.click();
+    expect(sent(navigator.share)).toBe(`Hillside Dog Club\n${BUILT_IN}`);
+  });
+
+  it("offers Copy message and Copy link where navigator.share is missing", async () => {
+    const { clipboard } = await start({ navigator: {}, initial: withDetail(SHARE_EVENT) });
+    expect(shareButton()).toBeUndefined();
+    const copy = $$("button").find((b) => b.textContent === "Copy message")!;
+    copy.click();
+    await settle();
+    expect(clipboard.writeText).toHaveBeenCalledWith(BUILT_IN);
+    expect($(".share-status").textContent).toBe("Copied");
+    expect($(".sched-status").textContent).toBe(""); // the page's own live region is left alone
+  });
+
+  it("builds the message from the event as it is after a refresh", async () => {
+    const navigator = withShare();
+    const ctx = await start({
+      navigator, initial: withDetail({ ...SHARE_EVENT, shareMessage: "Before {event}" }),
+      respond: (c) => (c.url.endsWith("/bookings") && c.method === "POST" ? reply(201, { booking: { id: 99, dogName: "Zed", handlerName: "Zoe" } }) : undefined),
+    });
+    shareButton()!.click();
+    expect(sent(navigator.share, 0)).toBe(`Before Trial Day\nhttps://club.example/e/${SLUG}`);
+    ctx.setDetail(withDetail({ ...SHARE_EVENT, name: "Renamed", shareMessage: "After {event}" }));
+    button(row("09:00"), "Add booking").click();
+    const form = $("form");
+    (document.getElementById("add-dog") as HTMLInputElement).value = "Zed";
+    (document.getElementById("add-handler") as HTMLInputElement).value = "Zoe";
+    submit(form);
+    await vi.waitFor(() => expect($(".event-name").textContent).toBe("Renamed"));
+    shareButton()!.click();
+    expect(sent(navigator.share, 1)).toBe(`After Renamed\nhttps://club.example/e/${SLUG}`);
+    expect(shareButton()!.getAttribute("aria-label")).toBe('Share "Renamed"');
+  });
+
+  it("keeps a hostile name and details inert", async () => {
+    const navigator = withShare();
+    await start({
+      navigator, clipboard: null,
+      initial: withDetail({ ...SHARE_EVENT, name: HOSTILE, details: HOSTILE, shareMessage: "{event} {details}" }),
+    });
+    expect($$("img")).toHaveLength(0);
+    expect(document.querySelector("[onerror]")).toBeNull();
+    shareButton()!.click();
+    expect(sent(navigator.share)).toBe(`${HOSTILE} ${HOSTILE}\nhttps://club.example/e/${SLUG}`);
   });
 });

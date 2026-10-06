@@ -233,32 +233,50 @@ On the events page, the event now appears under "Upcoming events". It shows a "B
 
 This part is for getting the booking link to your members.
 
-After you save, the "Event created" page has two boxes.
+### The Share button
 
-### The link
+Every upcoming event has a "Share" button. You find it in three places:
 
-1. Find the box labelled "Booking link".
-2. Tap "Copy link".
-3. You see "Copied".
+- On the events page, on each event under "Upcoming events".
+- On the event's schedule page, under the date. It is not there for an archived event.
+- On the "Event created" page, right after you save.
 
-If it can't copy, the link is selected for you. Copy it by hand.
+Past and archived events have no Share button. Their booking links are closed.
 
-You can copy the link later too. On the events page, tap "Copy booking link" on the event.
+**On a phone or tablet**, tap "Share". Your device's own share sheet opens with the message ready. Pick WhatsApp, then pick one chat or several. You can pick any other app in the sheet too. If you close the sheet without choosing, nothing happens.
+
+**On a computer**, some browsers also have a share sheet, and then "Share" works the same way. Where there is none, you see "Copy message" and "Copy link" instead. Tap one, you see "Copied", then paste it into WhatsApp Web or any other app. If your browser won't let the page copy, the text appears in a box with it already selected. Copy it by hand.
+
+If "Share" fails on a phone, the same two Copy buttons appear, with a note saying so.
 
 ### The message
 
-The box labelled "WhatsApp message" holds ready-made text. It has these lines:
+The message is made fresh every time you tap. It uses the event's details as they are now, so if you edit the event and share again, the new details are used. Nothing is saved in the button.
+
+Unless you have set your own wording, it has these lines:
 
 1. Your club name, if you have set one.
 2. The event name.
 3. The date and time range.
 4. The venue postcode.
 5. The cost.
-6. A last line with the booking link.
+6. "Book your slot:", then the booking link on its own last line.
 
-The details text is not included.
+The details text is not in it. The link is always on a line by itself at the end, so WhatsApp can show a preview card for it.
 
-Tap "Copy message" and paste it where you want it. Or tap "Open in WhatsApp". It opens WhatsApp with the message ready. I haven't tried this on a phone. If it doesn't work, use "Copy message".
+If a line would be empty, for example you have not set a club name, it is left out.
+
+### The "Event created" page
+
+After you save, this page also has:
+
+1. A box labelled "Booking link", with "Copy link".
+2. A box labelled "WhatsApp message" with the same text that "Share" sends, and "Copy message".
+3. "Open in WhatsApp", which opens WhatsApp with the message ready.
+
+"Share" appears at the top of the page where the browser has a share sheet. You can still copy the link later: on the events page, tap "Copy booking link" on the event.
+
+I have not tried "Share", "Open in WhatsApp" or any of the Copy buttons on a real phone. The tests check the behaviour in a simulated browser only. If "Share" doesn't work for you, use "Copy message".
 
 To make another event, tap "Create another". To leave, tap "Back to events".
 
@@ -266,7 +284,7 @@ To make another event, tap "Create another". To leave, tap "Back to events".
 
 When you paste an event's booking link into WhatsApp, or a similar app, it may show a small preview card. For an event, the card shows the event name and its date, then your club name, the venue postcode and the cost, with the club's icon. A link to the home page shows the club's name. It is made from what anyone can already see on the booking page, so the details text and the names of people booking are never in it.
 
-I haven't seen this on a real phone. WhatsApp remembers the preview it made the first time a link was shared. If you rename or change an event after sharing its link, people may keep seeing the old card for a while, and I don't know how long. The message you copy already has the details in it, so the card may repeat them.
+I haven't seen this on a real phone. WhatsApp remembers the preview it made the first time a link was shared. If you rename or change an event after sharing its link, people may keep seeing the old card for a while, and I don't know how long. The message you share already has the event's name, date, postcode and cost in it, so the card may repeat them.
 
 ### What people booking see
 

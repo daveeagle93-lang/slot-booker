@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { formatPounds as serverFormatPounds } from "../src/core/format";
 import {
   copyText, formatDate, formatPounds, formatTime, formatTimeRange, isBookingPath, mapsUrl, newIdempotencyKey,
-  penceFromPounds, privacyParagraphs, slotsLeftText, slugFromPathname, whatsappMessage,
+  penceFromPounds, privacyParagraphs, slotsLeftText, slugFromPathname,
 } from "./lib.js";
 
 describe("London formatting", () => {
@@ -138,37 +138,5 @@ describe("isBookingPath", () => {
     for (const p of ["/e/", "/e/a/b", "/e/abc/", "//evil.example/e/abc", "https://x/e/abc", "/x/abc", "", null, undefined, 5]) {
       expect(isBookingPath(p)).toBe(false);
     }
-  });
-});
-
-describe("whatsappMessage", () => {
-  const event = { name: "Trial Day", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T15:00:00Z", venuePostcode: "SW1A 1AA", costPence: 1500 };
-
-  it("builds the message in London time (BST)", () => {
-    expect(whatsappMessage(event, "https://club.example/e/abc")).toBe(
-      "Trial Day\nSaturday 13 June 2026, 09:00–16:00\nVenue: SW1A 1AA\nCost: £15.00\nBook your slot: https://club.example/e/abc",
-    );
-  });
-
-  it("builds the message in London time (GMT)", () => {
-    expect(whatsappMessage({ ...event, startUtc: "2026-01-17T09:00:00Z", endUtc: "2026-01-17T16:00:00Z" }, "https://c.example/e/x")).toBe(
-      "Trial Day\nSaturday 17 January 2026, 09:00–16:00\nVenue: SW1A 1AA\nCost: £15.00\nBook your slot: https://c.example/e/x",
-    );
-  });
-
-  it("says Free for a free event", () => {
-    expect(whatsappMessage({ ...event, costPence: 0 }, "https://c.example/e/x")).toContain("\nCost: Free\n");
-  });
-
-  it("puts the club name on the first line when there is one", () => {
-    expect(whatsappMessage(event, "https://club.example/e/abc", "Hillside Dog Club")).toBe(
-      "Hillside Dog Club\nTrial Day\nSaturday 13 June 2026, 09:00–16:00\nVenue: SW1A 1AA\nCost: £15.00\nBook your slot: https://club.example/e/abc",
-    );
-  });
-
-  it("is unchanged for an empty or missing club name", () => {
-    const plain = whatsappMessage(event, "https://club.example/e/abc");
-    expect(whatsappMessage(event, "https://club.example/e/abc", "")).toBe(plain);
-    expect(whatsappMessage(event, "https://club.example/e/abc", undefined)).toBe(plain);
   });
 });

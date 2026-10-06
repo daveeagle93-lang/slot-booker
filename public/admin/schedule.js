@@ -1,6 +1,8 @@
 import { brandPage, loadSettings } from "../branding.js";
 import { formatDate, formatTime, isBookingPath } from "../lib.js";
+import { buildShareMessage, pickShareTemplate } from "../share-message.js";
 import { createApi, makeH, writeClipboard } from "./api.js";
+import { shareControls } from "./share.js";
 
 const SLUG = /^[A-Za-z0-9_-]{16,64}$/;
 const CHANGED = "That changed while you were working. The schedule has been refreshed.";
@@ -10,12 +12,18 @@ const OFFLINE = "We couldn't reach the server. Check your connection and try aga
  * Wires the schedule page (`/admin/schedule?slug=...`) into `#app`: every slot and break in order with the
  * actions to add, move, swap and clear bookings. After every action the event is fetched again and drawn
  * afresh, so the page never shows what the server doesn't have. Names are user input: text nodes only.
+ * A Share control sits under the date unless the event is archived. `settings` is the branding promise (see
+ * branding.js), whose club name heads the shared message once it has loaded.
  * Resolves once the first load has settled.
  */
-export async function init({ document, fetch, navigate, clipboard, location }) {
+export async function init({ document, fetch, navigate, clipboard, location, navigator = undefined, settings = null }) {
   const root = document.getElementById("app");
   const api = createApi({ fetch, navigate });
   const h = makeH(document);
+
+  // Not awaited: the page must not wait for the settings. They are long settled by the time Share is tapped.
+  let clubName = "";
+  settings?.then((s) => { if (s?.loaded) clubName = s.clubName ?? ""; }, () => {});
 
   const show = (...nodes) => root.replaceChildren(...nodes);
   const back = () => h("a", { class: "button", href: "/admin/" }, "Back to events");
@@ -143,6 +151,15 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       box.focus();
       box.select();
       say("Couldn't copy automatically. Copy it from here.");
+    });
+
+    // The message is built from the event as it is now, each time Share is tapped.
+    const share = () => shareControls({
+      h, navigator, clipboard, label: event.name,
+      getLink: () => `${location.origin}/e/${slug}`,
+      getMessage: () => buildShareMessage({
+        event, clubName, link: `${location.origin}/e/${slug}`, template: pickShareTemplate(event, detail.defaultShareMessage),
+      }),
     });
 
     // Slots and breaks together, in time order. A break never starts where a slot does.
@@ -322,6 +339,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       h("p", { class: "event-name" }, event.name),
       ...(event.listed === false ? [h("p", {}, h("span", { class: "badge closed" }, "Not listed"))] : []),
       h("p", { class: "sched-date" }, formatDate(event.startUtc)),
+      ...(event.archived ? [] : [share()]),
       h("div", { class: "actions" }, ...links, copy),
       status,
       fallback,
@@ -349,9 +367,10 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
 
 // Browser entry only: the page opts in with data-autostart, so importing this module (tests) does nothing.
 if (globalThis.document?.getElementById("app")?.hasAttribute("data-autostart")) {
-  brandPage(document, loadSettings((...args) => fetch(...args)), { pageTitle: document.title, home: "/admin/" });
+  const settings = loadSettings((...args) => fetch(...args));
+  brandPage(document, settings, { pageTitle: document.title, home: "/admin/" });
   init({
-    document, location, clipboard: navigator.clipboard,
+    document, location, navigator, clipboard: navigator.clipboard, settings,
     fetch: (...args) => fetch(...args),
     navigate: (url) => location.assign(url),
   });

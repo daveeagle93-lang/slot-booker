@@ -26,8 +26,9 @@ type Call = { url: string; init?: RequestInit; body?: any };
 type Handler = (call: Call) => Response | Promise<Response>;
 const PREVIEW = "/api/admin/events/preview";
 const CREATE = "/api/admin/events";
+const TEMPLATES = "/api/admin/templates";
 
-async function start(opts: { preview?: Handler; create?: Handler; clipboard?: unknown; settings?: Promise<unknown> } = {}) {
+async function start(opts: { preview?: Handler; create?: Handler; templates?: Handler; clipboard?: unknown; navigator?: unknown; settings?: Promise<unknown> } = {}) {
   document.body.innerHTML = '<main id="app"></main>';
   const calls: Call[] = [];
   const navigate = vi.fn();
@@ -38,11 +39,12 @@ async function start(opts: { preview?: Handler; create?: Handler; clipboard?: un
     if (url === "/api/admin/session") return reply(200, SESSION);
     if (url === PREVIEW) return (opts.preview ?? (() => preview()))(call);
     if (url === CREATE) return (opts.create ?? (() => reply(201, CREATED)))(call);
+    if (url === TEMPLATES) return (opts.templates ?? (() => reply(200, { templates: [] })))(call);
     throw new Error(`unexpected ${url}`);
   });
   await init({
     document, fetch: fetch as unknown as typeof globalThis.fetch, navigate, location: { origin: ORIGIN },
-    clipboard: clipboard as never, ...(opts.settings ? { settings: opts.settings as never } : {}),
+    clipboard: clipboard as never, ...(opts.navigator ? { navigator: opts.navigator as never } : {}), ...(opts.settings ? { settings: opts.settings as never } : {}),
   });
   return { calls, navigate, clipboard: clipboard as { writeText: ReturnType<typeof vi.fn> } };
 }
@@ -940,7 +942,7 @@ describe("created view", () => {
     expect(input("booking-link").readOnly).toBe(true);
     const message = input("whatsapp-text").value;
     expect(message).toBe(
-      "Trial Day\nSaturday 13 June 2026, 09:00–16:00\nVenue: SW1A 1AA\nCost: £12.50\nBook your slot: https://club.example/e/abc123",
+      "Trial Day\nSaturday 13 June 2026, 09:00–16:00\nVenue: SW1A 1AA\nCost: £12.50\nBook your slot:\nhttps://club.example/e/abc123",
     );
     expect(input("whatsapp-text").readOnly).toBe(true);
     const wa = $$("a").find((a) => a.textContent === "Open in WhatsApp")!;
@@ -952,7 +954,7 @@ describe("created view", () => {
   });
 
   describe("club name in the WhatsApp message", () => {
-    const PLAIN = "Trial Day\nSaturday 13 June 2026, 09:00–16:00\nVenue: SW1A 1AA\nCost: £12.50\nBook your slot: https://club.example/e/abc123";
+    const PLAIN = "Trial Day\nSaturday 13 June 2026, 09:00–16:00\nVenue: SW1A 1AA\nCost: £12.50\nBook your slot:\nhttps://club.example/e/abc123";
     const message = () => input("whatsapp-text").value;
     const wa = () => $$("a").find((a) => a.textContent === "Open in WhatsApp")!;
 
@@ -1041,5 +1043,81 @@ describe("hostile text", () => {
     expect(document.querySelector("img")).toBeNull();
     expect(errorOf("name")).toBe(HOSTILE);
     expect($(".form-error").textContent).toBe(HOSTILE);
+  });
+});
+
+describe("created view: Share", () => {
+  const ADDRESS = "https://club.example/e/abc123";
+  const withEvent = (extra: Record<string, unknown>) => () => reply(201, { ...CREATED, event: { ...CREATED.event, ...extra } });
+  async function create(opts: Parameters<typeof start>[0] = {}) {
+    const ctx = await start(opts);
+    fillAll();
+    submit();
+    await tick();
+    return ctx;
+  }
+  const message = () => input("whatsapp-text").value;
+  const shareButton = () => $$("button").find((b) => b.textContent === "Share") as HTMLButtonElement | undefined;
+
+  it("has no Share control where navigator.share is missing, and keeps the one set of Copy buttons", async () => {
+    await create({ navigator: {} });
+    expect($$(".share")).toHaveLength(0);
+    expect($$("button").filter((b) => b.textContent === "Copy message")).toHaveLength(1);
+    expect($$("button").filter((b) => b.textContent === "Copy link")).toHaveLength(1);
+  });
+
+  it("adds a Share button that shares the message in the textarea, as text only, ending with the link", async () => {
+    const share = vi.fn(async () => {});
+    await create({ navigator: { share } });
+    expect($$(".share")).toHaveLength(1);
+    expect(shareButton()!.getAttribute("aria-label")).toBe('Share "Trial Day"');
+    // the existing link box, message box, Copy buttons and WhatsApp link are all still there
+    expect(input("booking-link").value).toBe(ADDRESS);
+    expect(buttonNamed("Copy link")).toBeDefined();
+    expect(buttonNamed("Copy message")).toBeDefined();
+    expect($$("a").some((a) => a.textContent === "Open in WhatsApp")).toBe(true);
+    shareButton()!.click();
+    expect(share).toHaveBeenCalledTimes(1);
+    expect(share.mock.calls[0]).toEqual([{ text: message() }]);
+    expect(message().endsWith(`\n${ADDRESS}`)).toBe(true);
+  });
+
+  it("uses the event's own message, over the default template, over the built-in one", async () => {
+    const templates = () => reply(200, { templates: [
+      { id: 1, isDefault: false, shareMessage: "Not this one" }, { id: 2, isDefault: true, shareMessage: "Default: {event}" },
+    ] });
+    await create({ templates, create: withEvent({ shareMessage: "Own: {event} at {postcode}" }) });
+    expect(message()).toBe(`Own: Trial Day at SW1A 1AA\n${ADDRESS}`);
+    await create({ templates, create: withEvent({ shareMessage: "" }) });
+    expect(message()).toBe(`Default: Trial Day\n${ADDRESS}`);
+    await create({ create: withEvent({ shareMessage: "" }) });
+    expect(message()).toContain("\nVenue: SW1A 1AA\nCost: £12.50\nBook your slot:\n");
+  });
+
+  it("asks for the default template once, when the page loads, not when the event is saved", async () => {
+    const { calls } = await start();
+    expect(calls.filter((c) => c.url === TEMPLATES).map((c) => c.init?.method ?? "GET")).toEqual(["GET"]);
+    fillAll();
+    submit();
+    await tick();
+    expect(calls.filter((c) => c.url === TEMPLATES)).toHaveLength(1);
+  });
+
+  it("falls back to the built-in message when the templates can't be loaded", async () => {
+    for (const templates of [() => reply(500, null), () => Promise.reject(new TypeError("offline")), () => reply(200, { templates: "nope" })]) {
+      await create({ templates });
+      expect($("h1").textContent).toBe("Event created");
+      expect(message()).toContain("Book your slot:\nhttps://club.example/e/abc123");
+    }
+  });
+
+  it("keeps hostile text inert: nothing in the page is built from it, and the message holds it as plain text", async () => {
+    const hostile = withEvent({ name: HOSTILE, details: HOSTILE, shareMessage: "{event}\n{details}" });
+    await create({ navigator: { share: vi.fn(async () => {}) }, create: hostile });
+    expect(message()).toBe(`${HOSTILE}\n${HOSTILE}\n${ADDRESS}`);
+    expect(document.querySelector("img, [onerror]")).toBeNull(); // the markup only ever appears as text and inside attribute values
+    expect($(".event-name").textContent).toBe(HOSTILE);
+    expect(shareButton()!.getAttribute("aria-label")).toBe(`Share "${HOSTILE}"`);
+    expect($$("a").find((a) => a.textContent === "Open in WhatsApp")!.getAttribute("href")).toBe(`https://wa.me/?text=${encodeURIComponent(message())}`);
   });
 });

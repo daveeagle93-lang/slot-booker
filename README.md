@@ -78,7 +78,7 @@ Details: [docs/deploying.md](docs/deploying.md#updating-your-copy).
 
 - Booking: a booker picks a free slot and enters a dog's name and a handler's name. A dog and handler pair can hold one slot per event. The booker gets a confirmation and an "Add to calendar" `.ics` file. Bookers cannot change or cancel online; they contact the organiser, and an admin moves or clears the booking.
 - Events: date, start and end times, session length, gap, cost, postcode, details and breaks. The form previews the schedule and suggests fixes for near-miss settings.
-- Sharing: a WhatsApp-ready message for a new event, and a plain-text lineup (running order) to paste into a chat.
+- Sharing: a Share button on upcoming events (the phone's share sheet, or Copy message and Copy link), and a plain-text lineup (running order) to paste into a chat.
 - Admin booking management: add a booking, move it, swap two, or clear one.
 - Editing an event warns which bookings sit on slots the new schedule no longer has, and lists the people to tell.
 - Archive (reversible) and delete (typed confirmation), including a bulk clear-out of past events.

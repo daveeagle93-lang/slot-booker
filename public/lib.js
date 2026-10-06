@@ -79,18 +79,3 @@ export function penceFromPounds(text) {
   if (pence > MAX_COST_PENCE) return { error: "The cost can be at most £1,000." };
   return { pence };
 }
-
-/**
- * Ready-to-paste WhatsApp text for a newly created event (`event` is the create response's `event`).
- * A club name, when there is one, is the first line.
- */
-export function whatsappMessage(event, url, clubName = "") {
-  return [
-    ...(clubName ? [clubName] : []),
-    event.name,
-    `${formatDate(event.startUtc)}, ${formatTimeRange(event.startUtc, event.endUtc)}`,
-    `Venue: ${event.venuePostcode}`,
-    `Cost: ${formatPounds(event.costPence)}`,
-    `Book your slot: ${url}`,
-  ].join("\n");
-}

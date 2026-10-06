@@ -1,14 +1,15 @@
 import { brandPage, loadSettings } from "../branding.js";
-import { whatsappMessage } from "../lib.js";
+import { buildShareMessage, pickShareTemplate } from "../share-message.js";
 import { createApi, makeH, writeClipboard } from "./api.js";
 import { mountEventForm } from "./event-form.js";
+import { shareControls } from "./share.js";
 
 /**
  * Wires the create-event page into `#app`. Resolves once the form is on screen. `settings` is the branding
  * promise (see branding.js); the club name heads the WhatsApp message once it has loaded, and without it the
- * message has no club line.
+ * message has no club line. With navigator.share the created page also has a Share button.
  */
-export async function init({ document, fetch, navigate, clipboard, location, settings = null }) {
+export async function init({ document, fetch, navigate, clipboard, location, navigator = undefined, settings = null }) {
   const root = document.getElementById("app");
   const api = createApi({ fetch, navigate });
   const h = makeH(document);
@@ -25,6 +26,13 @@ export async function init({ document, fetch, navigate, clipboard, location, set
     return;
   }
 
+  // Not awaited either: the default template's share message, for an event with none of its own. Without it, the built-in one.
+  let defaultShareMessage = "";
+  api.request("GET", "/api/admin/templates").then((res) => {
+    const found = Array.isArray(res.data?.templates) ? res.data.templates.find((t) => t.isDefault) : null;
+    if (res.status === 200 && typeof found?.shareMessage === "string") defaultShareMessage = found.shareMessage;
+  }, () => {});
+
   mountEventForm({
     document, root, api, h, mode: "create",
     done: ({ data, notice }) => showCreated(data, notice),
@@ -32,7 +40,8 @@ export async function init({ document, fetch, navigate, clipboard, location, set
 
   function showCreated({ event, path }, noticeText) {
     const url = location.origin + path;
-    const message = whatsappMessage(event, url, clubName);
+    const build = () => buildShareMessage({ event, clubName, link: url, template: pickShareTemplate(event, defaultShareMessage) });
+    const message = build();
     const heading = h("h1", { tabindex: "-1" }, "Event created");
     const copyStatus = h("p", { class: "copy-status", "aria-live": "polite" });
     const link = h("input", { id: "booking-link", type: "text", readonly: true });
@@ -58,6 +67,10 @@ export async function init({ document, fetch, navigate, clipboard, location, set
     root.replaceChildren(...(noticeText ? [h("p", { class: "notice", role: "status" }, noticeText)] : []), h("section", { class: "created" },
       heading,
       h("p", { class: "event-name" }, event.name),
+      // Without navigator.share the Copy buttons below do the same job, so the shared control would only repeat them.
+      ...(typeof navigator?.share === "function"
+        ? [shareControls({ h, navigator, clipboard, label: event.name, getLink: () => url, getMessage: build })]
+        : []),
       h("div", { class: "field" }, h("label", { for: "booking-link" }, "Booking link"), link,
         h("div", { class: "actions" }, copyButton("Copy link", link))),
       h("div", { class: "field" }, h("label", { for: "whatsapp-text" }, "WhatsApp message"), text,
@@ -80,7 +93,7 @@ if (globalThis.document?.getElementById("app")?.hasAttribute("data-autostart")) 
   const settings = loadSettings((...args) => fetch(...args));
   brandPage(document, settings, { pageTitle: document.title, home: "/admin/" });
   init({
-    document, location, clipboard: navigator.clipboard, settings,
+    document, location, navigator, clipboard: navigator.clipboard, settings,
     fetch: (...args) => fetch(...args),
     navigate: (url) => location.assign(url),
   });

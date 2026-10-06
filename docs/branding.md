@@ -32,7 +32,7 @@ The privacy contact counts as **set once it has an email**. The name alone is ne
   - The header band at the top of every public and admin page (the name links to `/` on public pages and to `/admin/` on admin pages), and the page title (`<page> – <club>`; the page alone if no name is set; "Slot booker" is the fallback name in the header).
   - The first line of the calendar entry's description in the booking's `.ics` download (`src/core/ics.ts`, `src/server/ics.ts`).
   - The first line of the **Copy lineup** text (`src/core/lineup.ts`, built in `src/server/admin-event-edit.ts`).
-  - The first line of the new-event WhatsApp message on the admin "new event" page (`whatsappMessage` in `public/lib.js`). If the settings haven't loaded when the message is built, it has no club line.
+  - The first line of the shared message (the Share button on the admin events list and schedule pages, and the new-event page; `buildShareMessage` in `public/share-message.js`). If the settings haven't loaded when the message is built, it has no club line.
   - With no name set, all three texts are as they were before this feature.
 - **Logo**: in the header band next to the name. The browser tab icon, touch icon and manifest icons are drawn from it too (see "App icons"; with no logo they show the default mark on the theme's main colour). The header image has an empty `alt`, because the club name sits next to it.
 - **Website**: a footer link on the public and admin pages showing the host name, opening in a new tab with `rel="noopener noreferrer"`. `public/branding.js` re-checks that it is an `https:` URL before using it.
