@@ -1,6 +1,5 @@
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/<owner>/<repo>)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/daveeagle93-lang/slot-booker)
 
-<!-- Maintainer: in the button link above, replace the owner/repo placeholder (the only one in this file) with this repository's GitHub path once it is public, then delete this comment. Cloudflare's button only works for a public repository on github.com or gitlab.com: https://developers.cloudflare.com/workers/platform/deploy-buttons/ -->
 
 # slot-booker
 
