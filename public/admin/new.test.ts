@@ -1757,6 +1757,19 @@ describe("lanes and places", () => {
       await settle();
       expect($(".places-summary").textContent).toBe("3 times × 2 lanes × 1 place = 3 places");
     });
+
+    it("counts the lanes that are left after one is removed, once the preview has run again", async () => {
+      await start({ preview: () => preview({ placeCount: 6 }) });
+      fillSchedule();
+      addLane();
+      addLane();
+      set("capacity", "2");
+      await settle();
+      expect($(".places-summary").textContent).toBe("3 times × 3 lanes × 2 places = 6 places");
+      removeButton(3).click();
+      await settle();
+      expect($(".places-summary").textContent).toBe("3 times × 2 lanes × 2 places = 6 places");
+    });
   });
 
   describe("templates", () => {
