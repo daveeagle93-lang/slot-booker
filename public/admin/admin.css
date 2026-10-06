@@ -126,6 +126,16 @@ textarea[readonly], input[readonly] { color: var(--muted); }
   .field-row > .field { display: flex; flex-direction: column; }
   .field-row > .field > label { flex: 1; }
 }
+/* Each cell is a label / input / error stack. Sharing the row's three tracks keeps every label and every input level
+   whichever cell shows an error: the error only grows the third track, under both inputs. (Without subgrid support the
+   flex rules above apply: levelled labels, but an error under one cell leaves the other cell's input lower.) */
+@media (min-width: 360px) {
+  @supports (grid-template-rows: subgrid) {
+    .field-row { grid-template-rows: auto auto auto; }
+    .field-row > .field { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 0; }
+    .field-row > .field > label { flex: none; }
+  }
+}
 
 fieldset { min-width: 0; border: 0; margin: 0; padding: 0; }
 legend { padding: 0; font-weight: 600; }

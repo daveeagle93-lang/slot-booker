@@ -8,6 +8,9 @@
 // On every state it also checks that no element sticks out past the right edge of the screen (except scrolling boxes
 // and the visually-hidden class), and that the admin navigation (.admin-nav) is fully visible, has tappable links
 // (>= 48px each way) on one row, doesn't overlap or scroll sideways, and sits under the header band.
+// On every form it also puts a validation error under ONE cell of each paired row (.field-row: Start/End, session/gap,
+// the break rows) and checks that the other cell's label and input stay level with the first cell's (within 1px). Under 360px the cells stack (one
+// column), so that check applies at 390px only; at 320px the rows are checked for stacking, not alignment.
 //
 //   node scripts/check-ios-date-inputs.mjs [--engine webkit|chromium] [--allow-skip] [--break-css]
 //                                          [--shots] [--shots-dir <dir>]
@@ -16,8 +19,9 @@
 //               script and the page; only a WebKit run says anything about iOS.
 // --allow-skip  exit 0 instead of 2 when WebKit can't launch here (Playwright supports a limited set of systems).
 // --break-css   self-test: forces a wide min-width on the inputs, so the run must FAIL.
-// --shots       also runs every state in dark mode and writes full-page PNGs of the main ones (<name>-<width>-<scheme>.png)
-//               to --shots-dir (default: slot-booker-layout in the system temp folder), for looking at.
+// --shots       also writes full-page PNGs of the main states (<name>-<width>-<scheme>.png) to --shots-dir (default:
+//               slot-booker-layout in the system temp folder), for looking at.
+// Every state runs at both widths in light and dark.
 //
 // Exit codes: 0 all checks passed (or skipped with --allow-skip), 1 a check failed, 2 the engine can't launch
 // (not a pass).
@@ -206,6 +210,52 @@ const measure = ({ formSelector, dateTime }) => {
   };
 };
 
+/**
+ * For each paired row (.field-row with two or more .field cells) and each cell in turn: shows a wrapping error under that
+ * cell only, reads the label and input tops of every cell, then clears it. One entry per (row, cell with the error).
+ */
+const measurePairs = () => {
+  const message = "Enter a time before the end time.";
+  const out = [];
+  [...document.querySelectorAll(".field-row")].forEach((row, rowIndex) => {
+    const cells = [...row.children].filter((c) => c.classList.contains("field"));
+    if (cells.length < 2) return;
+    const name = `row ${rowIndex + 1} (${cells.map((c) => c.querySelector("input")?.id ?? "?").join(" / ")})`;
+    cells.forEach((withError, n) => {
+      const error = withError.querySelector(".field-error");
+      error.textContent = message;
+      out.push({
+        name, errorIn: withError.querySelector("input")?.id,
+        // Under 360px the cells stack, so there is nothing to level.
+        sideBySide: cells.every((c) => c.getBoundingClientRect().top === cells[0].getBoundingClientRect().top),
+        cells: cells.map((c) => ({
+          id: c.querySelector("input")?.id,
+          labelTop: c.querySelector("label").getBoundingClientRect().top,
+          inputTop: c.querySelector("input").getBoundingClientRect().top,
+        })),
+      });
+      error.textContent = "";
+    });
+  });
+  return out;
+};
+
+/** Failures where an error under one cell moved the label or the input of another cell out of line with it. */
+function checkPairs(label, pairs) {
+  const failures = [];
+  const round = (n) => Math.round(n * 10) / 10;
+  for (const p of pairs) {
+    if (!p.sideBySide) continue;
+    for (const part of ["labelTop", "inputTop"]) {
+      const tops = p.cells.map((c) => c[part]);
+      if (Math.max(...tops) - Math.min(...tops) > 1) {
+        failures.push(`${label}: ${p.name}: with an error under #${p.errorIn}, the ${part === "labelTop" ? "label" : "input"} tops differ (${p.cells.map((c) => `#${c.id} ${round(c[part])}`).join(", ")})`);
+      }
+    }
+  }
+  return failures;
+}
+
 const inside = (inner, outer) =>
   inner.left >= outer.left - TOLERANCE && inner.right <= outer.right + TOLERANCE;
 const overlap = (a, b) =>
@@ -276,11 +326,12 @@ async function main() {
   const server = await startServer();
   const origin = `http://127.0.0.1:${server.address().port}`;
   const { defaultBrowserType, ...phone } = devices["iPhone 13"];
-  const schemes = flag("shots") ? ["light", "dark"] : ["light"];
+  const schemes = ["light", "dark"];
   if (flag("shots")) mkdirSync(shotsDir, { recursive: true });
   const failures = [];
   let checked = 0;
   let loads = 0;
+  let pairedChecked = 0;
   try {
     for (const width of WIDTHS) {
       for (const scheme of schemes) {
@@ -297,6 +348,12 @@ async function main() {
           const m = await page.evaluate(measure, { formSelector: o.form ?? null, dateTime: DATE_TIME });
           failures.push(...check(`${label} @${width}px ${scheme}`, m, o));
           checked++;
+          if (o.form) {
+            const pairs = await page.evaluate(measurePairs);
+            if (pairs.length === 0) failures.push(`${label} @${width}px ${scheme}: no paired rows found to test with an error`);
+            failures.push(...checkPairs(`${label} @${width}px ${scheme}`, pairs));
+            pairedChecked += pairs.filter((p) => p.sideBySide).length;
+          }
           if (flag("shots") && o.shot) await page.screenshot({ path: join(shotsDir, `${o.shot}-${width}-${scheme}.png`), fullPage: true });
         };
         /**
@@ -380,7 +437,7 @@ async function main() {
     for (const f of failures) console.log(`  ${f}`);
     process.exit(1);
   }
-  console.log(`PASS (${engineName}): ${loads} page loads (${checked} checks) at ${WIDTHS.join(" and ")}px${schemes.length > 1 ? " in light and dark" : ""}, every date and time input fits its field, row and card, no overlaps, nothing past the screen edge, no sideways scroll, the admin nav is whole and under the header band${flag("shots") ? `; screenshots in ${shotsDir}` : ""}`);
+  console.log(`PASS (${engineName}): ${loads} page loads (${checked} checks) at ${WIDTHS.join(" and ")}px in light and dark, every date and time input fits its field, row and card, no overlaps, nothing past the screen edge, no sideways scroll; an error under one cell of a paired row leaves the other cell level (${pairedChecked} cases); the admin nav is whole and under the header band${flag("shots") ? `; screenshots in ${shotsDir}` : ""}`);
 }
 
 await main();

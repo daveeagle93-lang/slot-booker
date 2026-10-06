@@ -51,4 +51,9 @@ describe("date and time inputs on a narrow screen", () => {
     expect(admin).not.toMatch(/\.field-row \{[^}]*grid-template-columns: 1fr 1fr/);
     expect(admin).toMatch(/\.field-row > \* \{ min-width: 0; \}/);
   });
+
+  it("shares the row's label / input / error tracks, so an error under one cell doesn't unlevel the other", () => {
+    expect(admin).toContain("@supports (grid-template-rows: subgrid)");
+    expect(admin).toContain(".field-row > .field { display: grid; grid-row: span 3; grid-template-rows: subgrid;");
+  });
 });
