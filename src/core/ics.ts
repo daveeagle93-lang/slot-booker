@@ -25,6 +25,8 @@ export interface BookingIcsInput {
   details: string;
   /** The club's name, if one is set: the first line of the description. */
   clubName?: string;
+  /** The booking's lane, named in the description's Slot line (`Slot: 10:00–10:30, Ring 1`); left out or "" for an unnamed lane. */
+  laneName?: string;
 }
 
 const TZID = "Europe/London";
@@ -112,7 +114,7 @@ export function buildBookingIcs(input: BookingIcsInput): string {
     ...(clubName ? [clubName] : []),
     `Dog: ${input.dogName}`,
     `Handler: ${input.handlerName}`,
-    `Slot: ${s.hour}:${s.minute}–${e.hour}:${e.minute}`,
+    `Slot: ${s.hour}:${s.minute}–${e.hour}:${e.minute}${input.laneName ? `, ${input.laneName}` : ""}`,
     `Cost: ${cost}`,
   ];
   const details = input.details.trim();

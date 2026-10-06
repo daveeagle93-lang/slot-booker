@@ -255,7 +255,7 @@ All data is in one Cloudflare D1 database, `slot-booker-db` by default (the main
 
 ## Exporting before deleting
 
-**One event, for a spreadsheet.** In Admin, open the event and select **Download CSV**. It contains the bookings only: time (London time), dog, handler and when it was booked (`src/routes/api/admin/events/[slug]/export.csv.ts`). It does not contain the event's settings, the breaks, the logo or anything else.
+**One event, for a spreadsheet.** In Admin, open the event and select **Download CSV**. It contains the bookings only: time (London time), lane (only when the event has a named lane), dog, handler and when it was booked (`src/routes/api/admin/events/[slug]/export.csv.ts`). It does not contain the event's settings, the breaks, the logo or anything else.
 
 **The whole database.** Logged in to the account that owns the database, with that database's id in `account.local.json` and `npm run configure` run:
 

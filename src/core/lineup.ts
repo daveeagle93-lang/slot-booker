@@ -8,7 +8,12 @@ import { utcToLondon } from "./london";
  * formatting of its own. Names can't fake a new line (the server refuses control characters and U+2028/U+2029), but
  * WhatsApp's own markup characters (`*`, `_`, `~` and backticks) are allowed in names, so a name containing them
  * can still make part of the message bold, italic or struck through when pasted into the chat. That is not
- * coded around.
+ * coded around. Lane names are user text too and are printed the same way, as stored.
+ *
+ * One line per place. An event with exactly one lane and that lane unnamed reads as in v1.0 (`10:00 — Rex — Sam`,
+ * `10:00 — free`; with several places in the lane, the bookings in place order and then a `free` line for each free
+ * place). Any other event names the lane in every line (`10:00 Ring 1 — Rex — Sam`, `10:00 Ring 1 — free`), by time,
+ * then lane order, then place.
  */
 export interface LineupInput {
   /** The club's name, if one is set: the first line, above the event name. */
@@ -17,8 +22,11 @@ export interface LineupInput {
   venuePostcode: string;
   /** The event's start; its London date heads the message. */
   startUtc: string;
-  /** Slots of the schedule, each with its booking if any. Bookings outside the schedule are not passed in. */
-  slots: { start: string; booking: { dogName: string; handlerName: string } | null }[];
+  /**
+   * Slots of the schedule, each with its lanes in lane order: the lane's bookings in place order, and how many of its places
+   * are `free`. Every slot lists the same lanes. Bookings outside the schedule are not passed in.
+   */
+  slots: { start: string; places: { laneName: string; bookings: { dogName: string; handlerName: string }[]; free: number }[] }[];
   breaks: { start: string; end: string; label: string }[];
 }
 
@@ -32,16 +40,23 @@ function longDate(iso: string): string {
 }
 
 export function buildLineup(input: LineupInput): string {
+  const naming = input.slots.some((s) => s.places.length > 1 || s.places.some((p) => p.laneName !== ""));
   const items = [
     ...input.slots.map((s) => ({
       start: s.start, order: 1,
-      line: `${utcToLondon(s.start).time} — ${s.booking ? `${s.booking.dogName} — ${s.booking.handlerName}` : "free"}`,
+      lines: s.places.flatMap((p) => {
+        const at = `${utcToLondon(s.start).time}${naming ? ` ${p.laneName}` : ""}`;
+        return [
+          ...p.bookings.map((b) => `${at} — ${b.dogName} — ${b.handlerName}`),
+          ...Array.from({ length: p.free }, () => `${at} — free`),
+        ];
+      }),
     })),
     ...input.breaks.map((b) => ({
       start: b.start, order: 0,
-      line: `${utcToLondon(b.start).time}–${utcToLondon(b.end).time} — ${b.label === "" ? "Break" : b.label}`,
+      lines: [`${utcToLondon(b.start).time}–${utcToLondon(b.end).time} — ${b.label === "" ? "Break" : b.label}`],
     })),
   ].sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order));
   const head = [...(input.clubName ? [input.clubName] : []), input.name, `${longDate(input.startUtc)} · ${input.venuePostcode}`];
-  return [...head, ...(items.length > 0 ? ["", ...items.map((i) => i.line)] : [])].join("\n");
+  return [...head, ...(items.length > 0 ? ["", ...items.flatMap((i) => i.lines)] : [])].join("\n");
 }

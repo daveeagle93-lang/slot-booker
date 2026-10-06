@@ -293,6 +293,7 @@ The share message is the text that "Share", "Copy message" and the "Event create
 | {cost} | The cost, for example £12.00, or Free |
 | {postcode} | The venue postcode |
 | {details} | The event's details text |
+| {lanes} | The lane names, separated by commas. Blank for an event with one unnamed lane |
 | {club} | Your club name |
 | {link} | The booking link |
 
@@ -480,6 +481,13 @@ Saving an edit that would leave bookings with nowhere to go works as in "Changes
 
 If someone else changed the lanes or the places while you were working, saving them from an older view is refused (the page asks you to reload) so their change is not overwritten.
 
+What the outputs show for lanes and places:
+
+- **The lineup** has one line per place. An event with one unnamed lane reads as it always did ("10:00 — Rex — Sam", "10:00 — free"; with several places, the bookings first, then a "free" line for each free place). Otherwise each line names the lane after the time ("10:00 Ring 1 — Rex — Sam", "10:00 Ring 1 — free"), in time order, then lane order, then place. A single lane that has a name is named too.
+- **The CSV** gets a "Lane" column after "Time", but only when the event has a named lane. The rows are in time order, then lane order, then place.
+- **The calendar entry** (.ics) a booker adds says "Slot: 10:00–10:30, Ring 1" when the event has a named lane, and is otherwise unchanged. The entry's title, location and identity are unchanged.
+- **The share message** has a {lanes} placeholder: the lane names separated by commas. It is blank for an event with one unnamed lane, so a line holding only {lanes} is left out. Share from the schedule page or after creating an event fills it in; Share on the events list does not yet (the list doesn't carry the lane names).
+
 ### After saving
 
 You see "Saved." If bookings were removed, you also see "Removed bookings: tell these people to rebook". The people are not told for you.
@@ -504,7 +512,7 @@ The text looks like this:
 2. The event name.
 3. The date, then a dot, then the venue postcode.
 4. A blank line.
-5. One line per slot, in time order. A booked slot shows the time, the dog and the handler. A free slot shows the time and "free".
+5. One line per place, in time order. A booked place shows the time, the dog and the handler. A free place shows the time and "free". With a named lane (or two or more lanes) each line also names the lane after the time, and the lines at one time go by lane order, then place. See [Lanes and places](#lanes-and-places).
 6. Breaks show where they fall, with their start and end times and their name. An unnamed break shows as "Break".
 
 Paste it into a group chat such as WhatsApp. The booking form's usual privacy note tells people that the running order, with names, may be shared with other people taking part.
@@ -522,7 +530,7 @@ This part gives you a spreadsheet of one event's bookings.
 
 You get a file ending in -bookings.csv. Open it in Excel, Google Sheets or Numbers.
 
-It has four columns: "Time", "Dog", "Handler" and "Booked at". Times are London time. It lists the bookings only, in time order. It does not include free slots, the event settings or breaks.
+It has four columns: "Time", "Dog", "Handler" and "Booked at", with a "Lane" column after "Time" when the event has a named lane. Times are London time. It lists the bookings only, in time order (then lane order, then place). It does not include free slots, the event settings or breaks.
 
 Some names may start with a mark like an apostrophe. That happens when a name begins with a symbol such as =, +, - or @. It is on purpose. It stops a spreadsheet from treating the name as an instruction. The name itself is unchanged.
 

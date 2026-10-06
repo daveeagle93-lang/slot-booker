@@ -12,7 +12,7 @@ const build = (template: string, extra: Record<string, unknown> = {}, event: Rec
 describe("the template pieces", () => {
   it("pins the placeholders, in order", () => {
     expect(PLACEHOLDERS.map((p) => p.token)).toEqual(
-      ["{event}", "{date}", "{start}", "{end}", "{cost}", "{postcode}", "{details}", "{club}", "{link}"],
+      ["{event}", "{date}", "{start}", "{end}", "{cost}", "{postcode}", "{details}", "{lanes}", "{club}", "{link}"],
     );
     for (const p of PLACEHOLDERS) expect(p.meaning).toMatch(/\S/);
   });
@@ -146,6 +146,48 @@ describe("cleaning the values", () => {
 
   it("treats missing values as empty", () => {
     expect(build("{event}|{details}|{club}", { clubName: undefined }, { name: undefined, details: undefined })).toBe(`||\n${LINK}`);
+  });
+});
+
+describe("the {lanes} placeholder", () => {
+  const lanes = (...names: string[]) => ({ lanes: names.map((name, i) => ({ id: i + 1, name })) });
+
+  it("is the lane names joined with a comma and a space, in lane order", () => {
+    expect(build("Rings: {lanes}\n{link}", {}, lanes("Ring 1", "Ring 2", "Ring 3"))).toBe(`Rings: Ring 1, Ring 2, Ring 3\n${LINK}`);
+    expect(build("{lanes}\n{link}", {}, lanes("Only ring"))).toBe(`Only ring\n${LINK}`);
+  });
+
+  it("is blank for one unnamed lane, for no lanes and for an event without the key, so a line holding only it is dropped", () => {
+    for (const event of [lanes(""), { lanes: [] }, {}]) {
+      expect(build("{event}\n{lanes}\n{link}", {}, event)).toBe(`Trial Day\n${LINK}`);
+      expect(build("Rings: {lanes}\n{link}", {}, event)).toBe(`Rings: \n${LINK}`);
+    }
+  });
+
+  it("is cleaned like other user text: line breaks, controls and invisible direction marks", () => {
+    expect(build("{lanes}\n{link}", {}, lanes("Ring\n1\u202e", "A\u0007B\u200d"))).toBe(`Ring 1, AB\n${LINK}`);
+  });
+
+  it("is inserted literally and never expanded again; other values are never expanded by it", () => {
+    expect(build("{lanes}\n{link}", {}, lanes("{event}", "$& {link}"))).toBe(`{event}, $& {link}\n${LINK}`);
+    expect(build("{event}|{club}\n{link}", { clubName: "{lanes}" }, { name: "{lanes}", ...lanes("Ring 1") })).toBe(`{lanes}|{lanes}\n${LINK}`);
+  });
+
+  it("keeps accents, emoji and markup characters as stored", () => {
+    expect(build("{lanes}\n{link}", {}, lanes("Ring Ñ 🐕", "*Big* _ring_ <b>"))).toBe(`Ring Ñ 🐕, *Big* _ring_ <b>\n${LINK}`);
+  });
+
+  it("leaves the built-in message byte-identical whatever the lanes", () => {
+    const plain = build(BUILT_IN_SHARE_TEMPLATE);
+    expect(build(BUILT_IN_SHARE_TEMPLATE, {}, lanes(""))).toBe(plain);
+    expect(build(BUILT_IN_SHARE_TEMPLATE, {}, lanes("Ring 1", "Ring 2"))).toBe(plain);
+  });
+
+  it("still cuts at the cap with long lane names", () => {
+    const names = Array.from({ length: 10 }, (_, i) => `${i}${"L".repeat(39)}`);
+    const message = build(Array(20).fill("{lanes}").join(""), {}, lanes(...names));
+    expect(message.length).toBe(MAX_SHARE_MESSAGE_LENGTH);
+    expect(message.endsWith(`…\n${LINK}`)).toBe(true);
   });
 });
 

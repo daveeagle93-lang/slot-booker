@@ -16,7 +16,7 @@ function input(
     name: o.name ?? "Spring Trial", venuePostcode: o.postcode ?? "AB1 2CD", startUtc: o.start, breaks,
     slots: slots.map((s) => {
       const b = o.booked?.[s.start];
-      return { start: s.start, booking: b ? { dogName: b[0], handlerName: b[1] } : null };
+      return { start: s.start, places: [{ laneName: "", bookings: b ? [{ dogName: b[0], handlerName: b[1] }] : [], free: b ? 0 : 1 }] };
     }),
   };
 }
@@ -45,9 +45,9 @@ describe("buildLineup", () => {
     const text = buildLineup({
       name: "Spring Trial", venuePostcode: "AB1 2CD", startUtc: "2026-03-14T09:00:00Z",
       slots: [
-        { start: "2026-03-14T09:00:00Z", booking: { dogName: "Rex", handlerName: "Sam Smith" } },
-        { start: "2026-03-14T09:10:00Z", booking: null },
-        { start: "2026-03-14T12:45:00Z", booking: { dogName: "Bella", handlerName: "Alex Jones" } },
+        { start: "2026-03-14T09:00:00Z", places: [{ laneName: "", bookings: [{ dogName: "Rex", handlerName: "Sam Smith" }], free: 0 }] },
+        { start: "2026-03-14T09:10:00Z", places: [{ laneName: "", bookings: [], free: 1 }] },
+        { start: "2026-03-14T12:45:00Z", places: [{ laneName: "", bookings: [{ dogName: "Bella", handlerName: "Alex Jones" }], free: 0 }] },
       ],
       breaks: [{ start: "2026-03-14T12:00:00Z", end: "2026-03-14T12:45:00Z", label: "Lunch" }],
     });
@@ -162,7 +162,7 @@ describe("buildLineup", () => {
   it("uses only the slots it is given: a booking whose slot is not in the schedule never appears", () => {
     const text = buildLineup({
       name: "E", venuePostcode: "P", startUtc: "2026-06-13T08:00:00Z", breaks: [],
-      slots: [{ start: "2026-06-13T08:00:00Z", booking: null }],
+      slots: [{ start: "2026-06-13T08:00:00Z", places: [{ laneName: "", bookings: [], free: 1 }] }],
     });
     expect(text).toBe("E\nSaturday 13 June 2026 · P\n\n09:00 — free");
   });
@@ -208,5 +208,88 @@ describe("buildLineup with a club name", () => {
 describe("buildLineup with nothing to list", () => {
   it("ends after the date line, with no trailing blank line", () => {
     expect(buildLineup({ name: "E", venuePostcode: "P", startUtc: "2026-06-13T08:00:00Z", slots: [], breaks: [] })).toBe("E\nSaturday 13 June 2026 · P");
+  });
+});
+
+describe("buildLineup with lanes and places", () => {
+  type Place = { laneName: string; bookings: [string, string][]; free: number };
+  const T1 = "2026-06-13T08:00:00Z"; // 09:00 BST
+  const T2 = "2026-06-13T08:30:00Z";
+  const slot = (start: string, places: Place[]) => ({
+    start, places: places.map((p) => ({ laneName: p.laneName, bookings: p.bookings.map(([dogName, handlerName]) => ({ dogName, handlerName })), free: p.free })),
+  });
+  const lineup = (slots: ReturnType<typeof slot>[], breaks: { start: string; end: string; label: string }[] = []) =>
+    buildLineup({ name: "Trial", venuePostcode: "AB1 2CD", startUtc: T1, slots, breaks }).split("\n").slice(3);
+
+  it("one unnamed lane with one place is the v1.0 text, byte for byte", () => {
+    expect(buildLineup({
+      name: "Trial", venuePostcode: "AB1 2CD", startUtc: T1, breaks: [],
+      slots: [slot(T1, [{ laneName: "", bookings: [["Rex", "Sam"]], free: 0 }]), slot(T2, [{ laneName: "", bookings: [], free: 1 }])],
+    })).toBe("Trial\nSaturday 13 June 2026 · AB1 2CD\n\n09:00 — Rex — Sam\n09:30 — free");
+  });
+
+  it("one unnamed lane with two places: the bookings in place order, then a free line for each free place", () => {
+    expect(lineup([
+      slot(T1, [{ laneName: "", bookings: [["Rex", "Sam"], ["Bella", "Alex"]], free: 0 }]),
+      slot(T2, [{ laneName: "", bookings: [["Fly", "Jo"]], free: 1 }]),
+      slot("2026-06-13T09:00:00Z", [{ laneName: "", bookings: [], free: 2 }]),
+    ])).toEqual([
+      "09:00 — Rex — Sam", "09:00 — Bella — Alex", "09:30 — Fly — Jo", "09:30 — free", "10:00 — free", "10:00 — free",
+    ]);
+  });
+
+  it("a single named lane puts its name in every line", () => {
+    expect(lineup([
+      slot(T1, [{ laneName: "Ring 1", bookings: [["Rex", "Sam"]], free: 0 }]),
+      slot(T2, [{ laneName: "Ring 1", bookings: [], free: 1 }]),
+    ])).toEqual(["09:00 Ring 1 — Rex — Sam", "09:30 Ring 1 — free"]);
+  });
+
+  it("three lanes of two places: by time, then lane order, then place, with bookings and free places mixed", () => {
+    expect(lineup([
+      slot(T1, [
+        { laneName: "Ring 1", bookings: [["Rex", "Sam"], ["Bella", "Alex"]], free: 0 },
+        { laneName: "Ring 2", bookings: [["Fly", "Jo"]], free: 1 },
+        { laneName: "Ring 3", bookings: [], free: 2 },
+      ]),
+      slot(T2, [
+        { laneName: "Ring 1", bookings: [], free: 2 },
+        { laneName: "Ring 2", bookings: [["Zoe", "Kim"], ["Max", "Lee"]], free: 0 },
+        { laneName: "Ring 3", bookings: [["Ola", "Pat"]], free: 1 },
+      ]),
+    ])).toEqual([
+      "09:00 Ring 1 — Rex — Sam", "09:00 Ring 1 — Bella — Alex",
+      "09:00 Ring 2 — Fly — Jo", "09:00 Ring 2 — free",
+      "09:00 Ring 3 — free", "09:00 Ring 3 — free",
+      "09:30 Ring 1 — free", "09:30 Ring 1 — free",
+      "09:30 Ring 2 — Zoe — Kim", "09:30 Ring 2 — Max — Lee",
+      "09:30 Ring 3 — Ola — Pat", "09:30 Ring 3 — free",
+    ]);
+  });
+
+  it("breaks stay between the times around them, before a slot that starts with them", () => {
+    const lanes = (booked: boolean): Place[] => [
+      { laneName: "A", bookings: booked ? [["Rex", "Sam"]] : [], free: booked ? 0 : 1 },
+      { laneName: "B", bookings: [], free: 1 },
+    ];
+    expect(lineup(
+      [slot(T1, lanes(true)), slot("2026-06-13T09:00:00Z", lanes(false))],
+      [{ start: T2, end: "2026-06-13T09:00:00Z", label: "Lunch" }, { start: "2026-06-13T09:00:00Z", end: "2026-06-13T09:15:00Z", label: "" }],
+    )).toEqual([
+      "09:00 A — Rex — Sam", "09:00 B — free", "09:30–10:00 — Lunch", "10:00–10:15 — Break", "10:00 A — free", "10:00 B — free",
+    ]);
+  });
+
+  it("prints lane names, like names, exactly as stored: accents, emoji and markup characters", () => {
+    expect(lineup([
+      slot(T1, [
+        { laneName: "Ring Ñ 🐕", bookings: [["Zoë", "Łukasz"]], free: 0 },
+        { laneName: "*Big* _ring_ ~x~ `y` <b>&amp;", bookings: [], free: 1 },
+      ]),
+    ])).toEqual(["09:00 Ring Ñ 🐕 — Zoë — Łukasz", "09:00 *Big* _ring_ ~x~ `y` <b>&amp; — free"]);
+  });
+
+  it("names the lane at the London time in winter too (GMT)", () => {
+    expect(lineup([slot("2026-12-12T09:00:00Z", [{ laneName: "A", bookings: [], free: 1 }])])[0]).toBe("09:00 A — free");
   });
 });

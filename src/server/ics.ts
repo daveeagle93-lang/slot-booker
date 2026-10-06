@@ -28,10 +28,11 @@ export async function loadBookingIcs(db: D1Database, event: EventRow, token: str
   if (!isValidToken(token)) return null;
   const booking = await db
     .prepare(
-      "SELECT slot_start_utc, value_1, value_2, identity_key, identity_seq, created_at FROM bookings WHERE event_id = ? AND token = ?",
+      `SELECT b.slot_start_utc, b.value_1, b.value_2, b.identity_key, b.identity_seq, b.created_at, l.name AS lane_name
+       FROM bookings b JOIN event_lanes l ON l.id = b.lane_id WHERE b.event_id = ? AND b.token = ?`,
     )
     .bind(event.id, token)
-    .first<{ slot_start_utc: string; value_1: string; value_2: string; identity_key: string; identity_seq: number; created_at: string }>();
+    .first<{ slot_start_utc: string; value_1: string; value_2: string; identity_key: string; identity_seq: number; created_at: string; lane_name: string }>();
   if (!booking) return null;
   const range = findSlot(event, booking.slot_start_utc);
   if (!range) return null;
@@ -47,5 +48,6 @@ export async function loadBookingIcs(db: D1Database, event: EventRow, token: str
     costPence: event.costPence,
     details: event.details,
     clubName,
+    laneName: booking.lane_name,
   });
 }

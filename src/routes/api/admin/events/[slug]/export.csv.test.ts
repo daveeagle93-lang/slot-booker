@@ -70,6 +70,49 @@ describe("GET /api/admin/events/[slug]/export.csv", () => {
     expect(text).toContain('"Zoë","Smith, Sam"');
   });
 
+  it("one unnamed lane with several places has no Lane column and lists a time's bookings in place order", async () => {
+    const { id, slug } = await insertEvent(t.env.DB, { capacity: 2 });
+    await insertBooking(t.env.DB, id, "2026-06-13T08:00:00Z", "Second", "B", { place: 2 });
+    await insertBooking(t.env.DB, id, "2026-06-13T08:00:00Z", "First", "A", { place: 1 });
+    const rows = (await body(await get(slug))).split("\r\n");
+    expect(rows[0]).toBe(`${BOM}${HEADER.trimEnd()}`);
+    expect(rows.slice(1, 3).map((r) => r.split(",").slice(0, 3).join(","))).toEqual(['"2026-06-13 09:00","First","A"', '"2026-06-13 09:00","Second","B"']);
+  });
+
+  it("adds a Lane column after Time when a lane is named (a single named lane too), sorted by time, lane order, then place", async () => {
+    const { id, slug, laneIds } = await insertEvent(t.env.DB, { capacity: 2, lanes: ["Ring B", "Ring A"] });
+    await insertBooking(t.env.DB, id, "2026-06-13T08:15:00Z", "Late", "L", { laneId: laneIds[0], place: 1 });
+    await insertBooking(t.env.DB, id, "2026-06-13T08:00:00Z", "R2P1", "H", { laneId: laneIds[1], place: 1 });
+    await insertBooking(t.env.DB, id, "2026-06-13T08:00:00Z", "R1P2", "H", { laneId: laneIds[0], place: 2 });
+    await insertBooking(t.env.DB, id, "2026-06-13T08:00:00Z", "R1P1", "H", { laneId: laneIds[0], place: 1 });
+    const rows = (await body(await get(slug))).split("\r\n");
+    expect(rows[0]).toBe(`${BOM}"Time","Lane","Dog","Handler","Booked at"`);
+    expect(rows.slice(1, 5).map((r) => r.split(",").slice(0, 4).join(","))).toEqual([
+      '"2026-06-13 09:00","Ring B","R1P1","H"', '"2026-06-13 09:00","Ring B","R1P2","H"',
+      '"2026-06-13 09:00","Ring A","R2P1","H"', '"2026-06-13 09:15","Ring B","Late","L"',
+    ]);
+    expect(rows.at(-1)).toBe("");
+
+    const single = await insertEvent(t.env.DB, { lanes: ["Only ring"] });
+    await insertBooking(t.env.DB, single.id, "2026-06-13T08:00:00Z", "Rex", "Sam");
+    const text = await body(await get(single.slug));
+    expect(text.startsWith(`${BOM}"Time","Lane","Dog","Handler","Booked at"\r\n"2026-06-13 09:00","Only ring","Rex","Sam",`)).toBe(true);
+  });
+
+  it("protects lane names a spreadsheet would run as a formula, like every other cell", async () => {
+    const { id, slug, laneIds } = await insertEvent(t.env.DB, { lanes: ["=1+1", "@x", '+SUM(A1)', "Plain, \"quoted\""] });
+    await insertBooking(t.env.DB, id, "2026-06-13T08:00:00Z", "A", "H", { laneId: laneIds[0] });
+    await insertBooking(t.env.DB, id, "2026-06-13T08:00:00Z", "B", "H", { laneId: laneIds[1] });
+    await insertBooking(t.env.DB, id, "2026-06-13T08:00:00Z", "C", "H", { laneId: laneIds[2] });
+    await insertBooking(t.env.DB, id, "2026-06-13T08:00:00Z", "D", "H", { laneId: laneIds[3] });
+    const text = await body(await get(slug));
+    expect(text).toContain(`"2026-06-13 09:00","'=1+1","A"`);
+    expect(text).toContain(`"2026-06-13 09:00","'@x","B"`);
+    expect(text).toContain(`"2026-06-13 09:00","'+SUM(A1)","C"`);
+    expect(text).toContain(`"2026-06-13 09:00","Plain, ""quoted""","D"`);
+    expect(text).not.toMatch(/"=1\+1"|"@x"/);
+  });
+
   it("works for an archived event", async () => {
     const { id, slug } = await insertEvent(t.env.DB, { archived: true });
     await insertBooking(t.env.DB, id, "2026-06-13T08:00:00Z", "Rex", "Sam");

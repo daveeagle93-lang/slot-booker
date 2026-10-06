@@ -580,6 +580,18 @@ describe("Share", () => {
     expect(sent(none.share)).toBe(BUILT_IN);
   });
 
+  it("fills {lanes} from the event's lanes, and drops the line when there is one unnamed lane", async () => {
+    const message = "Rings: {lanes}\n{link}";
+    const named = withShare();
+    await start({ navigator: named, initial: withDetail({ ...SHARE_EVENT, shareMessage: message, lanes: [{ id: 1, name: "Ring 1" }, { id: 2, name: "Ring 2" }] }) });
+    shareButton()!.click();
+    expect(sent(named.share)).toBe(`Rings: Ring 1, Ring 2\nhttps://club.example/e/${SLUG}`);
+    const unnamed = withShare();
+    await start({ navigator: unnamed, initial: withDetail({ ...SHARE_EVENT, shareMessage: "{lanes}\n{event}", lanes: [{ id: 1, name: "" }] }) });
+    shareButton()!.click();
+    expect(sent(unnamed.share)).toBe(`Trial Day\nhttps://club.example/e/${SLUG}`);
+  });
+
   it("puts the club name first when the settings loaded with one", async () => {
     const navigator = withShare();
     await start({ navigator, initial: withDetail(SHARE_EVENT), settings: Promise.resolve({ clubName: "Hillside Dog Club", loaded: true }) });

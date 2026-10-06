@@ -18,6 +18,7 @@ export const PLACEHOLDERS = [
   { token: "{cost}", meaning: "The cost, for example £12.00, or Free" },
   { token: "{postcode}", meaning: "The venue postcode" },
   { token: "{details}", meaning: "The event's details text" },
+  { token: "{lanes}", meaning: "The lane names, separated by commas (blank when the event has one unnamed lane)" },
   { token: "{club}", meaning: "Your club name" },
   { token: "{link}", meaning: "The booking link" },
 ];
@@ -68,7 +69,9 @@ const clip = (value, limit) => {
 };
 
 /**
- * `event` has name, startUtc, endUtc, costPence, venuePostcode and details; `template` is the text to render
+ * `event` has name, startUtc, endUtc, costPence, venuePostcode and details, and may have `lanes` (a list of `{ name }`, as the
+ * admin API gives them: `{lanes}` is their names joined with ", ", blank for one unnamed lane or when there are none);
+ * `template` is the text to render
  * (see pickShareTemplate). Without a {link} in the template, the link goes on its own final line. The result is at
  * most MAX_SHARE_MESSAGE_LENGTH code units (a wa.me link made from it stays a sane length): a longer message is cut at
  * a code point and "…" is added. When the link is the last line (no {link} in the template) only the text before it is
@@ -84,6 +87,7 @@ export function buildShareMessage({ event, clubName = "", link, template }) {
     cost: formatPounds(event.costPence),
     postcode: oneLine(event.venuePostcode),
     details: multiLine(event.details),
+    lanes: (event.lanes ?? []).map((l) => oneLine(l.name)).filter((name) => name !== "").join(", "),
     club: oneLine(clubName),
     link: cleanLink,
   }).trimEnd();

@@ -108,8 +108,8 @@ export const orphanBookings = (bookings: StoredBooking[], event: Pick<EventRow, 
  * otherwise (an event with several lanes or places uses `places`).
  *
  * `lineup` is the WhatsApp text for the schedule page's Copy button, built here so the page can copy it
- * synchronously from what it already loaded (a clipboard write has to happen inside the click). It still shows one booking per
- * time, the first by lane and place: the lineup for lanes and places is a separate piece of work.
+ * synchronously from what it already loaded (a clipboard write has to happen inside the click). It has one line per place (see
+ * buildLineup): the lane is named in each line unless the event has one unnamed lane.
  * `defaultShareMessage` is the default template's share message ("" if none), for events that have none of their own.
  */
 export async function eventDetail(db: D1Database, event: EventRow) {
@@ -132,17 +132,16 @@ export async function eventDetail(db: D1Database, event: EventRow) {
         bookings: held.map((b) => ({ id: b.id, dogName: b.dogName, handlerName: b.handlerName })),
       };
     });
-    const first = places.flatMap((p) => p.bookings)[0];
-    return { ...s, booking: single ? first ?? null : null, places, lineupBooking: first ?? null };
+    return { ...s, booking: single ? places[0].bookings[0] ?? null : null, places };
   });
   return {
     event: eventView(event),
-    slots: withBookings.map(({ lineupBooking: _unused, ...s }) => s),
+    slots: withBookings,
     orphans: orphans.map(toRef),
     defaultShareMessage: defaultMessage?.share_message ?? "",
     lineup: buildLineup({
       clubName, name: event.name, venuePostcode: event.venuePostcode, startUtc: event.startUtc,
-      slots: withBookings.map((s) => ({ start: s.start, end: s.end, booking: s.lineupBooking })), breaks: event.breaks,
+      slots: withBookings, breaks: event.breaks,
     }),
   };
 }

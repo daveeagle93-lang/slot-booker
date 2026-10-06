@@ -85,6 +85,27 @@ describe("GET /api/events/:slug/bookings/:token/ics", () => {
     expect(ev.endDate.toJSDate().toISOString()).toBe("2026-06-13T08:30:00.000Z");
   });
 
+  it("names the booking's lane in the description when the event has a named lane, and keeps the UID, summary and location", async () => {
+    const plain = await insertEvent(t.env.DB, { name: "Summer show", lanes: [""] });
+    const lanes = await insertEvent(t.env.DB, { name: "Summer show", lanes: ["Ring 1", "Ring 2"] });
+    const single = await insertEvent(t.env.DB, { name: "Summer show", lanes: ["Only ring"] });
+    const tokenPlain = await book(plain.id, SLOT, "Rex", "Sam");
+    const tokenRing2 = await t.env.DB.prepare(
+      `INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key, token) VALUES (?, ?, ?, 1, 'Rex', 'Sam', ?, ?) RETURNING token`,
+    ).bind(lanes.id, lanes.laneIds[1], SLOT, identityKeyOf(["Rex", "Sam"]), generateBookingToken()).first<{ token: string }>();
+    const tokenSingle = await book(single.id, SLOT, "Rex", "Sam");
+    const slotLine = (ics: string) => vevent(ics).description.split("\n").find((l) => l.startsWith("Slot: "));
+    const icsPlain = await (await getIcs(plain.slug, tokenPlain)).text();
+    const icsRing2 = await (await getIcs(lanes.slug, tokenRing2!.token)).text();
+    const icsSingle = await (await getIcs(single.slug, tokenSingle)).text();
+    expect(slotLine(icsPlain)).toBe("Slot: 09:15–09:30");
+    expect(slotLine(icsRing2)).toBe("Slot: 09:15–09:30, Ring 2");
+    expect(slotLine(icsSingle)).toBe("Slot: 09:15–09:30, Only ring");
+    expect(vevent(icsRing2).summary).toBe("Rex – Summer show");
+    expect(vevent(icsRing2).location).toBe("AB1 2CD");
+    expect(uidOf(icsRing2)).toBe(await bookingUid(lanes.slug, identityKeyOf(["Rex", "Sam"])));
+  });
+
   it("is byte-identical on two fetches", async () => {
     const { id, slug } = await insertEvent(t.env.DB);
     const token = await book(id, SLOT, "Rex", "Sam Jones");

@@ -420,3 +420,36 @@ describe("validation", () => {
     expect(() => make({ costPence: -1 })).toThrow(RangeError);
   });
 });
+
+describe("lane in the description", () => {
+  const description = (over: Partial<BookingIcsInput> = {}) => parse(make(over)).event.description.split("\n");
+
+  it("is byte-identical without a lane, and with an unnamed one", () => {
+    expect(make({ laneName: "" })).toBe(make());
+    expect(make({ laneName: undefined })).toBe(make());
+    expect(description()).toContain("Slot: 09:00–09:20");
+  });
+
+  it("is added to the Slot line when the lane has a name, and nothing else changes", () => {
+    expect(description({ laneName: "Ring 1" })).toEqual(description().map((l) => (l.startsWith("Slot: ") ? `${l}, Ring 1` : l)));
+    const ics = make({ laneName: "Ring 1" });
+    expect(prop(ics, "DESCRIPTION")).toContain("Slot: 09:00–09:20\\, Ring 1\\nCost:");
+    for (const name of ["UID", "SUMMARY", "LOCATION", "DTSTART", "DTEND", "DTSTAMP"]) {
+      expect(prop(ics, name), name).toBe(prop(make(), name));
+    }
+  });
+
+  it("is escaped and folded like other text: commas, semicolons, backslashes, accents, emoji, markup", () => {
+    const name = "Ring, A; B \\ Zoë 🐕 *x* <b>&amp; ".repeat(5).trim();
+    const ics = make({ laneName: name });
+    expectWellFormed(ics);
+    expectLinesDecodeCleanly(ics);
+    expect(parse(ics).event.description.split("\n").find((l) => l.startsWith("Slot: "))).toBe(`Slot: 09:00–09:20, ${name}`);
+  });
+
+  it("cannot start a new property line with a newline or control character", () => {
+    const ics = make({ laneName: "A\r\nX-EVIL:1\nEND:VEVENT\u0007" });
+    expectWellFormed(ics);
+    expect(unfold(ics).filter((l) => l.startsWith("X-EVIL") || l.startsWith("END:VEVENT"))).toEqual(["END:VEVENT"]);
+  });
+});

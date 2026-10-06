@@ -169,14 +169,24 @@ describe("bookings of an event with several lanes and places", () => {
     expect((await loadBookings(t.env.DB, e.id)).map((b) => b.id)).toEqual([r1p1, r1p2, r2p1, late]);
   });
 
-  it("the schedule detail's `booking` is null for several lanes (the bookings are in `places`), and the lineup text still shows the first by lane and place", async () => {
+  it("the schedule detail's `booking` is null for several lanes (the bookings are in `places`), and the lineup text has one line per place, by time, lane and place", async () => {
     const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:30:00Z", capacity: 2, lanes: ["Ring 1", "Ring 2"] });
     await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Second", "H", { laneId: e.laneIds[1], place: 1 });
     await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "First", "H", { laneId: e.laneIds[0], place: 1 });
     const detail = await eventDetail(t.env.DB, (await loadEventBySlug(t.env.DB, e.slug))!);
     expect(detail.slots.map((s) => s.booking)).toEqual([null, null]);
     expect(detail.slots[0].places.map((p) => p.bookings.map((b) => b.dogName))).toEqual([["First"], ["Second"]]);
-    expect(detail.lineup).toContain("First");
+    expect(detail.lineup.split("\n").slice(3)).toEqual([
+      "09:00 Ring 1 — First — H", "09:00 Ring 1 — free", "09:00 Ring 2 — Second — H", "09:00 Ring 2 — free",
+      "09:15 Ring 1 — free", "09:15 Ring 1 — free", "09:15 Ring 2 — free", "09:15 Ring 2 — free",
+    ]);
+  });
+
+  it("the lineup of one unnamed lane with two places keeps the v1.0 line shape", async () => {
+    const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:30:00Z", capacity: 2 });
+    await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Rex", "Sam", { place: 1 });
+    const detail = await eventDetail(t.env.DB, (await loadEventBySlug(t.env.DB, e.slug))!);
+    expect(detail.lineup.split("\n").slice(3)).toEqual(["09:00 — Rex — Sam", "09:00 — free", "09:15 — free", "09:15 — free"]);
   });
 });
 
