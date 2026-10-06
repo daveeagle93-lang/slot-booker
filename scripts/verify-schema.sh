@@ -67,6 +67,22 @@ expect_fail "a lane name of 41 characters" "INSERT INTO event_lanes (event_id, p
 expect_ok "the same lane name in another event" "INSERT INTO event_lanes (event_id, position, name) VALUES (2, 2, 'Ring 1')"
 expect_ok "remove the extra lanes again" "DELETE FROM event_lanes WHERE name <> ''"
 
+# Booking fields (0018): one to four fields per event, a label of 1 to 40 characters unique within the event ignoring case.
+FLD="INSERT INTO event_fields (event_id, position, label, required, max_length, in_identity) VALUES"
+expect_ok "an event's Dog and Handler fields" "$FLD (1, 1, 'Dog', 1, 80, 1), (1, 2, 'Handler', 1, 80, 1)"
+expect_fail "a second field at the same position" "$FLD (1, 2, 'Other', 1, 80, 0)" "UNIQUE constraint failed"
+expect_fail "a label differing only in case" "$FLD (1, 3, 'DOG', 1, 80, 0)" "UNIQUE constraint failed"
+expect_fail "field position 5" "$FLD (1, 5, 'Five', 1, 80, 0)" "CHECK constraint failed"
+expect_fail "field position 0" "$FLD (1, 0, 'Zero', 1, 80, 0)" "CHECK constraint failed"
+expect_fail "an empty field label" "$FLD (1, 3, '', 1, 80, 0)" "CHECK constraint failed"
+expect_fail "a field label of 41 characters" "$FLD (1, 3, replace(hex(zeroblob(20)), '0', 'x') || 'yy' || 'z', 1, 80, 0)" "CHECK constraint failed"
+expect_fail "a field max length of 0" "$FLD (1, 3, 'Notes', 0, 0, 0)" "CHECK constraint failed"
+expect_fail "a field max length of 81" "$FLD (1, 3, 'Notes', 0, 81, 0)" "CHECK constraint failed"
+expect_fail "required = 2" "$FLD (1, 3, 'Notes', 2, 80, 0)" "CHECK constraint failed"
+expect_fail "in_identity = 2" "$FLD (1, 3, 'Notes', 0, 80, 2)" "CHECK constraint failed"
+expect_fail "a field for a missing event" "$FLD (99, 1, 'Dog', 1, 80, 1)" "FOREIGN KEY constraint failed"
+expect_ok "an optional third field and the same label in another event" "$FLD (1, 3, 'Notes', 0, 40, 0), (2, 1, 'Dog', 1, 80, 1)"
+
 # A booking: lane (the event's lane at position 1), place, the two form fields, the identity key (the keys joined with char(31)) and a token.
 BK="INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key, token) VALUES"
 # row EVENT SLOT DOG HANDLER [PLACE]: one VALUES tuple with keys computed from the names
@@ -216,9 +232,12 @@ expect_ok "layout and lane rows for a template" "INSERT INTO event_template_layo
 expect_ok "a lane for a template" "INSERT INTO event_template_lanes (template_id, position, name) VALUES (1, 1, '')"
 expect_fail "a second unnamed lane for a template" "INSERT INTO event_template_lanes (template_id, position, name) VALUES (1, 2, '')" "UNIQUE constraint failed"
 expect_fail "template capacity 51" "UPDATE event_template_layout SET capacity = 51 WHERE template_id = 1" "CHECK constraint failed"
+expect_ok "fields for a template" "INSERT INTO event_template_fields (template_id, position, label, required, max_length, in_identity) VALUES (1, 1, 'Dog', 1, 80, 1), (1, 2, 'Handler', 1, 80, 1)"
+expect_fail "a template label differing only in case" "INSERT INTO event_template_fields (template_id, position, label) VALUES (1, 3, 'HANDLER')" "UNIQUE constraint failed"
+expect_fail "a template field with max length 81" "INSERT INTO event_template_fields (template_id, position, label, max_length) VALUES (1, 3, 'Notes', 81)" "CHECK constraint failed"
 expect_ok "delete a template" "DELETE FROM event_templates WHERE id = 1"
 expect_count "cascade: template breaks removed" "SELECT count(*) AS n FROM event_template_breaks" 0
-expect_count "cascade: template layout and lanes removed" "SELECT (SELECT count(*) FROM event_template_layout) + (SELECT count(*) FROM event_template_lanes) AS n" 0
+expect_count "cascade: template layout, lanes and fields removed" "SELECT (SELECT count(*) FROM event_template_layout) + (SELECT count(*) FROM event_template_lanes) + (SELECT count(*) FROM event_template_fields) AS n" 0
 expect_count "existing events have an empty share message" "SELECT count(*) AS n FROM events WHERE share_message = ''" "$(sql "SELECT count(*) AS n FROM events" | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')"
 expect_ok "event with a share message of 1000 characters" "UPDATE events SET share_message = replace(hex(zeroblob(500)), '0', 'x') WHERE id = 2"
 expect_fail "event share message of 1001 characters" "UPDATE events SET share_message = replace(hex(zeroblob(500)), '0', 'x') || 'y' WHERE id = 2" "CHECK constraint failed"
@@ -232,7 +251,7 @@ expect_fail "break end <= start" "INSERT INTO breaks (event_id, start_utc, end_u
 expect_ok "delete event 1" "DELETE FROM events WHERE id = 1"
 expect_count "cascade: breaks removed" "SELECT count(*) AS n FROM breaks WHERE event_id = 1" 0
 expect_count "cascade: bookings removed" "SELECT count(*) AS n FROM bookings WHERE event_id = 1" 0
-expect_count "cascade: lanes and layout removed" "SELECT (SELECT count(*) FROM event_lanes WHERE event_id = 1) + (SELECT count(*) FROM event_layout WHERE event_id = 1) AS n" 0
+expect_count "cascade: lanes, layout and fields removed" "SELECT (SELECT count(*) FROM event_lanes WHERE event_id = 1) + (SELECT count(*) FROM event_layout WHERE event_id = 1) + (SELECT count(*) FROM event_fields WHERE event_id = 1) AS n" 0
 expect_count "other event's booking kept" "SELECT count(*) AS n FROM bookings WHERE event_id = 2" 1
 
 # Backfill: a database holding rows from before 0003 / 0004 gets random slugs and tokens (0005 and 0008 leave keys NULL, 0008 leaves break labels empty, 0009 adds the settings row), then goes through the rest of the migrations.
@@ -271,9 +290,9 @@ got=$(old --command "SELECT count(*) AS n FROM site_settings WHERE id = 1" --jso
 if [ "$got" = "1" ]; then echo "PASS (count=1): 0009 added the settings row to a database with earlier data"
 else echo "FAIL (settings row on old database): expected 1, got '$got'"; FAILS=$((FAILS + 1)); fi
 
-# The bookings rebuild (0015 to 0017) on that database, which still holds the two v1.0-shaped bookings: ids, tokens and names carry over.
+# The bookings rebuild (0015 to 0017) and the booking fields (0018) on that database, which still holds the two v1.0-shaped bookings: ids, tokens and names carry over.
 old --command "SELECT token FROM bookings ORDER BY id" --json | grep -o '"token": *"[^"]*"' > "$OLD/tokens-before"
-for f in 0010 0011 0012 0013 0014 0015 0016 0017; do
+for f in 0010 0011 0012 0013 0014 0015 0016 0017 0018; do
   old --file migrations/${f}_*.sql >/dev/null || { echo "FAIL: migration $f on the upgraded database"; FAILS=$((FAILS + 1)); }
 done
 old --command "SELECT token FROM bookings ORDER BY id" --json | grep -o '"token": *"[^"]*"' > "$OLD/tokens-after"
@@ -288,6 +307,9 @@ else echo "FAIL (legacy table): expected 0, got '$got'"; FAILS=$((FAILS + 1)); f
 got=$(old --command "SELECT (SELECT count(*) FROM event_layout) + (SELECT count(*) FROM event_lanes) AS n" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
 if [ "$got" = "2" ]; then echo "PASS (count=2): one layout row and one lane for the existing event"
 else echo "FAIL (layout rows): expected 2, got '$got'"; FAILS=$((FAILS + 1)); fi
+got=$(old --command "SELECT count(*) AS n FROM event_fields WHERE event_id = 1 AND ((position = 1 AND label = 'Dog') OR (position = 2 AND label = 'Handler')) AND required = 1 AND max_length = 80 AND in_identity = 1" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+if [ "$got" = "2" ]; then echo "PASS (count=2): the existing event got its Dog and Handler fields"
+else echo "FAIL (field backfill): expected 2, got '$got'"; FAILS=$((FAILS + 1)); fi
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS check(s) FAILED"; exit 1; fi
 echo "All schema checks passed"

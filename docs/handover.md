@@ -49,22 +49,22 @@ I couldn't find any documented way to transfer a Worker or a D1 database from on
 
 ### Step B: deploy the app in the club's account
 
-Follow [deploying.md](deploying.md), "Deploy with the button", logged in to the **club's** Cloudflare and GitHub or GitLab accounts, so the club owns the copy. Choose a new `SETUP_CODE`: it is the club's own, not the maintainer's. The deploy creates an empty database with all 17 migrations applied. Do not copy anything from the maintainer's account except the data in Step C.
+Follow [deploying.md](deploying.md), "Deploy with the button", logged in to the **club's** Cloudflare and GitHub or GitLab accounts, so the club owns the copy. Choose a new `SETUP_CODE`: it is the club's own, not the maintainer's. The deploy creates an empty database with all 18 migrations applied. Do not copy anything from the maintainer's account except the data in Step C.
 
 Do **not** copy the old admin secret across. It is not in the exported tables below, and the club makes its own on `/setup` (do it now, so you can test the site).
 
 ### Step C: copy the data across
 
-The data lives in twelve tables: `events`, `event_layout`, `event_lanes`, `breaks`, `bookings`, `event_templates`, `event_template_layout`, `event_template_lanes`, `event_template_breaks`, `site_settings`, `site_logo`, `site_icons`. Do **not** copy `admin_credentials` (the old admin secret's hash) or `login_attempts`.
+The data lives in fourteen tables: `events`, `event_layout`, `event_lanes`, `event_fields`, `breaks`, `bookings`, `event_templates`, `event_template_layout`, `event_template_lanes`, `event_template_fields`, `event_template_breaks`, `site_settings`, `site_logo`, `site_icons`. Do **not** copy `admin_credentials` (the old admin secret's hash) or `login_attempts`.
 
-The club's new database already has its tables, because the deploy ran the migrations. So export the old database's **data only**, for those tables, and import it into the new one. The old database must be on the same migrations (all 17): check with `npx wrangler d1 migrations list DB --remote`, and apply any missing ones to the old database first (`npm run db:migrations:apply`), with the old account's login and ids configured.
+The club's new database already has its tables, because the deploy ran the migrations. So export the old database's **data only**, for those tables, and import it into the new one. The old database must be on the same migrations (all 18): check with `npx wrangler d1 migrations list DB --remote`, and apply any missing ones to the old database first (`npm run db:migrations:apply`), with the old account's login and ids configured.
 
 Wrangler finds the database by the binding in `wrangler.json`, which `npm run configure` writes from `account.local.json`. So the export needs the **old** database's id in that file and the old account's login, and the import needs the **new** ones. Do them one after the other and run `npm run configure` each time you change the file ([deploying.md](deploying.md), step 4 of the command-line path).
 
 1. **Export, with the old account's login and old ids configured** (`--table` takes several names; put it last):
 
    ```sh
-   npx wrangler d1 export slot-booker-db --remote --no-schema --output=./backup.sql --table events event_layout event_lanes breaks bookings event_templates event_template_layout event_template_lanes event_template_breaks site_settings site_logo site_icons
+   npx wrangler d1 export slot-booker-db --remote --no-schema --output=./backup.sql --table events event_layout event_lanes event_fields breaks bookings event_templates event_template_layout event_template_lanes event_template_fields event_template_breaks site_settings site_logo site_icons
    ```
 
    Whether a data-only export of several tables imports cleanly, and in what order it writes the tables, is **unverified**: this is the reason for the scratch round trip in step 3. The flags are from `npx wrangler d1 export --help` (Wrangler 4.147.0).
