@@ -88,7 +88,7 @@ You need Node 24 and Git. Every step below uses a command that exists in `packag
    npx wrangler whoami
    ```
 
-   `whoami` shows which account you are using. If you set `CLOUDFLARE_API_TOKEN` instead of logging in, the token needs account-level **D1 Edit** and whatever permission Cloudflare requires to deploy Workers (**unverified**: check Cloudflare's API token page). Without **User Details: Read**, `whoami` prints a harmless error about the user lookup; the maintainer's real deployment of the earlier version still deployed and ran D1 commands without it.
+   `whoami` shows which account you are using. If you set `CLOUDFLARE_API_TOKEN` instead of logging in, the token needs two permissions, confirmed in a real cutover on 6 October 2026: **Account → D1 → Edit**, and **Account → Workers Scripts → Edit**. The second is needed for `wrangler deploy` and also for `wrangler secret put`: without it the secret call fails with "No access to the specified resource" on `.../workers/scripts/<name>/secrets`. **Cloudflare Pages → Edit** is not needed: the app runs on Workers. Gotcha: unless the token also has **User → User Details → Read**, `whoami` prints a harmless error about missing permissions; it does not affect deploying.
 
 3. **Create the databases.** `npm run configure` (step 4) needs **two** ids, production and preview, so create both; the free plan allows 10 databases per account.
 
@@ -212,7 +212,7 @@ The button makes a copy. Changes to the template do **not** flow into it, and Cl
    git push
    ```
 
-   The migrations run on every deploy (the `deploy` script applies them), so pushing a merge that adds a migration applies it. Expect a conflict on the `database_id` lines of `wrangler.jsonc` if the button or you replaced the placeholders there: keep your own ids. That conflict is expected from how the button is documented to work; I have not seen it. Whether a push redeploys your Worker automatically is **unverified**: check in the dashboard. If it does not, run `npm run deploy` from your clone.
+   The migrations run on every deploy (the `deploy` script applies them), so pushing a merge that adds a migration applies it. Expect a conflict on the `database_id` lines of `wrangler.jsonc` if the button or you replaced the placeholders there: keep your own ids. That conflict is expected from how the button is documented to work; I have not seen it. A push redeploys your Worker automatically: the button's form says "Every push to your production branch will be deployed automatically". Tip: check the Deployments tab on the Worker's page in the dashboard after your first push. To deploy without pushing, run `npm run deploy` from your clone.
 2. **Deploy a fresh copy** with the button and move the data across, as in [handover.md](handover.md). More work, but it starts clean.
 
 Apply all migrations before running new code that needs them. For instance `0011_site_icons` adds the `site_icons` table: without it Settings, saving or removing the logo and uploading icons return errors, while public pages fall back to the default icons.

@@ -70,7 +70,7 @@ Whether a real admin sign-in fits the 10 ms of CPU is **unverified**: the timing
 
 The button makes a **copy**. Later changes to the template do **not** flow into your copy, and Cloudflare's docs describe no way for them to. To update, either:
 
-- add the template as a git remote, merge it and push: `git remote add template <template-url>`, `git fetch template`, `git merge template/main`, `git push`. The migrations run on every deploy, so a merge and push applies any new ones. Expect a merge conflict if you or the button changed the database id lines in `wrangler.jsonc`: keep your own ids. Whether a push redeploys your Worker automatically is **unverified**; check in the dashboard; or
+- add the template as a git remote, merge it and push: `git remote add template <template-url>`, `git fetch template`, `git merge template/main`, `git push`. The migrations run on every deploy, so a merge and push applies any new ones. Expect a merge conflict if you or the button changed the database id lines in `wrangler.jsonc`: keep your own ids. A push redeploys your Worker automatically: the button's form says "Every push to your production branch will be deployed automatically". Tip: check the Deployments tab on the Worker's page in the dashboard after your first push; or
 - deploy a fresh copy with the button and move your data across ([docs/handover.md](docs/handover.md)).
 
 Details: [docs/deploying.md](docs/deploying.md#updating-your-copy).
