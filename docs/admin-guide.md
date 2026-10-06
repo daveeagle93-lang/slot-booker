@@ -384,7 +384,13 @@ I haven't seen this on a real phone. WhatsApp remembers the preview it made the 
 4. They fill in "Dog's name" and "Handler's name".
 5. They tap the confirm button, which says "Confirm booking for" and the time.
 
-They then see "You're booked in", with "Copy booking" and "Add to calendar". The page tells them to keep the details, because there is no way to look a booking up again.
+With one lane and one place per time, that is all they see. With more places or lanes the page changes a little:
+
+- **One lane with several places:** the same grid of times, each with how many places are left under it ("2 left", "1 left"), and the count above the grid says "places left" instead of "slots left".
+- **One lane with a name:** the same grid, with the lane's name in the form heading ("Booking 10:00 · Main ring") and on the confirm button.
+- **Two or more lanes:** each time is a card with a button for every lane, showing the lane's name and "2 left", "1 left" or "Full". A full lane can't be tapped. A time with no free place in any lane is hidden, and a time that has started shows "Started". The person taps the lane they want, and the form heading and confirm button name the time and the lane ("Booking 10:00 · Ring 1"). If someone takes the last place in that lane first, they see "That slot's just gone." with the up-to-date list.
+
+They then see "You're booked in", with "Copy booking" and "Add to calendar". When the lane has a name, the confirmation also has a "Lane" row after the dog and handler, and the copied text has a "Lane:" line after the date and time. The page tells them to keep the details, because there is no way to look a booking up again.
 
 People can't change or cancel a booking online. The page tells them to contact the organiser. You do it for them, as in the next section.
 

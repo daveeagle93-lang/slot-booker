@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { formatPounds as serverFormatPounds } from "../src/core/format";
 import {
   copyText, formatDate, formatPounds, formatTime, formatTimeRange, isBookingPath, mapsUrl, newIdempotencyKey,
-  penceFromPounds, privacyParagraphs, slotsLeftText, slugFromPathname,
+  penceFromPounds, placesLeftText, privacyParagraphs, slotsLeftText, slugFromPathname,
 } from "./lib.js";
 
 describe("London formatting", () => {
@@ -66,6 +66,14 @@ describe("slotsLeftText", () => {
   });
 });
 
+describe("placesLeftText", () => {
+  it("handles none, one and many, with places not slots", () => {
+    expect(placesLeftText(0)).toBe("Fully booked");
+    expect(placesLeftText(1)).toBe("1 place left");
+    expect(placesLeftText(6)).toBe("6 places left");
+  });
+});
+
 describe("copyText", () => {
   const event = {
     name: "Trial Day", costPence: 1500, venuePostcode: "SW1A 1AA", details: "Bring water.\nBe kind.",
@@ -78,6 +86,16 @@ describe("copyText", () => {
     expect(copyText(event, booking)).toBe(
       "Trial Day\nSaturday 13 June 2026, 09:20–09:35\nDog: Biscuit\nHandler: Ann Lee\nVenue: SW1A 1AA\nCost: £15.00\nBring water.\nBe kind.",
     );
+  });
+
+  it("puts the lane after the date and time, when the lane has a name", () => {
+    expect(copyText(event, { ...booking, lane: { id: 7, name: "Ring 1" } })).toBe(
+      "Trial Day\nSaturday 13 June 2026, 09:20–09:35\nLane: Ring 1\nDog: Biscuit\nHandler: Ann Lee\nVenue: SW1A 1AA\nCost: £15.00\nBring water.\nBe kind.",
+    );
+  });
+
+  it("is unchanged for an unnamed lane", () => {
+    expect(copyText(event, { ...booking, lane: { id: 7, name: "" } })).toBe(copyText(event, booking));
   });
 
   it("omits empty details", () => {

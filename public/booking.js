@@ -1,7 +1,7 @@
 import { brandPage, loadSettings, pageTitle } from "./branding.js";
 import {
   copyText, formatDate, formatPounds, formatTime, formatTimeRange, mapsUrl, newIdempotencyKey, privacyParagraphs,
-  slotsLeftText, slugFromPathname,
+  placesLeftText, slotsLeftText, slugFromPathname,
 } from "./lib.js";
 
 const GENERIC_ERROR = "Something went wrong. Please try again.";
@@ -19,6 +19,7 @@ export function init({ document, fetch, location, clipboard, settings = null, se
   let event = null;
   let slots = [];
   let selected = null;
+  let selectedLane = null; // the chosen lane's id, or null when the page doesn't ask for one
   let submitting = false;
   let privacyText = "";
   // One key per page load, sent with every submit so a retry can't book twice. The confirmation has no
@@ -126,6 +127,16 @@ export function init({ document, fetch, location, clipboard, settings = null, se
 
   // Taken slots are hidden; slots that have already started stay visible but disabled.
   const shown = (list) => list.filter((s) => s.status === "free" || s.status === "past");
+  // How the page offers places. Plain (one unnamed lane, one place per time) is exactly the v1.0 page: no lane is
+  // sent. Anything else counts places; two or more lanes get a card per time with a button for each lane.
+  function layout() {
+    const lanes = event.lanes ?? [];
+    const capacity = event.capacity ?? 1;
+    const multi = lanes.length > 1;
+    return { lanes, capacity, multi, plain: !multi && capacity === 1 && !lanes[0]?.name };
+  }
+  const freeIn = (slot, laneId) => slot.places?.find((p) => p.laneId === laneId)?.free ?? 1;
+  const totalFree = (slot) => slot.places ? slot.places.reduce((n, p) => n + p.free, 0) : 1;
   const isClosed = (data) => data.event.archived || data.bookings?.open === false;
 
   async function load() {
@@ -138,6 +149,7 @@ export function init({ document, fetch, location, clipboard, settings = null, se
     slots = shown(r.data.slots);
     privacyText = r.data.privacyNotice ?? "";
     selected = null;
+    selectedLane = null;
     club = await settingsInTime();
     document.title = pageTitle(event.name, club?.clubName);
     if (isClosed(r.data)) showClosed();
@@ -198,36 +210,70 @@ export function init({ document, fetch, location, clipboard, settings = null, se
   }
 
   function renderSlots() {
-    view.slotsLeft.textContent = slotsLeftText(slots.filter((s) => s.status === "free").length);
-    view.grid.replaceChildren(...slots.map((s) => {
-      const time = formatTime(s.start);
-      if (s.status === "past") {
-        return h("li", {}, h("button", { type: "button", class: "slot past", disabled: true, "aria-label": `${time} slot, started` },
-          h("span", { class: "slot-time" }, time), h("span", { class: "slot-note" }, "Started")));
-      }
-      const button = h("button", {
-        type: "button", class: "slot", "aria-pressed": String(s.start === selected), "aria-label": `Book ${time} slot`,
-      }, time);
-      button.dataset.start = s.start;
-      button.addEventListener("click", () => select(s));
-      return h("li", {}, button);
-    }));
+    const { lanes, capacity, multi, plain } = layout();
+    const open = slots.filter((s) => s.status === "free");
+    view.slotsLeft.textContent = plain ? slotsLeftText(open.length) : placesLeftText(open.reduce((n, s) => n + totalFree(s), 0));
+    view.grid.className = multi ? "slot-grid groups" : "slot-grid";
+    view.grid.replaceChildren(...slots.map((s) => (multi ? groupItem(s, lanes) : slotItem(s, lanes[0], capacity, plain))));
   }
 
-  function select(slot) {
+  const pastButton = (s, time) => h("button", { type: "button", class: "slot past", disabled: true, "aria-label": `${time} slot, started` },
+    h("span", { class: "slot-time" }, time), h("span", { class: "slot-note" }, "Started"));
+
+  // One time, one button: the time grid of v1.0, with the places left beside the time when a time has more than one.
+  function slotItem(s, lane, capacity, plain) {
+    const time = formatTime(s.start);
+    if (s.status === "past") return h("li", {}, pastButton(s, time));
+    const left = freeIn(s, lane?.id);
+    const counted = capacity > 1;
+    const button = h("button", {
+      type: "button", class: counted ? "slot has-note" : "slot", "aria-pressed": String(s.start === selected),
+      "aria-label": counted ? `Book ${time} slot, ${placesLeftText(left)}` : `Book ${time} slot`,
+    }, ...(counted ? [h("span", { class: "slot-time" }, time), h("span", { class: "slot-note" }, `${left} left`)] : [time]));
+    button.dataset.start = s.start;
+    if (!plain && lane) button.dataset.lane = String(lane.id);
+    button.addEventListener("click", () => select(s, plain ? null : lane));
+    return h("li", {}, button);
+  }
+
+  // One card per time, with a button for each lane. A full lane stays in the card, disabled.
+  function groupItem(s, lanes) {
+    const time = formatTime(s.start);
+    if (s.status === "past") return h("li", { class: "slot-group past", role: "group", "aria-label": time }, pastButton(s, time));
+    const buttons = lanes.map((lane) => {
+      const left = freeIn(s, lane.id);
+      const button = h("button", {
+        type: "button", class: "slot lane", disabled: left < 1,
+        "aria-pressed": String(s.start === selected && lane.id === selectedLane),
+        "aria-label": left < 1 ? `${time}, ${lane.name}, full` : `Book ${time}, ${lane.name}, ${placesLeftText(left)}`,
+      }, h("span", { class: "lane-name" }, lane.name), h("span", { class: "slot-note" }, left < 1 ? "Full" : `${left} left`));
+      button.dataset.start = s.start;
+      button.dataset.lane = String(lane.id);
+      if (left > 0) button.addEventListener("click", () => select(s, lane));
+      return button;
+    });
+    return h("li", { class: "slot-group", role: "group", "aria-label": time },
+      h("h3", { class: "slot-group-time" }, time), h("div", { class: "lane-grid" }, ...buttons));
+  }
+
+  function select(slot, lane) {
     selected = slot.start;
+    selectedLane = lane ? lane.id : null;
     setNotice("");
     clearErrors();
-    for (const b of view.grid.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.start === selected));
+    for (const b of view.grid.querySelectorAll("button")) {
+      b.setAttribute("aria-pressed", String(b.dataset.start === selected && (b.dataset.lane ?? null) === (selectedLane === null ? null : String(selectedLane))));
+    }
     const time = formatTime(slot.start);
-    view.heading.textContent = `Booking ${time}`;
-    view.submit.textContent = `Confirm booking for ${time}`;
+    view.heading.textContent = `Booking ${time}${lane?.name ? ` · ${lane.name}` : ""}`;
+    view.submit.textContent = `Confirm booking for ${time}${lane?.name ? `, ${lane.name}` : ""}`;
     view.form.hidden = false;
     scrollTo(view.form);
   }
 
   function deselect() {
     selected = null;
+    selectedLane = null;
     view.form.hidden = true;
   }
 
@@ -262,7 +308,7 @@ export function init({ document, fetch, location, clipboard, settings = null, se
       res = await fetch(`/api/events/${slug}/bookings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slot: selected, dogName: view.dog.value, handlerName: view.handler.value, idempotencyKey }),
+        body: JSON.stringify({ slot: selected, ...(selectedLane === null ? {} : { laneId: selectedLane }), dogName: view.dog.value, handlerName: view.handler.value, idempotencyKey }),
       });
       data = await res.json().catch(() => null);
     } catch {
@@ -288,7 +334,9 @@ export function init({ document, fetch, location, clipboard, settings = null, se
       const f = data.fields ?? {};
       if (f.dogName) fieldError(view.dog, view.dogError, f.dogName);
       if (f.handlerName) fieldError(view.handler, view.handlerError, f.handlerName);
-      if (f.slot || !(f.dogName || f.handlerName)) view.formError.textContent = f.slot ?? f.idempotencyKey ?? data.error.message;
+      if (f.slot || f.laneId || !(f.dogName || f.handlerName)) {
+        view.formError.textContent = f.slot ?? f.laneId ?? f.idempotencyKey ?? data.error.message;
+      }
     } else if (res.status === 400 && code === "invalid_slot") {
       deselect();
       setNotice("That slot isn't available any more.");
@@ -340,6 +388,7 @@ export function init({ document, fetch, location, clipboard, settings = null, se
         ...row("When", when),
         ...row("Dog", booking.dogName),
         ...row("Handler", booking.handlerName),
+        ...(booking.lane?.name ? row("Lane", booking.lane.name) : []),
         ...row("Venue", mapsLink(ev.venuePostcode)),
         ...row("Cost", formatPounds(ev.costPence))),
       ...(ev.details ? [h("p", { class: "details" }, ev.details)] : []),

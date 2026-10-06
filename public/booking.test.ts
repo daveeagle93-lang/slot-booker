@@ -894,3 +894,277 @@ describe("branding, privacy contact and the admin notice", () => {
     });
   });
 });
+
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Lanes and places: three lanes with two places each (the phone design), a single lane with several places, a named lane
+// ---------------------------------------------------------------------------------------------------------------------
+describe("lanes and places", () => {
+  const LANES = [{ id: 11, name: "Ring 1" }, { id: 12, name: "Ring 2" }, { id: 13, name: "A very long lane name for the third ring" }];
+  const START = { a: "2026-06-13T08:20:00Z", b: "2026-06-13T08:40:00Z", c: "2026-06-13T09:00:00Z", d: "2026-06-13T09:20:00Z" };
+  const end = (iso: string) => new Date(Date.parse(iso) + 15 * 60_000).toISOString().replace(".000Z", "Z");
+  const places = (...free: number[]) => LANES.map((l, i) => ({ laneId: l.id, free: free[i] }));
+  const view = (start: string, status: "free" | "taken" | "past", ...free: number[]) => ({ start, end: end(start), status, places: places(...free) });
+  const LANE_EVENT = { ...EVENT, lanes: LANES, capacity: 2 };
+  // 09:20 started; 09:40 all open; 10:00 Ring 2 full, Ring 1 one left; 10:20 nothing free (taken, hidden)
+  const LANE_SLOTS = [view(START.a, "past", 1, 1, 1), view(START.b, "free", 2, 2, 2), view(START.c, "free", 1, 0, 2), view(START.d, "taken", 0, 0, 0)];
+  const lanesGet = (slots: unknown[] = LANE_SLOTS, ev: unknown = LANE_EVENT) => () => getOk(ev as typeof EVENT, slots);
+  const groups = () => [...document.querySelectorAll<HTMLElement>("li.slot-group")];
+  const laneButtons = (time: string) =>
+    [...groups().find((g) => g.getAttribute("aria-label") === time)!.querySelectorAll<HTMLButtonElement>("button")];
+  const laneButton = (time: string, lane: string) => laneButtons(time).find((b) => b.querySelector(".lane-name")!.textContent === lane)!;
+  const bookedIn = (lane = LANES[0]) => reply(201, {
+    booking: { slot: { start: START.b, end: end(START.b) }, lane, dogName: "Biscuit", handlerName: "Ann Lee" },
+    event: LANE_EVENT, icsUrl: ICS_URL,
+  });
+  const posted = (calls: Call[]) => JSON.parse(String(calls.find((c) => c.init?.method === "POST")!.init!.body));
+
+  describe("several lanes", () => {
+    it("shows one group per time that has a free place, with the time as its name, and counts places", async () => {
+      await start(routes(() => bookedIn(), lanesGet()));
+      expect(groups().map((g) => g.getAttribute("aria-label"))).toEqual(["09:20", "09:40", "10:00"]);
+      for (const g of groups()) expect(g.getAttribute("role")).toBe("group");
+      expect(groups()[1].querySelector("h3")!.textContent).toBe("09:40");
+      expect(text()).toContain("9 places left"); // 09:40 has 6 and 10:00 has 3; the started 09:20 and the taken 10:20 are not counted
+    });
+
+    it("lists a button per lane with the name and what is left, and disables a full lane", async () => {
+      await start(routes(() => bookedIn(), lanesGet()));
+      expect(laneButtons("09:40").map((b) => b.textContent)).toEqual(["Ring 12 left", "Ring 22 left", `${LANES[2].name}2 left`]);
+      expect(laneButton("10:00", "Ring 1").textContent).toBe("Ring 11 left");
+      const full = laneButton("10:00", "Ring 2");
+      expect(full.disabled).toBe(true);
+      expect(full.querySelector(".slot-note")!.textContent).toBe("Full");
+      expect(full.getAttribute("aria-label")).toBe("10:00, Ring 2, full");
+      expect(laneButton("09:40", "Ring 1").getAttribute("aria-label")).toBe("Book 09:40, Ring 1, 2 places left");
+      expect(laneButton("10:00", "Ring 1").getAttribute("aria-label")).toBe("Book 10:00, Ring 1, 1 place left");
+      full.click();
+      expect(form().hidden).toBe(true);
+    });
+
+    it("shows a started time as one disabled card", async () => {
+      await start(routes(() => bookedIn(), lanesGet()));
+      const started = laneButtons("09:20");
+      expect(started).toHaveLength(1);
+      expect(started[0].disabled).toBe(true);
+      expect(started[0].querySelector(".slot-note")!.textContent).toBe("Started");
+      expect(started[0].getAttribute("aria-label")).toBe("09:20 slot, started");
+    });
+
+    it("uses real buttons, so the keyboard works, and nothing but the lane buttons selects", async () => {
+      await start(routes(() => bookedIn(), lanesGet()));
+      for (const b of document.querySelectorAll(".slot-group button")) expect(b.tagName).toBe("BUTTON");
+      for (const b of document.querySelectorAll(".slot-group button")) expect((b as HTMLButtonElement).type).toBe("button");
+      groups()[1].click();
+      expect(form().hidden).toBe(true);
+    });
+
+    it("selects one lane of one time: aria-pressed only there, heading and submit name time and lane", async () => {
+      await start(routes(() => bookedIn(), lanesGet()));
+      laneButton("09:40", "Ring 2").click();
+      const pressed = [...document.querySelectorAll(".slot-group button[aria-pressed='true']")];
+      expect(pressed).toEqual([laneButton("09:40", "Ring 2")]);
+      expect(laneButton("09:40", "Ring 1").getAttribute("aria-pressed")).toBe("false");
+      expect(laneButton("10:00", "Ring 2").getAttribute("aria-pressed")).toBe("false"); // same lane, other time
+      expect(form().hidden).toBe(false);
+      expect($("#booking-form h2").textContent).toBe("Booking 09:40 · Ring 2");
+      expect($("#booking-form button[type=submit]").textContent).toBe("Confirm booking for 09:40, Ring 2");
+      laneButton("10:00", "Ring 1").click();
+      expect([...document.querySelectorAll(".slot-group button[aria-pressed='true']")]).toEqual([laneButton("10:00", "Ring 1")]);
+      expect($("#booking-form h2").textContent).toBe("Booking 10:00 · Ring 1");
+    });
+
+    it("posts the chosen lane with the booking and shows a Lane row, and the copy text has the lane", async () => {
+      const { calls, clipboard } = await start(routes(() => bookedIn(LANES[1]), lanesGet()));
+      laneButton("09:40", "Ring 2").click();
+      fill();
+      submit();
+      await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+      expect(posted(calls)).toMatchObject({ slot: START.b, laneId: 12, dogName: "Biscuit", handlerName: "Ann Lee" });
+      const terms = [...document.querySelectorAll("dt")].map((d) => d.textContent);
+      expect(terms).toEqual(["When", "Dog", "Handler", "Lane", "Venue", "Cost"]);
+      expect(document.querySelectorAll("dd")[3].textContent).toBe("Ring 2");
+      [...document.querySelectorAll("button")].find((b) => b.textContent === "Copy booking")!.click();
+      await vi.waitFor(() => expect(clipboard.writeText).toHaveBeenCalled());
+      expect(clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("\nLane: Ring 2\nDog: Biscuit\n"));
+    });
+
+    it("on slot_taken shows the live places from the answer, drops the selection and keeps focus on the notice", async () => {
+      const live = [
+        { start: START.b, end: end(START.b), places: places(2, 0, 2) },
+        { start: START.c, end: end(START.c), places: places(1, 0, 2) },
+      ];
+      let gets = 0;
+      const { calls } = await start(routes(
+        () => reply(409, { error: { code: "slot_taken", message: "That slot's just gone." }, freeSlots: live }),
+        () => (gets++ === 0 ? getOk(LANE_EVENT, LANE_SLOTS) : new Response("down", { status: 500 })),
+      ));
+      laneButton("09:40", "Ring 2").click();
+      fill();
+      submit();
+      await vi.waitFor(() => expect($("#notice").textContent).toBe("That slot's just gone."));
+      await vi.waitFor(() => expect(calls.filter((c) => c.init?.method !== "POST")).toHaveLength(2));
+      expect(groups().map((g) => g.getAttribute("aria-label"))).toEqual(["09:40", "10:00"]); // from the payload when the refetch fails
+      expect(laneButton("09:40", "Ring 2").disabled).toBe(true);
+      expect(laneButton("09:40", "Ring 2").textContent).toBe("Ring 2Full");
+      expect(text()).toContain("7 places left"); // 4 at 09:40, 3 at 10:00
+      expect(document.querySelectorAll(".slot-group button[aria-pressed='true']")).toHaveLength(0);
+      expect(form().hidden).toBe(true);
+      expect(document.activeElement).toBe($("#notice"));
+      expect(($("#dog-name") as HTMLInputElement).value).toBe("Biscuit");
+    });
+
+    it("replaces the list with the refetched one after slot_taken, started times included", async () => {
+      let gets = 0;
+      await start(routes(
+        () => reply(409, { error: { code: "slot_taken", message: "x" }, freeSlots: [] }),
+        () => (gets++ === 0 ? getOk(LANE_EVENT, LANE_SLOTS) : getOk(LANE_EVENT, [LANE_SLOTS[0], view(START.c, "free", 1, 0, 0)])),
+      ));
+      laneButton("09:40", "Ring 1").click();
+      fill();
+      submit();
+      await vi.waitFor(() => expect(groups().map((g) => g.getAttribute("aria-label"))).toEqual(["09:20", "10:00"]));
+      expect(text()).toContain("1 place left");
+      expect(laneButtons("09:20")[0].disabled).toBe(true);
+    });
+
+    it("shows 'Choose a lane.' as the form error for fields.laneId, beside field errors", async () => {
+      await start(routes(() => reply(400, {
+        error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: { laneId: "Choose a lane.", dogName: "Too short." },
+      }), lanesGet()));
+      laneButton("09:40", "Ring 1").click();
+      fill();
+      submit();
+      await vi.waitFor(() => expect($(".form-error").textContent).toBe("Choose a lane."));
+      expect($("#dog-error").textContent).toBe("Too short.");
+    });
+
+    it("refetches on event_changed and shows the new lanes", async () => {
+      let gets = 0;
+      await start(routes(
+        () => reply(409, { error: { code: "event_changed", message: "x" } }),
+        () => (gets++ === 0 ? getOk(LANE_EVENT, LANE_SLOTS) : getOk({ ...LANE_EVENT, lanes: LANES.slice(0, 2) } as typeof EVENT, [view(START.b, "free", 2, 2, 0)])),
+      ));
+      laneButton("09:40", "Ring 1").click();
+      fill();
+      submit();
+      await vi.waitFor(() => expect(laneButtons("09:40")).toHaveLength(2));
+      expect($("#notice").textContent).toContain("The event was just changed");
+      expect(document.activeElement).toBe($("#notice"));
+    });
+
+    it("shows the booking and the Lane row when the key was reused and the server answers with the saved booking", async () => {
+      await start(routes(() => reply(422, {
+        error: { code: "idempotency_key_reuse", message: "x" },
+        booking: { slot: { start: START.b, end: end(START.b) }, lane: LANES[0], dogName: "Biscuit", handlerName: "Ann Lee" },
+        event: LANE_EVENT, icsUrl: ICS_URL,
+      }), lanesGet()));
+      laneButton("09:40", "Ring 2").click();
+      fill("Other", "Person");
+      submit();
+      await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+      expect([...document.querySelectorAll("dd")].map((d) => d.textContent)).toContain("Ring 1");
+    });
+
+    it("closes on 410", async () => {
+      await start(routes(() => reply(410, { error: { code: "bookings_closed", message: "closed" } }), lanesGet()));
+      laneButton("09:40", "Ring 1").click();
+      fill();
+      submit();
+      await vi.waitFor(() => expect(text()).toContain("Bookings for this event are closed."));
+    });
+
+    it("says fully booked when no time has a free place", async () => {
+      await start(routes(() => bookedIn(), lanesGet([LANE_SLOTS[3]])));
+      expect(groups()).toHaveLength(0);
+      expect(text()).toContain("Fully booked");
+    });
+
+    it("renders lane names as text", async () => {
+      const lanes = [{ id: 1, name: "<b>One</b>" }, { id: 2, name: "Two" }];
+      await start(routes(() => bookedIn(), lanesGet(
+        [{ start: START.b, end: end(START.b), status: "free", places: [{ laneId: 1, free: 1 }, { laneId: 2, free: 1 }] }],
+        { ...EVENT, lanes, capacity: 1 },
+      )));
+      expect(document.querySelector(".lane-name b")).toBeNull();
+      expect(document.querySelector(".lane-name")!.textContent).toBe("<b>One</b>");
+    });
+  });
+
+  describe("one lane", () => {
+    const one = (name: string, capacity: number) => ({ ...EVENT, lanes: [{ id: 5, name }], capacity });
+    const oneSlots = [
+      { start: START.a, end: end(START.a), status: "taken", places: [{ laneId: 5, free: 0 }] },
+      { start: START.b, end: end(START.b), status: "free", places: [{ laneId: 5, free: 2 }] },
+      { start: START.c, end: end(START.c), status: "free", places: [{ laneId: 5, free: 1 }] },
+    ];
+
+    it("keeps the v1.0 page, and a v1.0 request, for one unnamed lane with one place", async () => {
+      const { calls } = await start(routes(() => created(), () => getOk(one("", 1) as typeof EVENT, [
+        { ...oneSlots[1], places: [{ laneId: 5, free: 1 }] }, oneSlots[2],
+      ])));
+      expect(slotButtons().map((b) => b.textContent)).toEqual(["09:40", "10:00"]);
+      expect(slotButton("09:40").getAttribute("aria-label")).toBe("Book 09:40 slot");
+      expect(text()).toContain("2 slots left");
+      slotButton("09:40").click();
+      expect($("#booking-form h2").textContent).toBe("Booking 09:40");
+      expect($("#booking-form button[type=submit]").textContent).toBe("Confirm booking for 09:40");
+      fill();
+      submit();
+      await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+      expect(posted(calls)).not.toHaveProperty("laneId");
+      expect([...document.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["When", "Dog", "Handler", "Venue", "Cost"]);
+    });
+
+    it("keeps the time grid and adds 'N left' to each time when there are several places", async () => {
+      const { calls } = await start(routes(() => created(), () => getOk(one("", 2) as typeof EVENT, oneSlots)));
+      expect(document.querySelectorAll("li.slot-group")).toHaveLength(0);
+      expect(slotButtons().map((b) => b.textContent)).toEqual(["09:402 left", "10:001 left"]);
+      expect(slotButton("09:40").querySelector(".slot-note")!.textContent).toBe("2 left");
+      expect(slotButton("09:40").getAttribute("aria-label")).toBe("Book 09:40 slot, 2 places left");
+      expect(slotButton("10:00").getAttribute("aria-label")).toBe("Book 10:00 slot, 1 place left");
+      expect(text()).toContain("3 places left");
+      slotButton("09:40").click();
+      expect(slotButton("09:40").getAttribute("aria-pressed")).toBe("true");
+      expect($("#booking-form h2").textContent).toBe("Booking 09:40");
+      fill();
+      submit();
+      await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+      expect(posted(calls)).toMatchObject({ slot: START.b, laneId: 5 });
+      expect([...document.querySelectorAll("dt")].map((d) => d.textContent)).not.toContain("Lane");
+    });
+
+    it("says '1 place left' for the last place, and the started slot still reads Started", async () => {
+      await start(routes(() => created(), () => getOk(one("", 2) as typeof EVENT, [
+        { ...oneSlots[0], status: "past", places: [{ laneId: 5, free: 1 }] }, oneSlots[2],
+      ])));
+      expect(text()).toContain("1 place left");
+      expect(slotButton("09:20").disabled).toBe(true);
+    });
+
+    it("names a single named lane in the form and the confirmation, without extra buttons", async () => {
+      const { calls } = await start(routes(() => bookedIn({ id: 5, name: "Main ring" }), () => getOk(one("Main ring", 1) as typeof EVENT, [
+        { ...oneSlots[1], places: [{ laneId: 5, free: 1 }] },
+      ])));
+      expect(slotButtons().map((b) => b.textContent)).toEqual(["09:40"]);
+      expect(text()).toContain("1 place left");
+      slotButton("09:40").click();
+      expect($("#booking-form h2").textContent).toBe("Booking 09:40 · Main ring");
+      expect($("#booking-form button[type=submit]").textContent).toBe("Confirm booking for 09:40, Main ring");
+      fill();
+      submit();
+      await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+      expect(posted(calls).laneId).toBe(5);
+      expect([...document.querySelectorAll("dt")].map((d) => d.textContent)).toContain("Lane");
+    });
+
+    it("leaves the Lane row out when the booking's lane has no name", async () => {
+      await start(routes(() => bookedIn({ id: 5, name: "" } as never), () => getOk(one("", 2) as typeof EVENT, oneSlots)));
+      slotButton("09:40").click();
+      fill();
+      submit();
+      await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+      expect([...document.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["When", "Dog", "Handler", "Venue", "Cost"]);
+    });
+  });
+});

@@ -36,11 +36,15 @@ export const mapsUrl = (postcode) => `https://www.google.com/maps/search/?api=1&
 
 export const slotsLeftText = (n) => (n === 0 ? "Fully booked" : n === 1 ? "1 slot left" : `${n} slots left`);
 
+/** As slotsLeftText, for a page that counts places (lanes or more than one place per time). */
+export const placesLeftText = (n) => (n === 0 ? "Fully booked" : n === 1 ? "1 place left" : `${n} places left`);
+
 /** Plain-text booking summary for the clipboard. */
 export function copyText(event, booking) {
   const lines = [
     event.name,
     `${formatDate(booking.slot.start)}, ${formatTimeRange(booking.slot.start, booking.slot.end)}`,
+    ...(booking.lane?.name ? [`Lane: ${booking.lane.name}`] : []),
     `Dog: ${booking.dogName}`,
     `Handler: ${booking.handlerName}`,
     `Venue: ${event.venuePostcode}`,

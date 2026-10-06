@@ -144,7 +144,25 @@ a { color: var(--accent); }
   cursor: not-allowed;
 }
 .slot.past .slot-time { text-decoration: line-through; }
-.slot.past .slot-note { font-size: 0.8125rem; font-weight: 600; overflow-wrap: anywhere; }
+.slot-note { font-size: 0.8125rem; font-weight: 600; overflow-wrap: anywhere; }
+
+/* Places left under the time (more than one place per time), and the lane buttons of a time with several lanes. */
+.slot.has-note, .slot.lane {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem;
+  line-height: 1.25;
+}
+.slot-grid.groups { grid-template-columns: 1fr; }
+.slot-group { padding: 0.75rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.slot-group.past { padding: 0; background: transparent; border: 0; }
+.slot-group-time { margin: 0 0 0.5rem; font-size: 1.25rem; line-height: 1.3; font-variant-numeric: tabular-nums; }
+.lane-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 0.5rem; }
+.slot.lane { min-height: 56px; min-width: 0; padding: 0.25rem 0.5rem; font-size: 1rem; }
+.lane-name { max-width: 100%; overflow-wrap: anywhere; }
+.slot.lane:disabled { color: var(--muted); background: transparent; border-style: dashed; border-color: var(--border); cursor: not-allowed; }
 
 .button {
   display: inline-flex;
