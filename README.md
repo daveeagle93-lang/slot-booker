@@ -1,6 +1,6 @@
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/<owner>/<repo>)
 
-> **Maintainer:** replace `<owner>/<repo>` in the button link above with this repository's real GitHub address once it is public. Cloudflare's button only works for a public repository on github.com or gitlab.com ([Deploy buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/)).
+<!-- Maintainer: in the button link above, replace the owner/repo placeholder (the only one in this file) with this repository's GitHub path once it is public, then delete this comment. Cloudflare's button only works for a public repository on github.com or gitlab.com: https://developers.cloudflare.com/workers/platform/deploy-buttons/ -->
 
 # slot-booker
 
@@ -149,4 +149,4 @@ To deploy from the command line instead of the button, see [docs/deploying.md](d
 
 ## Licence
 
-Licence: to be decided. Add a `LICENSE` file before publishing.
+MIT. See [LICENSE](LICENSE). Copyright (c) 2026 Aerie Technology.

@@ -2,6 +2,7 @@
   "name": "slot-booker",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Lightweight slot-booking app for small clubs, on the Cloudflare free tier.",
   "scripts": {
