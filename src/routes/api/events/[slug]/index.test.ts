@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { identityKey } from "../../../../core/identity";
 import { DEFAULT_PRIVACY_NOTICE } from "../../../../server/config";
 import type { AppEnv } from "../../../../server/env";
-import { createTestEnv, insertBreak, insertEvent, type TestEnv } from "../../../../test/db";
+import { createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../../../../test/db";
 import { onRequestGet } from "./index";
 
 let t: TestEnv;
@@ -28,16 +27,12 @@ const get = (slug: string, vars: Partial<AppEnv> = {}): Promise<Response> =>
   );
 
 async function book(eventId: number, slotStart: string, dog: string, handler: string): Promise<void> {
-  await t.env.DB.prepare(
-    "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key) VALUES (?, ?, ?, ?, ?, ?)",
-  )
-    .bind(eventId, slotStart, dog, handler, identityKey(dog), identityKey(handler))
-    .run();
+  await insertBooking(t.env.DB, eventId, slotStart, dog, handler);
 }
 
 describe("GET /api/events/:slug", () => {
   it("maps the event details", async () => {
-    const { slug } = await insertEvent(t.env.DB, {
+    const { slug, laneId } = await insertEvent(t.env.DB, {
       name: "Summer show", costPence: 1250, venuePostcode: "AB1 2CD", details: "Bring water",
     });
     const res = await get(slug);
@@ -48,6 +43,7 @@ describe("GET /api/events/:slug", () => {
       slug, name: "Summer show",
       startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z",
       costPence: 1250, venuePostcode: "AB1 2CD", details: "Bring water", archived: false,
+      lanes: [{ id: laneId, name: "" }], capacity: 1,
     });
   });
 
@@ -57,19 +53,20 @@ describe("GET /api/events/:slug", () => {
     const [a, b] = await Promise.all([get(listed.slug), get(unlisted.slug)]);
     expect(b.status).toBe(200);
     const [bodyA, bodyB] = (await Promise.all([a.json(), b.json()])) as { event: Record<string, unknown>; slots: unknown[] }[];
-    expect(bodyB.event).toEqual({ ...bodyA.event, slug: unlisted.slug });
-    expect(bodyB.slots).toEqual(bodyA.slots);
+    expect(bodyB.event).toEqual({ ...bodyA.event, slug: unlisted.slug, lanes: [{ id: unlisted.laneId, name: "" }] });
+    const withoutLane = (slots: unknown[]) => (slots as { places: unknown[] }[]).map((s) => ({ ...s, places: (s.places as { free: number }[]).map((p) => p.free) }));
+    expect(withoutLane(bodyB.slots)).toEqual(withoutLane(bodyA.slots));
     expect(JSON.stringify(bodyA)).not.toContain("listed");
     expect(JSON.stringify(bodyB)).not.toContain("listed");
   });
 
   it("lists sorted free slots and sets Cache-Control: no-store", async () => {
-    const { slug } = await insertEvent(t.env.DB);
+    const { slug, laneId } = await insertEvent(t.env.DB);
     const res = await get(slug);
     expect(res.headers.get("cache-control")).toBe("no-store");
     const { slots } = (await res.json()) as { slots: { start: string; end: string; status: string }[] };
     expect(slots).toHaveLength(12);
-    expect(slots[0]).toEqual({ start: "2026-06-13T08:00:00Z", end: "2026-06-13T08:15:00Z", status: "free" });
+    expect(slots[0]).toEqual({ start: "2026-06-13T08:00:00Z", end: "2026-06-13T08:15:00Z", status: "free", places: [{ laneId, free: 1 }] });
     expect(slots.map((s) => s.start)).toEqual([...slots.map((s) => s.start)].sort());
     expect(slots.every((s) => s.status === "free")).toBe(true);
   });
@@ -225,8 +222,14 @@ describe("GET /api/events/:slug", () => {
     const body = JSON.parse(text) as Record<string, unknown>;
     expect(Object.keys(body).sort()).toEqual(["bookings", "event", "privacyNotice", "slots"]);
     expect(Object.keys(body.event as object).sort()).toEqual(
-      ["archived", "costPence", "details", "endUtc", "name", "slug", "startUtc", "venuePostcode"],
+      ["archived", "capacity", "costPence", "details", "endUtc", "lanes", "name", "slug", "startUtc", "venuePostcode"],
     );
-    expect(text).not.toMatch(new RegExp(`"id"|"${id}"|:${id}[,}]`));
+    // The lanes (id and name) and each slot's places (laneId and free) are what a booker needs; nothing else about them.
+    const { event, slots } = body as { event: { lanes: object[] }; slots: { places: object[] }[] };
+    expect(event.lanes.map((l) => Object.keys(l).sort())).toEqual([["id", "name"]]);
+    expect(slots.flatMap((s) => s.places.map((p) => Object.keys(p).sort()))).toEqual(slots.map(() => ["free", "laneId"]));
+    // Lane ids are small numbers like any id, so look for the event's and the booking's ids with the lanes and places left out.
+    const scrubbed = JSON.stringify({ ...body, event: { ...event, lanes: [] }, slots: slots.map((s) => ({ ...s, places: [] })) });
+    expect(scrubbed).not.toMatch(new RegExp(`"id"|"${id}"|:${id}[,}]`));
   });
 });

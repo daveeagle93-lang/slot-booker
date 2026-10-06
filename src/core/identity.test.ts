@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { identityKey } from "./identity";
+import { IDENTITY_SEPARATOR, identityKey, identityKeyOf } from "./identity";
 
 describe("identityKey", () => {
   it("folds case beyond ASCII", () => {
@@ -52,5 +52,24 @@ describe("identityKey", () => {
   it("leaves ASCII names as before", () => {
     expect(identityKey("Rex")).toBe("rex");
     expect(identityKey("Sam Jones")).toBe("sam jones");
+  });
+});
+
+describe("identityKeyOf", () => {
+  it("is the key of each value joined with U+001F, in order", () => {
+    expect(IDENTITY_SEPARATOR).toBe("\u001f");
+    expect(identityKeyOf(["Zoë", " Sam  Jones "])).toBe("zoë\u001fsam jones");
+  });
+
+  it("is just the key when there is one value", () => {
+    expect(identityKeyOf(["Rex"])).toBe("rex");
+  });
+
+  it("does not let the parts slide into each other", () => {
+    expect(identityKeyOf(["ab", "c"])).not.toBe(identityKeyOf(["a", "bc"]));
+  });
+
+  it("treats variants of each value as the same identity", () => {
+    expect(identityKeyOf(["ZOË", "SAM"])).toBe(identityKeyOf(["zoë", "sam"]));
   });
 });

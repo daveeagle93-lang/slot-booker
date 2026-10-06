@@ -326,6 +326,7 @@ describe("unknown, invalid and archived events", () => {
 describe("when the database fails", () => {
   const failing = (message: string) => ({
     prepare: () => ({ bind: () => ({ first: () => Promise.reject(new Error(message)), all: () => Promise.reject(new Error(message)) }), first: () => Promise.reject(new Error(message)), all: () => Promise.reject(new Error(message)) }),
+    batch: () => Promise.reject(new Error(message)),
   }) as unknown as D1Database;
 
   it("serves the generic page with status 200 and logs only the message", async () => {

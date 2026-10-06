@@ -361,8 +361,8 @@ export async function createEvent(db: D1Database, d: EventDraft, key: string): P
 }
 
 /**
- * Inserts the event and all its breaks in one batch, so either all of it is stored or none.
- * Assumes a validated draft; the table CHECK constraints are the last line of defence.
+ * Inserts the event, its layout (capacity 1, identity limit 1), its one unnamed lane and all its breaks in one batch, so
+ * either all of it is stored or none. Assumes a validated draft; the table CHECK constraints are the last line of defence.
  */
 export async function insertEventWithBreaks(db: D1Database, slug: string, d: EventDraft, idempotencyKey: string): Promise<void> {
   await db.batch([
@@ -371,6 +371,8 @@ export async function insertEventWithBreaks(db: D1Database, slug: string, d: Eve
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(slug, d.name, d.startUtc, d.endUtc, d.sessionMinutes, d.gapMinutes, d.costPence, d.venuePostcode, d.details,
       d.shareMessage ?? "", d.listed === false ? 0 : 1, idempotencyKey),
+    db.prepare("INSERT INTO event_layout (event_id) VALUES ((SELECT id FROM events WHERE slug = ?))").bind(slug),
+    db.prepare("INSERT INTO event_lanes (event_id, position, name) VALUES ((SELECT id FROM events WHERE slug = ?), 1, '')").bind(slug),
     ...d.breaks.map((b) =>
       db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES ((SELECT id FROM events WHERE slug = ?), ?, ?, ?)")
         .bind(slug, b.startUtc, b.endUtc, b.label)),
@@ -410,18 +412,21 @@ export const defaultShareMessageStatement = (db: D1Database): D1PreparedStatemen
  * The admin list in three groups; every event is in exactly one (archived wins, then the end time decides):
  * `events` (Upcoming: not archived, ends after now, soonest first), `past` (not archived, ended at or before
  * now) and `archived`, each of the last two at most 100, most recently started first, with a HasMore flag.
- * One batch of six queries: the upcoming events, their breaks and booking counts, then Past and Archived, then the
- * default template's share message (`defaultShareMessage`, "" if there is none).
+ * One batch of eight queries: the upcoming events, their breaks, lanes, layouts and booking counts, then Past and
+ * Archived, then the default template's share message (`defaultShareMessage`, "" if there is none). An upcoming event
+ * is `full` when every place of every lane at every time is booked.
  */
 export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMinutes: number) {
   const nowIso = `${now.toISOString().slice(0, 19)}Z`;
   const upcoming = `SELECT id FROM events WHERE archived = 0 AND end_utc > ?1 ORDER BY start_utc, id LIMIT ${MAX_LIST}`;
-  const [events, breaks, counts, pastRows, archivedRows, defaultMessage] = await db.batch([
+  const [events, breaks, lanes, layouts, counts, pastRows, archivedRows, defaultMessage] = await db.batch([
     db.prepare(
       `SELECT id, slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, share_message, listed
        FROM events WHERE id IN (${upcoming}) ORDER BY start_utc, id`,
     ).bind(nowIso),
     db.prepare(`SELECT event_id, start_utc, end_utc, label FROM breaks WHERE event_id IN (${upcoming})`).bind(nowIso),
+    db.prepare(`SELECT event_id, id, position, name FROM event_lanes WHERE event_id IN (${upcoming}) ORDER BY position`).bind(nowIso),
+    db.prepare(`SELECT event_id, capacity, identity_limit, config_rev FROM event_layout WHERE event_id IN (${upcoming})`).bind(nowIso),
     db.prepare(`SELECT event_id, COUNT(*) AS n FROM bookings WHERE event_id IN (${upcoming}) GROUP BY event_id`).bind(nowIso),
     olderEvents(db, "archived = 0 AND end_utc <= ?1").bind(nowIso),
     olderEvents(db, "archived = 1").bind(),
@@ -431,12 +436,19 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
   for (const b of (breaks.results as { event_id: number; start_utc: string; end_utc: string; label: string }[])) {
     breaksOf.set(b.event_id, [...(breaksOf.get(b.event_id) ?? []), { start: b.start_utc, end: b.end_utc, label: b.label }]);
   }
+  const lanesOf = new Map<number, EventRow["lanes"]>();
+  for (const l of (lanes.results as { event_id: number; id: number; position: number; name: string }[])) {
+    lanesOf.set(l.event_id, [...(lanesOf.get(l.event_id) ?? []), { id: l.id, position: l.position, name: l.name }]);
+  }
+  const layoutOf = new Map((layouts.results as { event_id: number; capacity: number; identity_limit: number; config_rev: number }[]).map((r) => [r.event_id, r]));
   const bookedOf = new Map((counts.results as { event_id: number; n: number }[]).map((r) => [r.event_id, r.n]));
   const upcomingList = (events.results as unknown as ListedEvent[]).map((e) => {
     const row = {
       id: e.id, slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc,
       sessionMinutes: e.session_minutes, gapMinutes: e.gap_minutes, costPence: e.cost_pence,
       venuePostcode: e.venue_postcode, details: e.details, shareMessage: e.share_message, archived: false, listed: e.listed === 1, breaks: breaksOf.get(e.id) ?? [],
+      lanes: lanesOf.get(e.id) ?? [], capacity: layoutOf.get(e.id)?.capacity ?? 1, identityLimit: layoutOf.get(e.id)?.identity_limit ?? 1,
+      configRev: layoutOf.get(e.id)?.config_rev ?? 0,
     } satisfies EventRow;
     const slotCount = generateSchedule({
       start: row.startUtc, end: row.endUtc, sessionMinutes: row.sessionMinutes, gapMinutes: row.gapMinutes, breaks: row.breaks,
@@ -446,7 +458,7 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
       slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc, costPence: e.cost_pence,
       venuePostcode: e.venue_postcode, details: e.details, shareMessage: e.share_message, slotCount, bookedCount, archived: false,
       listed: e.listed === 1,
-      full: slotCount > 0 && bookedCount >= slotCount,
+      full: slotCount > 0 && bookedCount >= slotCount * row.lanes.length * row.capacity,
       bookings: bookingWindow(row, cutoffOffsetMinutes, now),
       path: `/e/${e.slug}`,
     };

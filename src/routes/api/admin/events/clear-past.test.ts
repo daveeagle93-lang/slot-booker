@@ -156,6 +156,22 @@ describe("POST /api/admin/events/clear-past: what is deleted", () => {
     expect(await (await clear(body)).json()).toEqual({ deletedEvents: 0, deletedBookings: 0, skipped: [{ slug: e.slug, reason: "not_found" }] });
   });
 
+  it("takes each event's lanes and layout with it, though bookings point at the lanes (several lanes, several places each)", async () => {
+    const e = await insertEvent(t.env.DB, { ...PAST, capacity: 2, lanes: ["Ring 1", "Ring 2", "Ring 3"] });
+    for (const [i, laneId] of e.laneIds.entries()) {
+      await insertBooking(t.env.DB, e.id, PAST.startUtc, `A${i}`, "H", { laneId });
+      await insertBooking(t.env.DB, e.id, PAST.startUtc, `B${i}`, "H", { laneId });
+    }
+    const keep = await insertEvent(t.env.DB, { ...UPCOMING, lanes: ["Ring 1", "Ring 2"] });
+    await insertBooking(t.env.DB, keep.id, UPCOMING.startUtc, "K", "H", { laneId: keep.laneIds[1] });
+    const res = await clear({ slugs: [e.slug, keep.slug], confirm: "DELETE" });
+    expect(await res.json()).toEqual({ deletedEvents: 1, deletedBookings: 6, skipped: [{ slug: keep.slug, reason: "not_past" }] });
+    expect(await countRows(t.env.DB, "event_lanes")).toBe(2);
+    expect(await countRows(t.env.DB, "event_layout")).toBe(1);
+    expect(await countRows(t.env.DB, "bookings")).toBe(1);
+    expect((await t.env.DB.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
+  });
+
   it("deletes 100 past events with their rows in one request", async () => {
     const statement = t.env.DB.prepare(
       "INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, venue_postcode) VALUES (?, 'E', ?, ?, 15, 'AB1 2CD')",

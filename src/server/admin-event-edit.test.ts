@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../test/db";
-import { saveEventEdit } from "./admin-event-edit";
+import { eventDetail, loadBookings, saveEventEdit } from "./admin-event-edit";
 import { parseEventDraft, type EventDraft } from "./admin-events";
 import { loadEventBySlug } from "./events";
 
@@ -95,8 +95,8 @@ describe("saveEventEdit: a booking lands between the read and the save", () => {
       afterRead: async () => { await insertBooking(t.env.DB, e.id, "2026-10-24T08:15:00Z", "Echo", "Eli"); },
     });
     expect(result.kind).toBe("saved");
-    const names = (await t.env.DB.prepare("SELECT dog_name FROM bookings WHERE event_id = ? ORDER BY slot_start_utc").bind(e.id).all<{ dog_name: string }>()).results;
-    expect(names.map((r) => r.dog_name)).toEqual(["Alpha", "Echo"]);
+    const names = (await t.env.DB.prepare("SELECT value_1 FROM bookings WHERE event_id = ? ORDER BY slot_start_utc").bind(e.id).all<{ value_1: string }>()).results;
+    expect(names.map((r) => r.value_1)).toEqual(["Alpha", "Echo"]);
   });
 
   it("aborts with every confirmed booking still in place when a newcomer takes another removed slot", async () => {
@@ -106,8 +106,8 @@ describe("saveEventEdit: a booking lands between the read and the save", () => {
       afterRead: async () => { await insertBooking(t.env.DB, e.id, "2026-10-24T10:15:00Z", "Foxtrot", "Fay"); },
     });
     expect(result.kind === "bookings_affected" && result.affected.map((a) => a.dogName)).toEqual(["Foxtrot", "Bravo", "Charlie"]);
-    const names = (await t.env.DB.prepare("SELECT dog_name FROM bookings WHERE event_id = ? ORDER BY slot_start_utc").bind(e.id).all<{ dog_name: string }>()).results;
-    expect(names.map((r) => r.dog_name)).toEqual(["Alpha", "Foxtrot", "Bravo", "Charlie"]);
+    const names = (await t.env.DB.prepare("SELECT value_1 FROM bookings WHERE event_id = ? ORDER BY slot_start_utc").bind(e.id).all<{ value_1: string }>()).results;
+    expect(names.map((r) => r.value_1)).toEqual(["Alpha", "Foxtrot", "Bravo", "Charlie"]);
     expect((await load(e.slug)).name).toBe("Original");
   });
 
@@ -153,5 +153,25 @@ describe("saveEventEdit: the event is deleted between the read and the save", ()
     const before = await snapshot(other.id);
     await saveEventEdit(t.env.DB, await load(e.slug), shortened(), [e.b, e.c], { afterRead: deleteIt(e.id) });
     expect(await snapshot(other.id)).toBe(before);
+  });
+});
+
+describe("bookings of an event with several lanes and places", () => {
+  it("loadBookings lists them by slot, then lane position, then place", async () => {
+    const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T09:00:00Z", capacity: 2, lanes: ["Ring 1", "Ring 2"] });
+    const [l1, l2] = e.laneIds;
+    const late = await insertBooking(t.env.DB, e.id, "2026-10-24T08:15:00Z", "Late", "H", { laneId: l1 });
+    const r2p1 = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "R2P1", "H", { laneId: l2, place: 1 });
+    const r1p2 = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "R1P2", "H", { laneId: l1, place: 2 });
+    const r1p1 = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "R1P1", "H", { laneId: l1, place: 1 });
+    expect((await loadBookings(t.env.DB, e.id)).map((b) => b.id)).toEqual([r1p1, r1p2, r2p1, late]);
+  });
+
+  it("the schedule detail shows one booking per slot for now: the first by lane and place", async () => {
+    const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:30:00Z", capacity: 2, lanes: ["Ring 1", "Ring 2"] });
+    await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Second", "H", { laneId: e.laneIds[1], place: 1 });
+    await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "First", "H", { laneId: e.laneIds[0], place: 1 });
+    const detail = await eventDetail(t.env.DB, (await loadEventBySlug(t.env.DB, e.slug))!);
+    expect(detail.slots.map((s) => s.booking?.dogName ?? null)).toEqual(["First", null]);
   });
 });

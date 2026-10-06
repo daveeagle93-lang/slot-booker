@@ -46,7 +46,7 @@ async function seed(over: Parameters<typeof insertEvent>[1] = {}) {
   return e;
 }
 const stored = async (eventId: number) =>
-  (await t.env.DB.prepare("SELECT id, slot_start_utc, dog_name FROM bookings WHERE event_id = ? ORDER BY id").bind(eventId).all()).results;
+  (await t.env.DB.prepare("SELECT id, slot_start_utc, value_1 AS dog_name FROM bookings WHERE event_id = ? ORDER BY id").bind(eventId).all()).results;
 const body = async (res: Response) => (await res.json()) as Record<string, any>;
 
 const unauthenticated = (name: string, send: (data: unknown[]) => Promise<Response>) =>

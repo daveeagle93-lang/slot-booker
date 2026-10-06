@@ -1,9 +1,10 @@
-import { identityKey } from "../core/identity";
+import { identityKeyOf } from "../core/identity";
 import { generateSchedule, type TimeRange } from "../core/schedule";
 import { generateBookingToken } from "../core/slug";
-import { scheduleUnchanged, isGuardFailure } from "./db-guard";
-import { computeSlotViews, type EventRow } from "./events";
+import { scheduleUnchanged } from "./db-guard";
+import { computeSlotViews, type EventRow, type LanePlaces } from "./events";
 import { errorResponse } from "./http";
+import { placeAtFreeSpot } from "./places";
 
 const MAX_BODY_BYTES = 4096;
 const MAX_NAME_CODE_POINTS = 80;
@@ -20,16 +21,19 @@ export const invisibleMessage = (what: string): string =>
 export const LINE_SEPARATORS = /[\p{Zl}\p{Zp}]/u;
 export const noStore = { "Cache-Control": "no-store" };
 
-export interface BookingInput { slot: string; dogName: string; handlerName: string; idempotencyKey: string }
+export interface BookingInput { slot: string; laneId: number; dogName: string; handlerName: string; idempotencyKey: string }
 
-type BookedResult = { booking: { slot: TimeRange; dogName: string; handlerName: string }; token: string };
+type BookedResult = { booking: { slot: TimeRange; lane: { id: number; name: string }; dogName: string; handlerName: string }; token: string };
+
+/** A slot a public booker could take right now, with what is left in each lane. */
+export type FreeSlot = TimeRange & { places: LanePlaces[] };
 
 export type BookingResult =
   | ({ kind: "created" } & BookedResult)
   | ({ kind: "replayed" } & BookedResult)
   | { kind: "idempotency_key_reuse"; original: BookedResult | null }
   | { kind: "duplicate_booking" }
-  | { kind: "slot_taken"; freeSlots: TimeRange[] };
+  | { kind: "slot_taken"; freeSlots: FreeSlot[] };
 
 /** What createBooking answers: a BookingResult, or schedule_changed when the event was edited under it (nothing written). */
 export type CreateResult = BookingResult | { kind: "schedule_changed" };
@@ -106,27 +110,42 @@ export function checkName(value: unknown, label: string): { name: string } | { m
   return { name };
 }
 
-export function validateBookingInput(raw: Record<string, unknown>): BookingInput | { fields: Record<string, string> } {
+/**
+ * The lane a request names: `laneId` may be left out only when the event has exactly one lane, and must otherwise be
+ * the id of one of the event's lanes.
+ */
+export function chooseLane(event: Pick<EventRow, "lanes">, value: unknown): { laneId: number } | { message: string } {
+  if (value === undefined && event.lanes.length === 1) return { laneId: event.lanes[0].id };
+  const lane = typeof value === "number" ? event.lanes.find((l) => l.id === value) : undefined;
+  return lane ? { laneId: lane.id } : { message: "Choose a lane." };
+}
+
+export function validateBookingInput(
+  raw: Record<string, unknown>, event: Pick<EventRow, "lanes">,
+): BookingInput | { fields: Record<string, string> } {
   const fields: Record<string, string> = {};
   const dog = checkName(raw.dogName, "dog's name");
   const handler = checkName(raw.handlerName, "handler's name");
+  const lane = chooseLane(event, raw.laneId);
   if ("message" in dog) fields.dogName = dog.message;
   if ("message" in handler) fields.handlerName = handler.message;
+  if ("message" in lane) fields.laneId = lane.message;
   if (typeof raw.slot !== "string") fields.slot = "Choose a slot.";
   if (typeof raw.idempotencyKey !== "string" || !IDEMPOTENCY_KEY.test(raw.idempotencyKey)) {
     fields.idempotencyKey = "Reload the page and try again.";
   }
   if (Object.keys(fields).length > 0) return { fields };
   return {
-    slot: raw.slot as string, dogName: (dog as { name: string }).name, handlerName: (handler as { name: string }).name,
+    slot: raw.slot as string, laneId: (lane as { laneId: number }).laneId,
+    dogName: (dog as { name: string }).name, handlerName: (handler as { name: string }).name,
     idempotencyKey: raw.idempotencyKey as string,
   };
 }
 
-/** The slots a public booker could take right now: not booked and not yet started. */
-export async function bookableSlots(db: D1Database, event: EventRow, now: Date): Promise<TimeRange[]> {
+/** The slots a public booker could take right now: a place free in some lane and not yet started. */
+export async function bookableSlots(db: D1Database, event: EventRow, now: Date): Promise<FreeSlot[]> {
   const views = await computeSlotViews(db, event, now);
-  return views.filter((s) => s.status === "free").map(({ start, end }) => ({ start, end }));
+  return views.filter((s) => s.status === "free").map(({ start, end, places }) => ({ start, end, places }));
 }
 
 function scheduleOf(event: EventRow): TimeRange[] {
@@ -141,7 +160,7 @@ export const findSlot = (event: EventRow, start: string): TimeRange | undefined 
 
 /**
  * What the request's idempotency key says: a replay of the key holder's booking if the key was used by
- * the same slot, dog and handler (a retry), idempotency_key_reuse if it was used by anything else, or
+ * the same slot, lane, dog and handler (a retry), idempotency_key_reuse if it was used by anything else, or
  * null if no booking holds it. The lookup is by event and key alone, and the key is a 128-bit secret
  * held only by the booker's browser, so presenting it proves ownership: a reuse carries the key
  * holder's own booking as stored (never the requested values) so a booker who edited the form after a
@@ -153,27 +172,28 @@ export async function findByIdempotencyKey(
 ): Promise<Extract<BookingResult, { kind: "replayed" | "idempotency_key_reuse" }> | null> {
   const row = await db
     .prepare(
-      "SELECT slot_start_utc, dog_name, handler_name, dog_key, handler_key, token FROM bookings WHERE event_id = ? AND idempotency_key = ?",
+      "SELECT slot_start_utc, lane_id, value_1, value_2, identity_key, token FROM bookings WHERE event_id = ? AND idempotency_key = ?",
     )
     .bind(event.id, input.idempotencyKey)
-    .first<{ slot_start_utc: string; dog_name: string; handler_name: string; dog_key: string; handler_key: string; token: string }>();
+    .first<{ slot_start_utc: string; lane_id: number; value_1: string; value_2: string; identity_key: string; token: string }>();
   if (!row) return null;
-  const same = row.slot_start_utc === input.slot
-    && row.dog_key === identityKey(input.dogName) && row.handler_key === identityKey(input.handlerName);
+  const same = row.slot_start_utc === input.slot && row.lane_id === input.laneId
+    && row.identity_key === identityKeyOf([input.dogName, input.handlerName]);
   const slot = findSlot(event, row.slot_start_utc);
-  const stored = slot && { booking: { slot, dogName: row.dog_name, handlerName: row.handler_name }, token: row.token };
+  const lane = { id: row.lane_id, name: event.lanes.find((l) => l.id === row.lane_id)?.name ?? "" };
+  const stored = slot && { booking: { slot, lane, dogName: row.value_1, handlerName: row.value_2 }, token: row.token };
   if (!same) return { kind: "idempotency_key_reuse", original: stored ?? null };
   return stored ? { kind: "replayed", ...stored } : null;
 }
 
 /**
- * Inserts without checking availability or identity first: the UNIQUE constraints decide, and a
- * failure is classified afterwards. Whoever holds the requested slot decides the answer: a
- * different pair means slot_taken even if the requester's own pair has booked elsewhere, so
- * guessing a taken slot cannot confirm that a dog and handler have booked. If the guessed slot is
- * free, a request with the guessed pair gets duplicate_booking when that pair has booked; that is a
- * known limitation (a wrong guess also creates a real booking). The first thing checked after a
- * failure is the idempotency key, because a simultaneous request with the same key may have won.
+ * Inserts at the lowest free place of the lane without trusting any earlier check: the UNIQUE constraints decide, and
+ * what a failure means is worked out afterwards (placeAtFreeSpot). Whoever holds the requested lane and slot decides the
+ * answer: with no place left, a different identity gets slot_taken even if the requester's own identity has booked
+ * elsewhere, so guessing a taken slot cannot confirm that a dog and handler have booked. If the guessed slot has a free
+ * place, a request with the guessed pair gets duplicate_booking when that pair is at its limit; that is a known limitation
+ * (a wrong guess also creates a real booking). The first thing checked after a failure is the idempotency key,
+ * because a simultaneous request with the same key may have won.
  *
  * The insert is the second statement of a batch whose first is `scheduleUnchanged`, so if the event was
  * edited between the caller's read and now, nothing is written and the answer is schedule_changed; the
@@ -182,38 +202,38 @@ export async function findByIdempotencyKey(
 export async function createBooking(
   db: D1Database, event: EventRow, slot: TimeRange, input: BookingInput, now: Date,
 ): Promise<CreateResult> {
-  const dogKey = identityKey(input.dogName);
-  const handlerKey = identityKey(input.handlerName);
+  const lane = event.lanes.find((l) => l.id === input.laneId);
+  if (!lane) return { kind: "schedule_changed" };
+  const key = identityKeyOf([input.dogName, input.handlerName]);
   const token = generateBookingToken();
-  try {
-    await db.batch([
-      scheduleUnchanged(db, event),
-      db
-        .prepare(
-          "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(event.id, slot.start, input.dogName, input.handlerName, dogKey, handlerKey, token, input.idempotencyKey),
-    ]);
-  } catch (e) {
-    if (isGuardFailure(e)) return { kind: "schedule_changed" };
-    if (!(e instanceof Error) || !e.message.includes("UNIQUE constraint failed")) throw e;
-    const prior = await findByIdempotencyKey(db, event, input);
-    if (prior) return prior;
-    const holder = await db
-      .prepare("SELECT dog_key, handler_key FROM bookings WHERE event_id = ? AND slot_start_utc = ?")
-      .bind(event.id, slot.start)
-      .first<{ dog_key: string; handler_key: string }>();
-    if (holder) {
-      if (holder.dog_key === dogKey && holder.handler_key === handlerKey) return { kind: "duplicate_booking" };
-    } else {
-      // The slot is free, so the identity constraint fired (unless the holder has since vanished).
-      const same = await db
-        .prepare("SELECT 1 AS n FROM bookings WHERE event_id = ? AND dog_key = ? AND handler_key = ?")
-        .bind(event.id, dogKey, handlerKey)
-        .first();
-      if (same) return { kind: "duplicate_booking" };
-    }
-    return { kind: "slot_taken", freeSlots: await bookableSlots(db, event, now) };
+  const outcome = await placeAtFreeSpot({
+    db, event, laneId: lane.id, slot: slot.start, identityKey: key,
+    insert: async ({ place, seq }) => {
+      await db.batch([
+        scheduleUnchanged(db, event),
+        db
+          .prepare(
+            `INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key, identity_seq, token, idempotency_key)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .bind(event.id, lane.id, slot.start, place, input.dogName, input.handlerName, key, seq, token, input.idempotencyKey),
+      ]);
+    },
+    settled: () => findByIdempotencyKey(db, event, input),
+  });
+  switch (outcome.kind) {
+    case "placed":
+      return { kind: "created", booking: { slot, lane: { id: lane.id, name: lane.name }, dogName: input.dogName, handlerName: input.handlerName }, token };
+    case "settled":
+      return outcome.value;
+    case "schedule_changed":
+      return { kind: "schedule_changed" };
+    case "identity_limit":
+      return { kind: "duplicate_booking" };
+    case "full":
+      if (outcome.sameIdentityHolds) return { kind: "duplicate_booking" };
+      return { kind: "slot_taken", freeSlots: await bookableSlots(db, event, now) };
+    case "gave_up":
+      return { kind: "slot_taken", freeSlots: await bookableSlots(db, event, now) };
   }
-  return { kind: "created", booking: { slot, dogName: input.dogName, handlerName: input.handlerName }, token };
 }

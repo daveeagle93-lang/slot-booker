@@ -1,4 +1,5 @@
 import { formatPounds } from "./format";
+import { IDENTITY_SEPARATOR } from "./identity";
 
 /**
  * Pure RFC 5545 builder for a single confirmed booking: no I/O, no clock, no globals.
@@ -85,6 +86,14 @@ function fold(line: string): string {
   lines.push(current);
   return lines.join("\r\n");
 }
+
+/**
+ * What a booking's calendar UID is hashed from: the event's slug and the identity fields' keys joined with "|" (the
+ * same text v1.0 hashed for a dog and a handler, so existing UIDs do not change), and "|#2", "|#3" and so on for
+ * an identity's second and later bookings in an event (the first has no suffix).
+ */
+export const uidSource = (slug: string, identityKey: string, seq: number): string =>
+  [slug, ...identityKey.split(IDENTITY_SEPARATOR)].join("|") + (seq > 1 ? `|#${seq}` : "");
 
 export function buildBookingIcs(input: BookingIcsInput): string {
   const start = toMs(input.slot.start);

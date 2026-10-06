@@ -85,7 +85,7 @@ export type SaveTemplateResult =
 const isNameClash = (e: unknown): boolean => e instanceof Error && e.message.includes("UNIQUE constraint failed");
 
 /**
- * Creates the template in one batch: the limit is a guard, so two requests can't both take the last place. The first
+ * Creates the template (with its layout, capacity 1 and identity limit 1, and its one unnamed lane) in one batch: the limit is a guard, so two requests can't both take the last place. The first
  * template, or one made while none is the default, becomes the default. Asking for the default clears the old one first,
  * in the same batch (the partial unique index refuses two defaults at any moment, and a batch is one transaction, so
  * nobody sees none or two). A name that matches another ignoring case fails on the unique index (duplicate_name).
@@ -104,6 +104,8 @@ export async function createTemplate(db: D1Database, d: TemplateDraft): Promise<
       ...d.breaks.map((b) =>
         db.prepare(`INSERT INTO event_template_breaks (template_id, start_time, end_time, label) VALUES (${named}, ?, ?, ?)`)
           .bind(d.name, b.start, b.end, b.label)),
+      db.prepare(`INSERT INTO event_template_layout (template_id) VALUES (${named})`).bind(d.name),
+      db.prepare(`INSERT INTO event_template_lanes (template_id, position, name) VALUES (${named}, 1, '')`).bind(d.name),
     ]);
     const id = (results[d.isDefault ? 2 : 1].results as { id: number }[])[0].id;
     return { kind: "saved", template: (await loadTemplates(db, id))[0] };

@@ -25,10 +25,15 @@ export const isGuardFailure = (e: unknown): boolean => e instanceof Error && e.m
 
 /**
  * A guard that aborts the batch if the event's schedule definition is no longer what the handler read:
- * start, end, session length, gap or the set of breaks (name, price, break labels and the rest don't matter).
- * It closes the race where another admin edits the event between a handler's read and its batch, which could
- * otherwise put a booking on a slot the edit removed. The handler answers `event_changed` (or re-reads the
- * event) when the batch fails on it.
+ * start, end, session length, gap, the set of breaks (name, price, break labels and the rest don't matter) and the
+ * layout's `config_rev`. It closes the race where another admin edits the event between a handler's read and its
+ * batch, which could otherwise put a booking on a slot the edit removed, or in a lane or place the edit removed.
+ * The handler answers `event_changed` (or re-reads the event) when the batch fails on it.
+ *
+ * INVARIANT: every code path that edits an event's lanes, capacity or identity limit (and, later, its booking fields)
+ * must increase event_layout.config_rev in the same batch as the edit. The revision is the only thing that tells a
+ * booking request that those changed, because they are not part of the schedule. An event with no layout row counts
+ * as revision 0.
  *
  * The schedule depends only on the SET of (start, end) pairs: an identical duplicate break has the same effect
  * as one. So the breaks are compared as sets of `start|end` strings, in both directions, with no ordering or
@@ -37,14 +42,18 @@ export const isGuardFailure = (e: unknown): boolean => e instanceof Error && e.m
  */
 export function scheduleUnchanged(
   db: D1Database,
-  event: { id: number; startUtc: string; endUtc: string; sessionMinutes: number; gapMinutes: number; breaks: { start: string; end: string }[] },
+  event: {
+    id: number; startUtc: string; endUtc: string; sessionMinutes: number; gapMinutes: number; configRev: number;
+    breaks: { start: string; end: string }[];
+  },
 ): D1PreparedStatement {
   const loaded = JSON.stringify([...new Set(event.breaks.map((b) => `${b.start}|${b.end}`))]);
   return guard(
     db,
     `(SELECT COUNT(*) FROM events WHERE id = ? AND start_utc = ? AND end_utc = ? AND session_minutes = ? AND gap_minutes = ?) = 1
+     AND COALESCE((SELECT config_rev FROM event_layout WHERE event_id = ?), 0) = ?
      AND NOT EXISTS (SELECT 1 FROM breaks WHERE event_id = ? AND start_utc || '|' || end_utc NOT IN (SELECT value FROM json_each(?)))
      AND NOT EXISTS (SELECT 1 FROM json_each(?) WHERE value NOT IN (SELECT start_utc || '|' || end_utc FROM breaks WHERE event_id = ?))`,
-    event.id, event.startUtc, event.endUtc, event.sessionMinutes, event.gapMinutes, event.id, loaded, loaded, event.id,
+    event.id, event.startUtc, event.endUtc, event.sessionMinutes, event.gapMinutes, event.id, event.configRev, event.id, loaded, loaded, event.id,
   );
 }

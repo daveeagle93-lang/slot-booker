@@ -431,7 +431,7 @@ describe("PUT /api/admin/events/[slug]: bookings that would lose their slot", ()
     expect(body.event).toMatchObject({ name: "Shortened", end: "11:30", endUtc: "2026-10-24T10:30:00Z" });
     expect(await bookingIds(e.id)).toEqual([e.a]);
     expect(await t.env.DB.prepare("SELECT name, end_utc FROM events WHERE id = ?").bind(e.id).first()).toEqual({ name: "Shortened", end_utc: "2026-10-24T10:30:00Z" });
-    expect(await t.env.DB.prepare("SELECT dog_name FROM bookings WHERE id = ?").bind(e.a).first()).toEqual({ dog_name: "Alpha" });
+    expect(await t.env.DB.prepare("SELECT value_1 AS dog_name FROM bookings WHERE id = ?").bind(e.a).first()).toEqual({ dog_name: "Alpha" });
   });
 
   it("refuses a partial confirmation with 409 listing all of them, changing nothing", async () => {

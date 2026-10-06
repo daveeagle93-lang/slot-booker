@@ -16,7 +16,7 @@ export const onRequestPost: RouteHandler<"slug"> = async ({ request, env, params
 
   const body = await readJsonObject(request);
   if (body instanceof Response) return body;
-  const input = validateBookingInput(body);
+  const input = validateBookingInput(body, event);
   if ("fields" in input) {
     return errorResponse(400, "invalid_input", "Check the highlighted fields.", { fields: input.fields }, noStore);
   }

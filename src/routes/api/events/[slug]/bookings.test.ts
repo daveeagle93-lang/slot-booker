@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { identityKey } from "../../../../core/identity";
+import { identityKeyOf } from "../../../../core/identity";
 import { generateBookingToken } from "../../../../core/slug";
 import type { AppEnv } from "../../../../server/env";
-import { createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../../../../test/db";
+import { createTestEnv, insertBooking, insertBreak, insertEvent, insertsBooking, interceptBatches, type TestEnv } from "../../../../test/db";
 import { onRequestPost } from "./bookings";
 
 // The test events are dated 2026-06-13: pin the clock before them so bookings are open (Date only; timers stay real).
@@ -50,7 +50,7 @@ const entry = (slot: string, dogName: string, handlerName: string, idempotencyKe
 interface ErrorBody {
   error: { code: string; message: string };
   fields?: Record<string, string>;
-  freeSlots?: { start: string; end: string }[];
+  freeSlots?: { start: string; end: string; places: { laneId: number; free: number }[] }[];
 }
 
 async function rows(eventId: number): Promise<Record<string, unknown>[]> {
@@ -60,28 +60,29 @@ async function rows(eventId: number): Promise<Record<string, unknown>[]> {
   return results;
 }
 
-/** Quarter-hour slots 08:00 to 10:45, as the default test event generates them. */
-const quarterSlots = (): { start: string; end: string }[] =>
+/** Quarter-hour slots 08:00 to 10:45, as the default test event generates them, each with the one place of the event's lane free. */
+const quarterSlots = (laneId?: number): { start: string; end: string; places?: { laneId: number; free: number }[] }[] =>
   Array.from({ length: 12 }, (_, i) => {
     const at = (m: number) => `2026-06-13T${String(8 + Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}:00Z`;
-    return { start: at(i * 15), end: at(i * 15 + 15) };
+    return { start: at(i * 15), end: at(i * 15 + 15), ...(laneId === undefined ? {} : { places: [{ laneId, free: 1 }] }) };
   });
 
 describe("POST /api/events/:slug/bookings", () => {
   it("books a slot: 201, payload shape, row stored as entered (trimmed) with identity keys", async () => {
-    const { id, slug } = await insertEvent(t.env.DB, { name: "Summer show", costPence: 1250, details: "Bring water" });
+    const { id, slug, laneId } = await insertEvent(t.env.DB, { name: "Summer show", costPence: 1250, details: "Bring water" });
     const res = await post(slug, entry("2026-06-13T08:15:00Z", "  Zoë ", "Sam   Jones\t"));
     expect(res.status).toBe(201);
     expect(res.headers.get("cache-control")).toBe("no-store");
     const payload = await res.json();
     expect(payload).toEqual({
       booking: {
-        slot: { start: "2026-06-13T08:15:00Z", end: "2026-06-13T08:30:00Z" },
+        slot: { start: "2026-06-13T08:15:00Z", end: "2026-06-13T08:30:00Z" }, lane: { id: laneId, name: "" },
         dogName: "Zoë", handlerName: "Sam   Jones",
       },
       event: {
         slug, name: "Summer show", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z",
         costPence: 1250, venuePostcode: "AB1 2CD", details: "Bring water", archived: false,
+        lanes: [{ id: laneId, name: "" }], capacity: 1,
       },
       icsUrl: expect.stringMatching(new RegExp(`^/api/events/${slug}/bookings/[A-Za-z0-9_-]{22}/ics$`)),
     });
@@ -89,11 +90,10 @@ describe("POST /api/events/:slug/bookings", () => {
     expect(stored).toHaveLength(1);
     expect((payload as { icsUrl: string }).icsUrl).toBe(`/api/events/${slug}/bookings/${stored[0].token}/ics`);
     expect(stored[0]).toMatchObject({
-      event_id: id, slot_start_utc: "2026-06-13T08:15:00Z", dog_name: "Zoë", handler_name: "Sam   Jones",
-      dog_key: identityKey("Zoë"), handler_key: identityKey("Sam Jones"),
+      event_id: id, lane_id: laneId, slot_start_utc: "2026-06-13T08:15:00Z", place: 1, value_1: "Zoë", value_2: "Sam   Jones",
+      identity_key: identityKeyOf(["Zoë", "Sam Jones"]), identity_seq: 1,
     });
-    expect(stored[0].dog_key).toBe("zoë");
-    expect(stored[0].handler_key).toBe("sam jones");
+    expect(stored[0].identity_key).toBe("zoë\u001fsam jones");
   });
 
   it("books an unlisted event through its link, and the response does not say it is unlisted", async () => {
@@ -167,7 +167,7 @@ describe("POST /api/events/:slug/bookings", () => {
       }
       const stored = await rows(id);
       expect(stored).toHaveLength(1);
-      expect(stored[0]).toMatchObject({ dog_name: "Rex \u2764\uFE0F", handler_name: "Sam Jones" });
+      expect(stored[0]).toMatchObject({ value_1: "Rex \u2764\uFE0F", value_2: "Sam Jones" });
     });
 
     it("refuses a name with no letter or number, with a 400 naming the field", async () => {
@@ -209,7 +209,7 @@ describe("POST /api/events/:slug/bookings", () => {
     const S3 = "2026-06-13T08:30:00Z";
 
     it("says slot_taken, not duplicate_booking, when a known pair asks for a slot someone else holds", async () => {
-      const { id, slug } = await insertEvent(t.env.DB);
+      const { id, slug, laneId } = await insertEvent(t.env.DB);
       expect((await post(slug, entry(S1, "Rex", "Sam Jones"))).status).toBe(201); // pair A
       expect((await post(slug, entry(S2, "Fido", "Ann Lee"))).status).toBe(201); // pair B
       const res = await post(slug, entry(S2, "rex", "SAM JONES")); // pair A again, at B's slot
@@ -217,7 +217,7 @@ describe("POST /api/events/:slug/bookings", () => {
       const text = await res.text();
       const body = JSON.parse(text) as ErrorBody;
       expect(body.error).toEqual({ code: "slot_taken", message: "That slot's just gone." });
-      expect(body.freeSlots).toEqual(quarterSlots().filter((s) => s.start !== S1 && s.start !== S2));
+      expect(body.freeSlots).toEqual(quarterSlots(laneId).filter((s) => s.start !== S1 && s.start !== S2));
       expect(text).not.toMatch(/Rex|Sam|Fido|Ann/i);
       expect(await rows(id)).toHaveLength(2);
     });
@@ -244,22 +244,22 @@ describe("POST /api/events/:slug/bookings", () => {
     });
 
     it("falls back to slot_taken with fresh free slots if the holding row has vanished by the time it is read", async () => {
-      const { slug } = await insertEvent(t.env.DB);
-      const racing = {
-        prepare: (sql: string) => t.env.DB.prepare(sql),
-        batch: () => Promise.reject(new Error("D1_ERROR: UNIQUE constraint failed: bookings.event_id, bookings.slot_start_utc")),
-      } as unknown as D1Database;
+      const { slug, laneId } = await insertEvent(t.env.DB);
+      const racing = interceptBatches(t.env.DB, async (sqls, run) => {
+        if (insertsBooking(sqls)) throw new Error("D1_ERROR: UNIQUE constraint failed: bookings.event_id, bookings.lane_id, bookings.slot_start_utc, bookings.place");
+        return run();
+      });
       const res = await post(slug, entry(S1, "Rex", "Sam Jones"), { env: { DB: racing } });
       expect(res.status).toBe(409);
       const body = (await res.json()) as ErrorBody;
       expect(body.error.code).toBe("slot_taken");
-      expect(body.freeSlots).toEqual(quarterSlots());
+      expect(body.freeSlots).toEqual(quarterSlots(laneId));
     });
   });
 
   describe("slot_taken", () => {
-    it("returns exactly the current free slots, only start/end, and no other people's names", async () => {
-      const { id, slug } = await insertEvent(t.env.DB);
+    it("returns exactly the current free slots, with only their times and places, and no other people's names", async () => {
+      const { id, slug, laneId } = await insertEvent(t.env.DB);
       await insertBreak(t.env.DB, id, "2026-06-13T09:00:00Z", "2026-06-13T09:30:00Z");
       expect((await post(slug, entry(SLOT, "Zxqdogname", "Zxqhandlername"))).status).toBe(201);
       expect((await post(slug, entry("2026-06-13T10:00:00Z", "Other", "Person"))).status).toBe(201);
@@ -270,7 +270,7 @@ describe("POST /api/events/:slug/bookings", () => {
       const body = JSON.parse(text) as ErrorBody;
       expect(body.error).toEqual({ code: "slot_taken", message: "That slot's just gone." });
       const taken = new Set([SLOT, "2026-06-13T09:00:00Z", "2026-06-13T09:15:00Z", "2026-06-13T10:00:00Z"]);
-      const expected = quarterSlots().filter((s) => !taken.has(s.start));
+      const expected = quarterSlots(laneId).filter((s) => !taken.has(s.start));
       expect(expected).toHaveLength(8);
       expect(body.freeSlots).toEqual(expected);
       expect(Object.keys(body).sort()).toEqual(["error", "freeSlots"]);
@@ -576,7 +576,7 @@ describe("POST /api/events/:slug/bookings", () => {
     const S2 = "2026-06-13T08:15:00Z";
 
     it("answers a retry after a dropped response with the original booking, token and icsUrl", async () => {
-      const { id, slug } = await insertEvent(t.env.DB, { name: "Summer show" });
+      const { id, slug, laneId } = await insertEvent(t.env.DB, { name: "Summer show" });
       const body = entry(S1, "Rex", "Sam Jones");
       void (await post(slug, body)); // the response is lost: its body is never read
       const stored = await rows(id);
@@ -587,7 +587,7 @@ describe("POST /api/events/:slug/bookings", () => {
       expect(retry.headers.get("idempotent-replayed")).toBe("true");
       expect(retry.headers.get("cache-control")).toBe("no-store");
       expect(await retry.json()).toEqual({
-        booking: { slot: { start: S1, end: "2026-06-13T08:15:00Z" }, dogName: "Rex", handlerName: "Sam Jones" },
+        booking: { slot: { start: S1, end: "2026-06-13T08:15:00Z" }, lane: { id: laneId, name: "" }, dogName: "Rex", handlerName: "Sam Jones" },
         event: expect.objectContaining({ slug, name: "Summer show", archived: false }),
         icsUrl: `/api/events/${slug}/bookings/${stored[0].token}/ics`,
       });
@@ -671,7 +671,7 @@ describe("POST /api/events/:slug/bookings", () => {
         ["slot", entry(S2, "Rex", "Sam Jnes")],
         ["dog", entry(S1, "Fido", "Sam Jnes")],
       ])("answers a changed %s with 422 and the ORIGINAL booking, and writes nothing", async (_what, edited) => {
-        const { id, slug } = await insertEvent(t.env.DB, { name: "Summer show" });
+        const { id, slug, laneId } = await insertEvent(t.env.DB, { name: "Summer show" });
         const key = newKey();
         const first = await post(slug, entry(S1, "Rex", "Sam Jnes", key));
         const original = (await first.json()) as { icsUrl: string };
@@ -683,7 +683,7 @@ describe("POST /api/events/:slug/bookings", () => {
         expect(res.headers.get("cache-control")).toBe("no-store");
         expect(await res.json()).toEqual({
           error: { code: "idempotency_key_reuse", message },
-          booking: { slot: { start: S1, end: "2026-06-13T08:15:00Z" }, dogName: "Rex", handlerName: "Sam Jnes" },
+          booking: { slot: { start: S1, end: "2026-06-13T08:15:00Z" }, lane: { id: laneId, name: "" }, dogName: "Rex", handlerName: "Sam Jnes" },
           event: expect.objectContaining({ slug, name: "Summer show" }),
           icsUrl: original.icsUrl,
         });
@@ -937,7 +937,7 @@ describe("POST /api/events/:slug/bookings", () => {
       expect(startsOf(parsed.freeSlots)).toEqual(
         ["08:45", "09:15", "09:30", "09:45", "10:00", "10:15", "10:30", "10:45"],
       );
-      expect(Object.keys(parsed.freeSlots![0]).sort()).toEqual(["end", "start"]);
+      expect(Object.keys(parsed.freeSlots![0]).sort()).toEqual(["end", "places", "start"]);
       expect(await rows(id)).toHaveLength(1); // only Fido's earlier booking
     });
 
@@ -1017,18 +1017,16 @@ describe("POST /api/events/:slug/bookings", () => {
 
   describe("an edit racing the booking (the insert is guarded on the schedule)", () => {
     const LAST = "2026-06-13T10:45:00Z";
-    /** The real database, except that `before` runs once per batch attempt (up to `times`) just before the batch: the edit lands between the handler's read and its insert. */
+    /** The real database, except that `before` runs once per booking insert (up to `times`) just before its batch: the edit lands between the handler's read and its insert. */
     const racing = (before: () => Promise<void>, times = 1) => {
       let batches = 0;
       const env = {
-        DB: {
-          prepare: (sql: string) => t.env.DB.prepare(sql),
-          batch: async (statements: D1PreparedStatement[]) => {
-            batches++;
-            if (batches <= times) await before();
-            return t.env.DB.batch(statements);
-          },
-        } as unknown as D1Database,
+        DB: interceptBatches(t.env.DB, async (sqls, run) => {
+          if (!insertsBooking(sqls)) return run();
+          batches++;
+          if (batches <= times) await before();
+          return run();
+        }),
       };
       return { env, batches: () => batches };
     };
@@ -1090,10 +1088,10 @@ describe("POST /api/events/:slug/bookings", () => {
   describe("unexpected failures", () => {
     it("returns a generic 500 and logs, without leaking SQL, when the insert fails for another reason", async () => {
       const { slug } = await insertEvent(t.env.DB);
-      const failing = {
-        prepare: (sql: string) => t.env.DB.prepare(sql),
-        batch: () => Promise.reject(new Error("D1_ERROR: SECRET sql detail")),
-      } as unknown as D1Database;
+      const failing = interceptBatches(t.env.DB, async (sqls, run) => {
+        if (insertsBooking(sqls)) throw new Error("D1_ERROR: SECRET sql detail");
+        return run();
+      });
       const spy = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
         const res = await post(slug, entry(SLOT, "Rex", "Sam Jones"), { env: { DB: failing } });
@@ -1107,6 +1105,123 @@ describe("POST /api/events/:slug/bookings", () => {
       } finally {
         spy.mockRestore();
       }
+    });
+  });
+
+  describe("lanes and places", () => {
+    const withLane = (slot: string, dog: string, handler: string, laneId?: unknown) => ({ ...entry(slot, dog, handler), ...(laneId === undefined ? {} : { laneId }) });
+    const fieldsOf = async (res: Response) => ((await res.json()) as ErrorBody).fields;
+
+    it("books the event's only lane when laneId is left out, and says which lane in the answer", async () => {
+      const { id, slug, laneId } = await insertEvent(t.env.DB);
+      const res = await post(slug, withLane(SLOT, "Rex", "Sam"));
+      expect(res.status).toBe(201);
+      expect(((await res.json()) as { booking: { lane: unknown } }).booking.lane).toEqual({ id: laneId, name: "" });
+      expect((await rows(id))[0]).toMatchObject({ lane_id: laneId, place: 1 });
+    });
+
+    it("accepts the only lane's id when it is sent", async () => {
+      const { slug, laneId } = await insertEvent(t.env.DB);
+      expect((await post(slug, withLane(SLOT, "Rex", "Sam", laneId))).status).toBe(201);
+    });
+
+    it("books the chosen lane of several, naming it in the answer", async () => {
+      const { id, slug, laneIds } = await insertEvent(t.env.DB, { lanes: ["Ring 1", "Ring 2"] });
+      const res = await post(slug, withLane(SLOT, "Rex", "Sam", laneIds[1]));
+      expect(res.status).toBe(201);
+      expect(((await res.json()) as { booking: { lane: unknown } }).booking.lane).toEqual({ id: laneIds[1], name: "Ring 2" });
+      expect((await rows(id))[0]).toMatchObject({ lane_id: laneIds[1] });
+    });
+
+    it("refuses a missing laneId with 400 invalid_input fields.laneId when the event has two or more lanes, writing nothing", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, { lanes: ["Ring 1", "Ring 2"] });
+      const res = await post(slug, withLane(SLOT, "Rex", "Sam"));
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as ErrorBody & { error: { code: string } }).error.code).toBe("invalid_input");
+      expect(await rows(id)).toHaveLength(0);
+      expect(await fieldsOf(await post(slug, withLane(SLOT, "Rex", "Sam")))).toEqual({ laneId: "Choose a lane." });
+    });
+
+    it.each([["an unknown id", 987654], ["a string", "1"], ["null", null], ["a float", 1.5], ["zero", 0], ["an object", {}]])("refuses laneId as %s with fields.laneId", async (_what, laneId) => {
+      const { id, slug } = await insertEvent(t.env.DB, { lanes: ["Ring 1", "Ring 2"] });
+      const res = await post(slug, withLane(SLOT, "Rex", "Sam", laneId));
+      expect(res.status).toBe(400);
+      expect(await fieldsOf(res)).toEqual({ laneId: "Choose a lane." });
+      expect(await rows(id)).toHaveLength(0);
+    });
+
+    it("refuses another event's lane, and reports it together with the other field errors", async () => {
+      const { slug } = await insertEvent(t.env.DB, { lanes: ["Ring 1", "Ring 2"] });
+      const other = await insertEvent(t.env.DB);
+      const res = await post(slug, withLane(SLOT, "", "Sam", other.laneId));
+      expect(res.status).toBe(400);
+      expect(await fieldsOf(res)).toEqual({ dogName: "Enter the dog's name.", laneId: "Choose a lane." });
+    });
+
+    it("refuses a lane id on a one-lane event when it is not that lane's", async () => {
+      const { slug } = await insertEvent(t.env.DB);
+      const other = await insertEvent(t.env.DB);
+      expect(await fieldsOf(await post(slug, withLane(SLOT, "Rex", "Sam", other.laneId)))).toEqual({ laneId: "Choose a lane." });
+    });
+
+    it("lets a capacity-3 slot take three different bookings in places 1, 2 and 3, then answers slot_taken with the lane's places", async () => {
+      const { id, slug, laneId } = await insertEvent(t.env.DB, { capacity: 3 });
+      for (const [dog, place] of [["A", 1], ["B", 2], ["C", 3]] as const) {
+        const res = await post(slug, withLane(SLOT, dog, "H"));
+        expect(res.status, dog).toBe(201);
+        expect((await rows(id)).find((r) => r.value_1 === dog)?.place).toBe(place);
+      }
+      const res = await post(slug, withLane(SLOT, "D", "H"));
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error.code).toBe("slot_taken");
+      expect(body.freeSlots?.map((s) => s.start)).not.toContain(SLOT);
+      expect(body.freeSlots?.[0].places).toEqual([{ laneId, free: 3 }]);
+    });
+
+    it("keeps the same dog+handler to one booking per event while the identity limit is 1, however many places there are", async () => {
+      const { slug } = await insertEvent(t.env.DB, { capacity: 3 });
+      expect((await post(slug, withLane(SLOT, "Rex", "Sam"))).status).toBe(201);
+      const again = await post(slug, withLane("2026-06-13T08:15:00Z", "Rex", "Sam"));
+      expect(again.status).toBe(409);
+      expect(((await again.json()) as ErrorBody).error.code).toBe("duplicate_booking");
+    });
+
+    it("lets one identity book up to the event's identity limit", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, { identityLimit: 2 });
+      expect((await post(slug, withLane(SLOT, "Rex", "Sam"))).status).toBe(201);
+      expect((await post(slug, withLane("2026-06-13T08:15:00Z", "Rex", "Sam"))).status).toBe(201);
+      expect((await post(slug, withLane("2026-06-13T08:30:00Z", "Rex", "Sam"))).status).toBe(409);
+      expect((await rows(id)).map((r) => r.identity_seq)).toEqual([1, 2]);
+    });
+
+    it("answers a replay with the lane it was booked in, and a changed lane with idempotency_key_reuse", async () => {
+      const { slug, laneIds } = await insertEvent(t.env.DB, { lanes: ["Ring 1", "Ring 2"] });
+      const key = newKey();
+      expect((await post(slug, { ...withLane(SLOT, "Rex", "Sam", laneIds[0]), idempotencyKey: key })).status).toBe(201);
+      const same = await post(slug, { ...withLane(SLOT, "Rex", "Sam", laneIds[0]), idempotencyKey: key });
+      expect(same.status).toBe(201);
+      expect(same.headers.get("idempotent-replayed")).toBe("true");
+      const changed = await post(slug, { ...withLane(SLOT, "Rex", "Sam", laneIds[1]), idempotencyKey: key });
+      expect(changed.status).toBe(422);
+      expect(((await changed.json()) as { booking: { lane: unknown } }).booking.lane).toEqual({ id: laneIds[0], name: "Ring 1" });
+    });
+
+    it("books on the fresh event (the guard refused the first insert) when the layout was edited between reading the event and the insert", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, { capacity: 2 });
+      let first = true;
+      const env = {
+        DB: interceptBatches(t.env.DB, async (sqls, run) => {
+          if (insertsBooking(sqls) && first) {
+            first = false;
+            await t.env.DB.prepare("UPDATE event_layout SET capacity = 1, config_rev = config_rev + 1 WHERE event_id = ?").bind(id).run();
+          }
+          return run();
+        }),
+      };
+      const res = await post(slug, withLane(SLOT, "Rex", "Sam"), { env });
+      expect(res.status).toBe(201); // the retry against the fresh event books it
+      expect((await rows(id))).toHaveLength(1);
     });
   });
 });

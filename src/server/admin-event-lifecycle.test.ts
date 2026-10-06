@@ -17,6 +17,36 @@ async function seed(name = "Show") {
   return e;
 }
 
+describe("deleteEvent: lanes and layout", () => {
+  it("deletes an event whose lanes hold bookings in several places, taking its lanes and layout, and leaves another event's lanes alone", async () => {
+    const e = await insertEvent(t.env.DB, { name: "Show", capacity: 2, lanes: ["Ring 1", "Ring 2"], startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T09:00:00Z" });
+    for (const laneId of e.laneIds) {
+      await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", `A${laneId}`, "H", { laneId });
+      await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", `B${laneId}`, "H", { laneId });
+    }
+    const keep = await seed("Keeper");
+    expect(await deleteEvent(t.env.DB, e.slug, "Show")).toEqual({ kind: "deleted", slug: e.slug, name: "Show", bookings: 4 });
+    expect(await count("event_lanes")).toBe(1);
+    expect(await count("event_layout")).toBe(1);
+    expect((await t.env.DB.prepare("SELECT event_id FROM event_lanes").first<{ event_id: number }>())!.event_id).toBe(keep.id);
+    expect((await t.env.DB.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
+  });
+
+  it("also works when the lanes were added after the bookings and the event has no bookings at all", async () => {
+    const e = await insertEvent(t.env.DB, { name: "Empty", lanes: ["Ring 1", "Ring 2"] });
+    expect(await deleteEvent(t.env.DB, e.slug, "Empty")).toMatchObject({ kind: "deleted", bookings: 0 });
+    expect(await count("event_lanes")).toBe(0);
+  });
+
+  it("a raw DELETE of the event row (as the app's own batch relies on for the lanes) cascades bookings and lanes in one statement", async () => {
+    const e = await insertEvent(t.env.DB, { lanes: ["Ring 1", "Ring 2"] });
+    await insertBooking(t.env.DB, e.id, "2026-06-13T08:00:00Z", "A", "H", { laneId: e.laneIds[1] });
+    await t.env.DB.prepare("DELETE FROM events WHERE id = ?").bind(e.id).run();
+    expect(await rows()).toEqual([0, 0, 0]);
+    expect(await count("event_lanes")).toBe(0);
+  });
+});
+
 describe("deleteEvent: a request lands between the read and the batch", () => {
   it("deletes a booking added after the read too, counts it, and leaves no orphan rows", async () => {
     const e = await seed();

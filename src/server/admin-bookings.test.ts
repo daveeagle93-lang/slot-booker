@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { identityKey } from "../core/identity";
+import { identityKeyOf } from "../core/identity";
 import { generateSchedule } from "../core/schedule";
 import { isValidToken } from "../core/slug";
 import { createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../test/db";
@@ -49,8 +49,8 @@ describe("addBooking", () => {
     expect(b).toEqual({ id: expect.any(Number), slotStart: e.s[2], dogName: "Rex", handlerName: "Sam  Smith" });
     const row = (await rows(e.id))[0] as Record<string, unknown>;
     expect(row).toMatchObject({
-      id: b.id, slot_start_utc: e.s[2], dog_name: "Rex", handler_name: "Sam  Smith",
-      dog_key: identityKey("Rex"), handler_key: identityKey("Sam Smith"), idempotency_key: null,
+      id: b.id, slot_start_utc: e.s[2], value_1: "Rex", value_2: "Sam  Smith", lane_id: e.event.lanes[0].id, place: 1,
+      identity_key: identityKeyOf(["Rex", "Sam Smith"]), identity_seq: 1, idempotency_key: null,
     });
     expect(isValidToken(row.token as string)).toBe(true);
   });
@@ -138,7 +138,7 @@ describe("addBooking", () => {
     for (const dog of odd) {
       for (const handler of ["Sam", ...odd.slice(0, 3)]) {
         const input = { slot: e.s[0], dogName: dog, handlerName: handler };
-        const publicFields = (validateBookingInput({ ...input, idempotencyKey: IDEM }) as { fields?: Record<string, string> }).fields ?? {};
+        const publicFields = (validateBookingInput({ ...input, idempotencyKey: IDEM }, e.event) as { fields?: Record<string, string> }).fields ?? {};
         const f = failed(await addBooking(t.env.DB, e.event, input));
         expect(f.code).toBe("invalid_input");
         expect((f.extra as { fields: unknown }).fields, JSON.stringify(input)).toEqual(publicFields);
@@ -330,7 +330,7 @@ describe("moveBooking", () => {
     const now = new Date("2026-10-01T12:00:00Z");
     const [moved, booked] = await Promise.all([
       move(e, a, e.s[0], e.s[5]),
-      createBooking(t.env.DB, e.event, { start: e.s[5], end: e.s[5] }, { slot: e.s[5], dogName: "Pub", handlerName: "Lic", idempotencyKey: IDEM }, now),
+      createBooking(t.env.DB, e.event, { start: e.s[5], end: e.s[5] }, { slot: e.s[5], laneId: e.event.lanes[0].id, dogName: "Pub", handlerName: "Lic", idempotencyKey: IDEM }, now),
     ]);
     expect(("ok" in moved ? 1 : 0) + (booked.kind === "created" ? 1 : 0)).toBe(1);
     if ("ok" in moved) expect(booked.kind).toBe("slot_taken");
@@ -366,7 +366,7 @@ describe("swapBookings", () => {
     const { e, a, b } = await pair();
     expect(ok(await swap(e, [a, e.s[1]], [b, e.s[6]]))).toEqual({ a: { id: a, slotStart: e.s[6] }, b: { id: b, slotStart: e.s[1] } });
     expect(await slotsOf(e.id)).toEqual({ [a]: e.s[6], [b]: e.s[1] });
-    const names = (await rows(e.id)).map((r) => (r as { id: number; dog_name: string }).dog_name);
+    const names = (await rows(e.id)).map((r) => (r as { id: number; value_1: string }).value_1);
     expect(names).toEqual(["Rex", "Bella"]);
   });
 
@@ -496,3 +496,79 @@ describe("swapBookings", () => {
   });
 });
 
+
+// The admin tools are not lane-aware yet (step 2): add uses the event's first lane, move keeps the booking's lane, swap
+// exchanges whole places. Places and capacity are already respected, and lanes added by SQL work.
+describe("admin tools with capacity and lanes", () => {
+  const placesOf = async (eventId: number) =>
+    Object.fromEntries((await t.env.DB.prepare("SELECT id, lane_id, slot_start_utc, place FROM bookings WHERE event_id = ?").bind(eventId).all<{ id: number; lane_id: number; slot_start_utc: string; place: number }>())
+      .results.map((r) => [r.id, [r.lane_id, r.slot_start_utc, r.place]]));
+
+  it("adds into the first lane at the lowest free place, and says slot_taken only when every place is taken", async () => {
+    const e = await seed({ capacity: 2, lanes: ["Ring 1", "Ring 2"] });
+    const a = ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "A", handlerName: "H1" }));
+    const b = ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "B", handlerName: "H2" }));
+    expect(await placesOf(e.id)).toEqual({ [a.id]: [e.laneIds[0], e.s[0], 1], [b.id]: [e.laneIds[0], e.s[0], 2] });
+    expect(failed(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "C", handlerName: "H3" }))).toMatchObject({
+      status: 409, code: "slot_taken", extra: { booking: { id: a.id, dogName: "A" } },
+    });
+  });
+
+  it("numbers a second booking of an identity when the event's limit allows it, and refuses the next as a duplicate", async () => {
+    const e = await seed({ identityLimit: 2 });
+    ok(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "Rex", handlerName: "Sam" }));
+    ok(await addBooking(t.env.DB, e.event, { slot: e.s[1], dogName: "rex", handlerName: "SAM" }));
+    expect(failed(await addBooking(t.env.DB, e.event, { slot: e.s[2], dogName: "REX", handlerName: "sam" }))).toMatchObject({ status: 409, code: "duplicate_booking" });
+    expect((await t.env.DB.prepare("SELECT identity_seq FROM bookings WHERE event_id = ? ORDER BY id").bind(e.id).all()).results).toEqual([{ identity_seq: 1 }, { identity_seq: 2 }]);
+  });
+
+  it("moves a booking to the lowest free place of the target slot, in the lane it was in", async () => {
+    const e = await seed({ capacity: 3, lanes: ["Ring 1", "Ring 2"] });
+    const lane2 = e.laneIds[1];
+    await insertBooking(t.env.DB, e.id, e.s[5], "X", "X", { laneId: lane2, place: 1 });
+    await insertBooking(t.env.DB, e.id, e.s[5], "Y", "Y", { laneId: lane2, place: 3 });
+    const a = await insertBooking(t.env.DB, e.id, e.s[0], "Rex", "Sam", { laneId: lane2, place: 2 });
+    ok(await moveBooking(t.env.DB, e.event, a, { fromSlot: e.s[0], toSlot: e.s[5] }));
+    expect((await placesOf(e.id))[a]).toEqual([lane2, e.s[5], 2]);
+  });
+
+  it("refuses a move into a lane-and-slot with no free place, and into one that is free in the first lane only when it is free in the booking's lane", async () => {
+    const e = await seed({ capacity: 1, lanes: ["Ring 1", "Ring 2"] });
+    const [l1, l2] = e.laneIds;
+    await insertBooking(t.env.DB, e.id, e.s[5], "Held", "Ring2", { laneId: l2 });
+    const a = await insertBooking(t.env.DB, e.id, e.s[0], "Rex", "Sam", { laneId: l2 });
+    // Ring 1 is free at s[5], but the booking is in Ring 2, which is not.
+    expect(failed(await moveBooking(t.env.DB, e.event, a, { fromSlot: e.s[0], toSlot: e.s[5] }))).toMatchObject({ status: 409, code: "slot_taken" });
+    const b = await insertBooking(t.env.DB, e.id, e.s[1], "Fido", "Ann", { laneId: l1 });
+    ok(await moveBooking(t.env.DB, e.event, b, { fromSlot: e.s[1], toSlot: e.s[5] }));
+  });
+
+  it("swaps whole places: each booking takes the other's lane, slot and place", async () => {
+    const e = await seed({ capacity: 2, lanes: ["Ring 1", "Ring 2"] });
+    const [l1, l2] = e.laneIds;
+    const a = await insertBooking(t.env.DB, e.id, e.s[1], "Rex", "Sam", { laneId: l1, place: 2 });
+    const b = await insertBooking(t.env.DB, e.id, e.s[6], "Bella", "Alex", { laneId: l2, place: 1 });
+    ok(await swapBookings(t.env.DB, e.event, { a: { id: a, slot: e.s[1] }, b: { id: b, slot: e.s[6] } }));
+    expect(await placesOf(e.id)).toEqual({ [a]: [l2, e.s[6], 1], [b]: [l1, e.s[1], 2] });
+  });
+
+  it("answers changed when a booking was moved to another place of the same slot between the read and the swap", async () => {
+    const e = await seed({ capacity: 2 });
+    const a = await insertBooking(t.env.DB, e.id, e.s[1], "Rex", "Sam", { place: 1 });
+    const b = await insertBooking(t.env.DB, e.id, e.s[6], "Bella", "Alex");
+    const f = failed(await swapBookings(t.env.DB, e.event, { a: { id: a, slot: e.s[1] }, b: { id: b, slot: e.s[6] } }, {
+      afterRead: async () => { await t.env.DB.prepare("UPDATE bookings SET place = 2 WHERE id = ?").bind(a).run(); },
+    }));
+    expect(f).toMatchObject({ status: 409, code: "changed" });
+    expect((await placesOf(e.id))[a]).toEqual([e.laneId, e.s[1], 2]);
+  });
+
+  it("answers event_changed, writing nothing, when the layout was edited between the read and the write", async () => {
+    const e = await seed({ capacity: 2 });
+    const f = failed(await addBooking(t.env.DB, e.event, { slot: e.s[0], dogName: "A", handlerName: "H" }, {
+      afterRead: async () => { await t.env.DB.prepare("UPDATE event_layout SET capacity = 1, config_rev = config_rev + 1 WHERE event_id = ?").bind(e.id).run(); },
+    }));
+    expect(f).toMatchObject({ status: 409, code: "event_changed" });
+    expect(await rows(e.id)).toEqual([]);
+  });
+});

@@ -19,12 +19,13 @@ export type DeleteResult =
 export interface LifecycleHooks { afterRead?: () => Promise<void> }
 
 /**
- * Permanently deletes the event with its breaks and bookings, if `confirmName` is exactly the stored name
+ * Permanently deletes the event with its breaks, bookings, lanes and layout, if `confirmName` is exactly the stored name
  * (raw string comparison: no trimming, folding or Unicode normalisation; the page may trim what was typed, the
  * server never does). Bookings, breaks and the event are deleted explicitly in one batch rather than relying
- * on ON DELETE CASCADE, and the batch starts with a guard that the event still exists under the confirmed
- * name: a second delete racing the first finds nothing (not_found), and an event renamed after the read is
- * not deleted on the strength of the old name. The booking count is what the batch actually deleted, so a
+ * on ON DELETE CASCADE (the lanes and the layout do go by cascade, with the event, and only after the bookings
+ * that point at the lanes are gone), and the batch starts with a guard that the event still exists under the
+ * confirmed name: a second delete racing the first finds nothing (not_found), and an event renamed after the
+ * read is not deleted on the strength of the old name. The booking count is what the batch actually deleted, so a
  * booking that landed after the read is deleted and counted too.
  */
 export async function deleteEvent(db: D1Database, slug: string, confirmName: unknown, hooks: LifecycleHooks = {}): Promise<DeleteResult> {

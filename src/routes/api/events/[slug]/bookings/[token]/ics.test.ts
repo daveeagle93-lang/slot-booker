@@ -1,7 +1,7 @@
 import ICAL from "ical.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { generateBookingToken } from "../../../../../../core/slug";
-import { identityKey } from "../../../../../../core/identity";
+import { identityKeyOf } from "../../../../../../core/identity";
 import { createTestEnv, insertBreak, insertEvent, type TestEnv } from "../../../../../../test/db";
 import { bookingUid } from "../../../../../../server/ics";
 import { saveSettings } from "../../../../../../server/settings";
@@ -31,19 +31,19 @@ const getIcs = (slug: string, token: string): Promise<Response> =>
     } as unknown as Parameters<typeof onRequestGet>[0]),
   );
 
-/** Inserts a booking row directly and returns its token (pass token: null for a legacy row with none). */
+/** Inserts a booking row directly (in the event's first lane, place 1) and returns its token. */
 async function book(
   eventId: number, slot: string, dog: string, handler: string,
-  o: { createdAt?: string; token?: string | null } = {},
+  o: { createdAt?: string; token?: string } = {},
 ): Promise<string> {
-  const token = o.token === undefined ? generateBookingToken() : o.token;
+  const token = o.token ?? generateBookingToken();
   await t.env.DB.prepare(
-    `INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token${o.createdAt ? ", created_at" : ""})
-     VALUES (?, ?, ?, ?, ?, ?, ?${o.createdAt ? ", ?" : ""})`,
+    `INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key, token${o.createdAt ? ", created_at" : ""})
+     VALUES (?, (SELECT id FROM event_lanes WHERE event_id = ? ORDER BY position LIMIT 1), ?, 1, ?, ?, ?, ?${o.createdAt ? ", ?" : ""})`,
   )
-    .bind(eventId, slot, dog, handler, identityKey(dog), identityKey(handler), token, ...(o.createdAt ? [o.createdAt] : []))
+    .bind(eventId, eventId, slot, dog, handler, identityKeyOf([dog, handler]), token, ...(o.createdAt ? [o.createdAt] : []))
     .run();
-  return token as string;
+  return token;
 }
 
 function vevent(ics: string): ICAL.Event {
@@ -107,12 +107,12 @@ describe("GET /api/events/:slug/bookings/:token/ics", () => {
     const tokenOther = await book(a.id, "2026-06-13T08:30:00Z", "Rex", "Sam Jones");
     const tokenB = await book(b.id, SLOT, "Zoë", "Sam Jones");
     const uidA = uidOf(await (await getIcs(a.slug, tokenA)).text());
-    expect(uidA).toBe(await bookingUid(a.slug, identityKey("Zoë"), identityKey("Sam Jones")));
+    expect(uidA).toBe(await bookingUid(a.slug, identityKeyOf(["Zoë", "Sam Jones"])));
     expect(uidA).toMatch(/^[0-9a-f]{32}@slot-booker$/);
     expect(uidOf(await (await getIcs(b.slug, tokenB)).text())).not.toBe(uidA);
     expect(uidOf(await (await getIcs(a.slug, tokenOther)).text())).not.toBe(uidA);
     // The same identity re-booked later (new token, differently typed) keeps its UID.
-    await t.env.DB.prepare("DELETE FROM bookings WHERE event_id = ? AND dog_key = ?").bind(a.id, identityKey("Zoë")).run();
+    await t.env.DB.prepare("DELETE FROM bookings WHERE event_id = ? AND identity_key = ?").bind(a.id, identityKeyOf(["Zoë", "Sam Jones"])).run();
     const tokenAgain = await book(a.id, "2026-06-13T09:00:00Z", "ZOË", " sam   jones ");
     expect(uidOf(await (await getIcs(a.slug, tokenAgain)).text())).toBe(uidA);
   });
@@ -180,7 +180,6 @@ describe("GET /api/events/:slug/bookings/:token/ics", () => {
     const good = await book(id, SLOT, "Rex", "Sam Jones", { token: "AbCdEfGhIjKlMnOpQrStUv" });
     const orphan = await book(id, "2026-06-13T09:00:00Z", "Orphan", "Slot"); // in a break: not in the schedule
     const elsewhere = await book(other.id, "2026-06-13T10:00:00Z", "Fido", "Ann Lee");
-    await book(id, "2026-06-13T10:15:00Z", "Legacy", "Row", { token: null });
     const cases: [string, Promise<Response>][] = [
       ["unknown event", getIcs("unknownslug0123456789", good)],
       ["malformed slug", getIcs("short", good)],
@@ -194,8 +193,8 @@ describe("GET /api/events/:slug/bookings/:token/ics", () => {
       ["malformed token: unicode", getIcs(slug, "é".repeat(22))],
       ["another event's token", getIcs(slug, elsewhere)],
       ["slot no longer in the schedule", getIcs(slug, orphan)],
-      ["a legacy NULL-token row, guessed as 'null'", getIcs(slug, "null".padEnd(22, "0"))],
-      ["a legacy NULL-token row, guessed as 'NULL'", getIcs(slug, "NULL")],
+      ["a token guessed as 'null'", getIcs(slug, "null".padEnd(22, "0"))],
+      ["a token guessed as 'NULL'", getIcs(slug, "NULL")],
     ];
     const bodies = new Set<string>();
     for (const [label, pending] of cases) {
@@ -211,12 +210,14 @@ describe("GET /api/events/:slug/bookings/:token/ics", () => {
     expect(bodies.size).toBe(1);
   });
 
-  it("cannot reach a legacy booking row that has no token", async () => {
+  it("cannot store a booking without a token, so no guessed token such as 'null' reaches one", async () => {
     const { id, slug } = await insertEvent(t.env.DB);
-    await book(id, SLOT, "Rex", "Sam Jones", { token: null });
-    await book(id, "2026-06-13T08:30:00Z", "Fido", "Ann Lee", { token: null });
-    const stored = await t.env.DB.prepare("SELECT count(*) AS n FROM bookings WHERE event_id = ? AND token IS NULL").bind(id).first<{ n: number }>();
-    expect(stored?.n).toBe(2);
+    await book(id, SLOT, "Rex", "Sam Jones");
+    await expect(t.env.DB.prepare(
+      `INSERT INTO bookings (event_id, lane_id, slot_start_utc, value_1, identity_key, token)
+       VALUES (?, ?, '2026-06-13T08:30:00Z', 'Fido', 'fido', NULL)`,
+    ).bind(id, (await t.env.DB.prepare("SELECT id FROM event_lanes WHERE event_id = ?").bind(id).first<{ id: number }>())!.id).run())
+      .rejects.toThrow(/NOT NULL constraint failed/);
     for (const token of [generateBookingToken(), "null", "NULL", "undefined", "0".repeat(22)]) {
       expect((await getIcs(slug, token)).status, token).toBe(404);
     }

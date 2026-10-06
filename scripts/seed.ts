@@ -13,7 +13,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { identityKey } from "../src/core/identity.ts";
+import { identityKeyOf } from "../src/core/identity.ts";
 import { londonToUtc, utcToLondon } from "../src/core/london.ts";
 import { generateSchedule } from "../src/core/schedule.ts";
 import { generateBookingToken, generateSlug } from "../src/core/slug.ts";
@@ -56,6 +56,8 @@ const { slots } = generateSchedule({
 const sql: string[] = [
   `INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details)
    VALUES (${q(slug)}, ${q(event.name)}, ${q(event.start)}, ${q(event.end)}, ${event.sessionMinutes}, ${event.gapMinutes}, ${event.costPence}, ${q(event.postcode)}, ${q(event.details)});`,
+  `INSERT INTO event_layout (event_id) VALUES ((SELECT id FROM events WHERE slug = ${q(slug)}));`,
+  `INSERT INTO event_lanes (event_id, position, name) VALUES ((SELECT id FROM events WHERE slug = ${q(slug)}), 1, '');`,
   ...event.breaks.map((b) =>
     `INSERT INTO breaks (event_id, start_utc, end_utc) VALUES ((SELECT id FROM events WHERE slug = ${q(slug)}), ${q(b.start)}, ${q(b.end)});`),
 ];
@@ -67,8 +69,8 @@ const bookings = [
 if (withBookings) {
   for (const b of bookings) {
     sql.push(
-      `INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token)
-       VALUES ((SELECT id FROM events WHERE slug = ${q(slug)}), ${q(b.slot.start)}, ${q(b.dog)}, ${q(b.handler)}, ${q(identityKey(b.dog))}, ${q(identityKey(b.handler))}, ${q(generateBookingToken())});`);
+      `INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key, identity_seq, token)
+       VALUES ((SELECT id FROM events WHERE slug = ${q(slug)}), (SELECT id FROM event_lanes WHERE event_id = (SELECT id FROM events WHERE slug = ${q(slug)}) AND position = 1), ${q(b.slot.start)}, 1, ${q(b.dog)}, ${q(b.handler)}, ${q(identityKeyOf([b.dog, b.handler]))}, 1, ${q(generateBookingToken())});`);
   }
 }
 

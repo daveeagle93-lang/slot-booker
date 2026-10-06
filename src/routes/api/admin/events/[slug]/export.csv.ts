@@ -25,7 +25,7 @@ export const onRequestGet: RouteHandler<"slug"> = async ({ env, data, params }) 
     const event = await loadEventBySlug(env.DB, String(params.slug));
     if (!event) return eventNotFound();
     const { results } = await env.DB
-      .prepare("SELECT slot_start_utc, dog_name, handler_name, created_at FROM bookings WHERE event_id = ? ORDER BY slot_start_utc")
+      .prepare("SELECT slot_start_utc, value_1 AS dog_name, value_2 AS handler_name, created_at FROM bookings WHERE event_id = ? ORDER BY slot_start_utc, lane_id, place")
       .bind(event.id)
       .all<Row>();
     const csv = toCsv([

@@ -315,6 +315,10 @@ describe("DELETE /api/admin/templates/:id", () => {
     expect((await del(drop.id)).status).toBe(404);
     expect((await all()).map((x) => x.id)).toEqual([keep.id]);
     expect(await countRows(t.env.DB, "event_template_breaks")).toBe(1);
+    // Its layout and lane go too; the other template keeps its own.
+    expect(await countRows(t.env.DB, "event_template_layout")).toBe(1);
+    expect(await countRows(t.env.DB, "event_template_lanes")).toBe(1);
+    expect((await t.env.DB.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
   });
 
   it("leaves the default where it is when another template is deleted", async () => {

@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { identityKey } from "../../../../core/identity";
 import { utcToLondon } from "../../../../core/london";
 import { generateBookingToken } from "../../../../core/slug";
 import type { AppEnv } from "../../../../server/env";
@@ -70,7 +69,7 @@ const create = async (over: Record<string, unknown> = {}): Promise<Created> => {
 const publicEvent = async (slug: string) =>
   (await (await publicGet({
     request: new Request(`http://localhost/api/events/${slug}`), env: { DB: t.env.DB }, params: { slug },
-  } as unknown as Parameters<typeof publicGet>[0])).json()) as { slots: { start: string; end: string; status: string }[] };
+  } as unknown as Parameters<typeof publicGet>[0])).json()) as { slots: { start: string; end: string; status: string; places: { laneId: number; free: number }[] }[] };
 
 describe("POST /api/admin/events", () => {
   it("creates the event and its breaks: 201, no internal ids, a path and the slot count", async () => {
@@ -102,7 +101,17 @@ describe("POST /api/admin/events", () => {
     expect(results).toEqual([{ slug: hidden, listed: 0 }, { slug: shown, listed: 1 }]);
     const slots = (await publicEvent(hidden)).slots;
     expect(slots.length).toBeGreaterThan(0);
-    expect(slots).toEqual((await publicEvent(shown)).slots);
+    // The two events have lanes of their own, so compare what each slot offers rather than the lane ids.
+    const offers = (list: typeof slots) => list.map((s) => ({ ...s, places: s.places.map((p) => p.free) }));
+    expect(offers(slots)).toEqual(offers((await publicEvent(shown)).slots));
+  });
+
+  it("creates the event with its layout (capacity 1, identity limit 1, revision 0) and one unnamed lane, in the same batch", async () => {
+    const { event } = await create();
+    const id = (await t.env.DB.prepare("SELECT id FROM events WHERE slug = ?").bind(event.slug).first<{ id: number }>())!.id;
+    expect(await t.env.DB.prepare("SELECT capacity, identity_limit, config_rev FROM event_layout WHERE event_id = ?").bind(id).all().then((r) => r.results))
+      .toEqual([{ capacity: 1, identity_limit: 1, config_rev: 0 }]);
+    expect((await t.env.DB.prepare("SELECT position, name FROM event_lanes WHERE event_id = ?").bind(id).all()).results).toEqual([{ position: 1, name: "" }]);
   });
 
   it("stores an explicit listed: true as listed", async () => {
@@ -494,8 +503,7 @@ describe("GET /api/admin/events", () => {
     await insertBreak(t.env.DB, id, "2026-06-13T09:00:00Z", "2026-06-13T09:30:00Z");
     await insertEvent(t.env.DB, { startUtc: "2026-11-13T08:00:00Z", endUtc: "2026-11-13T09:00:00Z" });
     for (const [slot, dog] of [["2026-06-13T08:00:00Z", "Rex"], ["2026-06-13T08:15:00Z", "Moss"]]) {
-      await t.env.DB.prepare("INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key) VALUES (?, ?, ?, 'Sam', ?, ?)")
-        .bind(id, slot, dog, identityKey(dog), identityKey("Sam")).run();
+      await insertBooking(t.env.DB, id, slot, dog, "Sam");
     }
     vi.setSystemTime(new Date("2026-06-01T00:00:00Z"));
     const events = ((await (await list({ BOOKING_CUTOFF_OFFSET_MINUTES: "-60" })).json()) as { events: Record<string, unknown>[] }).events;
@@ -553,6 +561,21 @@ describe("GET /api/admin/events", () => {
     expect(events.map((e) => [e.slug, e.slotCount, e.bookedCount, e.full])).toEqual([
       [a.slug, 2, 2, true], [b.slug, 2, 1, false], [c.slug, 2, 0, false], [zero.slug, 0, 0, false],
     ]);
+  });
+
+  it("counts an event full only when slots x lanes x capacity bookings exist", async () => {
+    const day = (d: number) => ({ startUtc: `2026-10-${d}T08:00:00Z`, endUtc: `2026-10-${d}T08:30:00Z` }); // 2 slots
+    const a = await insertEvent(t.env.DB, { ...day(10), capacity: 2, lanes: ["Ring 1", "Ring 2"] }); // 8 places
+    const b = await insertEvent(t.env.DB, { ...day(11), capacity: 2 }); // 4 places
+    for (const slot of [`2026-10-10T08:00:00Z`, `2026-10-10T08:15:00Z`]) for (const laneId of a.laneIds) for (const i of [0, 1]) {
+      if (slot.endsWith("08:15:00Z") && laneId === a.laneIds[1] && i === 1) continue; // one place left
+      await insertBooking(t.env.DB, a.id, slot, `A${slot}${laneId}${i}`, "H", { laneId });
+    }
+    for (const slot of [`2026-10-11T08:00:00Z`, `2026-10-11T08:15:00Z`]) for (const i of [0, 1]) await insertBooking(t.env.DB, b.id, slot, `B${slot}${i}`, "H");
+    const events = ((await (await list()).json()) as { events: { slug: string; bookedCount: number; full: boolean }[] }).events;
+    expect(events.map((e) => [e.slug, e.bookedCount, e.full])).toEqual([[a.slug, 7, false], [b.slug, 4, true]]);
+    await insertBooking(t.env.DB, a.id, "2026-10-10T08:15:00Z", "Last", "H", { laneId: a.laneIds[1] });
+    expect(((await (await list()).json()) as { events: { full: boolean }[] }).events[0].full).toBe(true);
   });
 
   it("refuses with 401 unless the guard set an admin identity", async () => {
@@ -806,6 +829,6 @@ describe("GET /api/admin/events: details, cost, share message and the default sh
       request: new Request("http://localhost/api/admin/events"), env: { DB: db }, data: ADMIN,
     } as unknown as Parameters<typeof onRequestGet>[0]);
     expect(res.status).toBe(200);
-    expect([batches, statements]).toEqual([1, 6]);
+    expect([batches, statements]).toEqual([1, 8]);
   });
 });

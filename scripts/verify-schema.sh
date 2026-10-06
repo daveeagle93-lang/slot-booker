@@ -46,19 +46,46 @@ expect_fail "duplicate slug" "$EVS ('Dup', '2026-11-14T09:00:00Z', '2026-11-14T1
 expect_count "two events with different slugs" "SELECT count(DISTINCT slug) AS n FROM events WHERE slug IS NOT NULL" 2
 expect_ok "insert breaks" "INSERT INTO breaks (event_id, start_utc, end_utc) VALUES (1, '2026-03-14T12:00:00Z', '2026-03-14T13:00:00Z'), (1, '2026-03-14T14:00:00Z', '2026-03-14T14:15:00Z')"
 
-BK="INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key) VALUES"
-# row EVENT SLOT DOG HANDLER: one VALUES tuple with keys computed from the names
-row() { echo "($1, '$2', '$3', '$4', '$(key "$3")', '$(key "$4")')"; }
+# Lanes and places (0016): the application gives every event a layout row and one unnamed lane when it creates it; this script inserts events by hand, so it does the same.
+expect_ok "a layout row for every event so far" "INSERT INTO event_layout (event_id) SELECT id FROM events"
+expect_ok "one unnamed lane for every event so far" "INSERT INTO event_lanes (event_id, position, name) SELECT id, 1, '' FROM events"
+expect_count "layout defaults: capacity 1, identity limit 1, revision 0" "SELECT count(*) AS n FROM event_layout WHERE capacity = 1 AND identity_limit = 1 AND config_rev = 0" 4
+expect_fail "capacity 0" "UPDATE event_layout SET capacity = 0 WHERE event_id = 1" "CHECK constraint failed"
+expect_fail "capacity 51" "UPDATE event_layout SET capacity = 51 WHERE event_id = 1" "CHECK constraint failed"
+expect_fail "identity limit 21" "UPDATE event_layout SET identity_limit = 21 WHERE event_id = 1" "CHECK constraint failed"
+expect_ok "capacity 50 and identity limit 20" "UPDATE event_layout SET capacity = 50, identity_limit = 20 WHERE event_id = 1"
+expect_ok "capacity back to 1 and identity limit to 1" "UPDATE event_layout SET capacity = 1, identity_limit = 1 WHERE event_id = 1"
+expect_fail "a second layout row for an event" "INSERT INTO event_layout (event_id) VALUES (1)" "UNIQUE constraint failed"
+expect_fail "a lane at position 11" "INSERT INTO event_lanes (event_id, position, name) VALUES (1, 11, 'Ring 11')" "CHECK constraint failed"
+expect_fail "a second lane at the same position" "INSERT INTO event_lanes (event_id, position, name) VALUES (1, 1, 'Ring 1')" "UNIQUE constraint failed"
+expect_fail "a second unnamed lane" "INSERT INTO event_lanes (event_id, position, name) VALUES (1, 2, '')" "UNIQUE constraint failed"
+expect_ok "a named lane" "INSERT INTO event_lanes (event_id, position, name) VALUES (1, 2, 'Ring 1')"
+expect_fail "a lane name differing only in case" "INSERT INTO event_lanes (event_id, position, name) VALUES (1, 3, 'RING 1')" "UNIQUE constraint failed"
+expect_fail "a lane name of 41 characters" "INSERT INTO event_lanes (event_id, position, name) VALUES (1, 3, replace(hex(zeroblob(20)), '0', 'x') || 'yy' || 'z')" "CHECK constraint failed"
+expect_ok "the same lane name in another event" "INSERT INTO event_lanes (event_id, position, name) VALUES (2, 2, 'Ring 1')"
+expect_ok "remove the extra lanes again" "DELETE FROM event_lanes WHERE name <> ''"
+
+# A booking: lane (the event's lane at position 1), place, the two form fields, the identity key (the keys joined with char(31)) and a token.
+BK="INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key, token) VALUES"
+# row EVENT SLOT DOG HANDLER [PLACE]: one VALUES tuple with keys computed from the names
+row() { echo "($1, (SELECT id FROM event_lanes WHERE event_id = $1 AND position = 1), '$2', ${5:-1}, '$3', '$4', '$(key "$3")' || char(31) || '$(key "$4")', lower(hex(randomblob(16))))"; }
 expect_ok "first booking" "$BK $(row 1 '2026-03-14T09:00:00Z' 'Rex' 'Sam Jones')"
-expect_fail "duplicate (event, slot)" "$BK $(row 1 '2026-03-14T09:00:00Z' 'Fido' 'Ann Lee')" "UNIQUE constraint failed"
+expect_fail "duplicate (event, lane, slot, place)" "$BK $(row 1 '2026-03-14T09:00:00Z' 'Fido' 'Ann Lee')" "UNIQUE constraint failed"
+expect_ok "a second place in the same slot" "$BK $(row 1 '2026-03-14T09:00:00Z' 'Fido' 'Ann Lee' 2)"
+expect_fail "place 0" "$BK $(row 1 '2026-03-14T09:00:00Z' 'Bo' 'Cy' 0)" "CHECK constraint failed"
 expect_fail "duplicate dog+handler, exact" "$BK $(row 1 '2026-03-14T09:15:00Z' 'Rex' 'Sam Jones')" "UNIQUE constraint failed"
 expect_fail "duplicate dog+handler, case/whitespace variants" "$BK $(row 1 '2026-03-14T09:15:00Z' ' rex ' 'sam jones')" "UNIQUE constraint failed"
+expect_ok "a second booking of one dog+handler as identity number 2" "INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key, identity_seq, token) VALUES (1, (SELECT id FROM event_lanes WHERE event_id = 1), '2026-03-14T09:15:00Z', 1, 'Rex', 'Sam Jones', 'rex' || char(31) || 'sam jones', 2, lower(hex(randomblob(16))))"
+expect_fail "identity number 0" "INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key, identity_seq, token) VALUES (1, (SELECT id FROM event_lanes WHERE event_id = 1), '2026-03-14T09:20:00Z', 1, 'Rex', 'Sam Jones', 'rex' || char(31) || 'sam jones', 0, lower(hex(randomblob(16))))" "CHECK constraint failed"
+expect_ok "remove those two extra bookings" "DELETE FROM bookings WHERE event_id = 1 AND (place = 2 OR identity_seq = 2)"
 expect_ok "same handler, different dog, same event" "$BK $(row 1 '2026-03-14T09:15:00Z' 'Fido' 'Sam Jones')"
 expect_ok "same dog+handler, different event" "$BK $(row 2 '2026-06-13T09:00:00Z' 'Rex' 'Sam Jones')"
 expect_ok "no ab+c / a+bc collision" "$BK $(row 1 '2026-03-14T09:30:00Z' 'ab' 'c'), $(row 1 '2026-03-14T09:45:00Z' 'a' 'bc')"
-expect_fail "blank dog name" "$BK $(row 1 '2026-03-14T10:00:00Z' '  ' 'Ann Lee')" "CHECK constraint failed"
+expect_fail "blank first field" "$BK $(row 1 '2026-03-14T10:00:00Z' '  ' 'Ann Lee')" "CHECK constraint failed"
 expect_fail "bad booking timestamp format" "$BK $(row 1 '2026-03-14 10:00' 'Bo' 'Ann Lee')" "CHECK constraint failed"
-expect_fail "booking for missing event" "$BK $(row 99 '2026-03-14T10:00:00Z' 'Bo' 'Ann Lee')" "FOREIGN KEY constraint failed"
+expect_fail "booking for missing event" "$BK (99, 1, '2026-03-14T10:00:00Z', 1, 'Bo', 'Ann Lee', 'bo' || char(31) || 'ann lee', 'tok-missing-event-aaaa')" "FOREIGN KEY constraint failed"
+expect_fail "booking in a missing lane" "$BK (1, 999, '2026-03-14T10:00:00Z', 1, 'Bo', 'Ann Lee', 'bo' || char(31) || 'ann lee', 'tok-missing-lane-aaaaaa')" "FOREIGN KEY constraint failed"
+expect_fail "a lane that still has bookings cannot be deleted" "DELETE FROM event_lanes WHERE event_id = 1" "FOREIGN KEY constraint failed"
 
 # Unicode identity: keys come from identityKey(), display columns keep the text as entered.
 expect_ok "Zoë booked" "$BK $(row 1 '2026-03-14T10:15:00Z' 'Zoë' 'Pat Kay')"
@@ -66,26 +93,25 @@ expect_fail "Zoë vs ZOË (same event and handler) collides" "$BK $(row 1 '2026-
 expect_fail "precomposed vs decomposed ë collides" "$BK $(row 1 '2026-03-14T10:30:00Z' $'Zoe\xcc\x88' 'Pat Kay')" "UNIQUE constraint failed"
 expect_ok "same Zoë dog, different handler" "$BK $(row 1 '2026-03-14T10:30:00Z' 'Zoë' 'Lee Ray')"
 expect_ok "ZOË in another event" "$BK $(row 3 '2026-09-12T09:00:00Z' 'ZOË' 'Pat Kay')"
-expect_count "display column keeps text as entered" "SELECT count(*) AS n FROM bookings WHERE dog_name = 'ZOË'" 1
-expect_count "old ASCII-only index is gone" "SELECT count(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'bookings_one_run_per_dog_handler'" 0
-expect_ok "booking with forgotten keys (first)" "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name) VALUES (3, '2026-09-12T09:15:00Z', 'Mo', 'Al')"
-expect_fail "booking with forgotten keys (second) fails loudly" "INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name) VALUES (3, '2026-09-12T09:30:00Z', 'Bo', 'Cy')" "UNIQUE constraint failed"
+expect_count "the field keeps text as entered" "SELECT count(*) AS n FROM bookings WHERE value_1 = 'ZOË'" 1
+expect_count "old ASCII-only and old per-slot rules are gone" "SELECT count(*) AS n FROM sqlite_master WHERE type = 'index' AND name IN ('bookings_one_run_per_dog_handler', 'bookings_one_run_per_dog_handler_keys')" 0
+expect_fail "booking with forgotten keys" "INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, token) VALUES (3, 3, '2026-09-12T09:15:00Z', 1, 'Mo', 'Al', 'tok-no-key-aaaaaaaaaaa')" "NOT NULL constraint failed"
 
-# Booking tokens (0004): unique when set, nullable otherwise.
-BKT="INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token) VALUES"
-expect_ok "booking with a token" "$BKT (3, '2026-09-12T11:00:00Z', 'Ta', 'Ua', 'ta', 'ua', 'token-aaaaaaaaaaaaaaaa')"
-expect_fail "duplicate token" "$BKT (3, '2026-09-12T11:15:00Z', 'Tb', 'Ub', 'tb', 'ub', 'token-aaaaaaaaaaaaaaaa')" "UNIQUE constraint failed"
-expect_ok "bookings with different tokens coexist" "$BKT (3, '2026-09-12T11:15:00Z', 'Tb', 'Ub', 'tb', 'ub', 'token-bbbbbbbbbbbbbbbb')"
-expect_ok "two NULL-token bookings coexist" "$BK $(row 3 '2026-09-12T11:30:00Z' 'Tc' 'Uc'), $(row 3 '2026-09-12T11:45:00Z' 'Td' 'Ud')"
-expect_count "both NULL-token bookings stored" "SELECT count(*) AS n FROM bookings WHERE event_id = 3 AND dog_key IN ('tc', 'td') AND token IS NULL" 2
+# Booking tokens (0004, now NOT NULL and unique).
+BKT="INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key, token) VALUES"
+expect_ok "booking with a token" "$BKT (3, 3, '2026-09-12T11:00:00Z', 1, 'Ta', 'Ua', 'ta' || char(31) || 'ua', 'token-aaaaaaaaaaaaaaaa')"
+expect_fail "duplicate token" "$BKT (3, 3, '2026-09-12T11:15:00Z', 1, 'Tb', 'Ub', 'tb' || char(31) || 'ub', 'token-aaaaaaaaaaaaaaaa')" "UNIQUE constraint failed"
+expect_ok "bookings with different tokens coexist" "$BKT (3, 3, '2026-09-12T11:15:00Z', 1, 'Tb', 'Ub', 'tb' || char(31) || 'ub', 'token-bbbbbbbbbbbbbbbb')"
+expect_fail "booking with no token" "INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key) VALUES (3, 3, '2026-09-12T11:30:00Z', 1, 'Tc', 'Uc', 'tc' || char(31) || 'uc')" "NOT NULL constraint failed"
 
 # Idempotency keys (0005): unique within an event when set, nullable otherwise.
-BKI="INSERT INTO bookings (event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, idempotency_key) VALUES"
-expect_ok "booking with an idempotency key" "$BKI (3, '2026-09-12T12:00:00Z', 'Ia', 'Ja', 'ia', 'ja', 'idem-aaaaaaaaaaaaaaaa')"
-expect_fail "duplicate idempotency key, same event" "$BKI (3, '2026-09-12T12:15:00Z', 'Ib', 'Jb', 'ib', 'jb', 'idem-aaaaaaaaaaaaaaaa')" "UNIQUE constraint failed"
-expect_ok "same idempotency key, different event" "$BKI (1, '2026-03-14T11:00:00Z', 'Ia', 'Ja', 'ia', 'ja', 'idem-aaaaaaaaaaaaaaaa')"
-expect_ok "different idempotency keys coexist" "$BKI (3, '2026-09-12T12:15:00Z', 'Ib', 'Jb', 'ib', 'jb', 'idem-bbbbbbbbbbbbbbbb')"
-expect_count "NULL-key bookings coexist alongside keyed ones" "SELECT count(*) AS n FROM bookings WHERE event_id = 3 AND dog_key IN ('tc', 'td') AND idempotency_key IS NULL" 2
+BKI="INSERT INTO bookings (event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key, token, idempotency_key) VALUES"
+expect_ok "booking with an idempotency key" "$BKI (3, 3, '2026-09-12T12:00:00Z', 1, 'Ia', 'Ja', 'ia' || char(31) || 'ja', 'token-iaaaaaaaaaaaaaaa', 'idem-aaaaaaaaaaaaaaaa')"
+expect_fail "duplicate idempotency key, same event" "$BKI (3, 3, '2026-09-12T12:15:00Z', 1, 'Ib', 'Jb', 'ib' || char(31) || 'jb', 'token-ibbbbbbbbbbbbbbb', 'idem-aaaaaaaaaaaaaaaa')" "UNIQUE constraint failed"
+expect_ok "same idempotency key, different event" "$BKI (1, 1, '2026-03-14T11:00:00Z', 1, 'Ia', 'Ja', 'ia' || char(31) || 'ja', 'token-icccccccccccccccc', 'idem-aaaaaaaaaaaaaaaa')"
+expect_ok "different idempotency keys coexist" "$BKI (3, 3, '2026-09-12T12:15:00Z', 1, 'Ib', 'Jb', 'ib' || char(31) || 'jb', 'token-ibbbbbbbbbbbbbbb', 'idem-bbbbbbbbbbbbbbbb')"
+expect_ok "NULL-key bookings coexist alongside keyed ones" "$BKT (3, 3, '2026-09-12T13:00:00Z', 1, 'Tc', 'Uc', 'tc' || char(31) || 'uc', 'token-tcccccccccccccccc'), (3, 3, '2026-09-12T13:15:00Z', 1, 'Td', 'Ud', 'td' || char(31) || 'ud', 'token-tdddddddddddddddd')"
+expect_count "both NULL-key bookings stored" "SELECT count(*) AS n FROM bookings WHERE event_id = 3 AND identity_key IN ('tc' || char(31) || 'uc', 'td' || char(31) || 'ud') AND idempotency_key IS NULL" 2
 
 # Login attempts (0006): one row per hashed client key, all columns required.
 LA="INSERT INTO login_attempts (key, attempts, window_start) VALUES"
@@ -183,8 +209,13 @@ expect_fail "template session of 0 minutes" "$TP ('Zero', 0, 'AB1 2CD', '09:00',
 expect_ok "template break" "INSERT INTO event_template_breaks (template_id, start_time, end_time, label) VALUES (1, '10:00', '10:30', 'Lunch')"
 expect_fail "template break label of 41 characters" "INSERT INTO event_template_breaks (template_id, start_time, end_time, label) VALUES (1, '10:00', '10:30', replace(hex(zeroblob(20)), '0', 'x') || 'yy' || 'z')" "CHECK constraint failed"
 expect_fail "template break for a missing template" "INSERT INTO event_template_breaks (template_id, start_time, end_time) VALUES (99, '10:00', '10:30')" "FOREIGN KEY constraint failed"
+expect_ok "layout and lane rows for a template" "INSERT INTO event_template_layout (template_id) VALUES (1)"
+expect_ok "a lane for a template" "INSERT INTO event_template_lanes (template_id, position, name) VALUES (1, 1, '')"
+expect_fail "a second unnamed lane for a template" "INSERT INTO event_template_lanes (template_id, position, name) VALUES (1, 2, '')" "UNIQUE constraint failed"
+expect_fail "template capacity 51" "UPDATE event_template_layout SET capacity = 51 WHERE template_id = 1" "CHECK constraint failed"
 expect_ok "delete a template" "DELETE FROM event_templates WHERE id = 1"
 expect_count "cascade: template breaks removed" "SELECT count(*) AS n FROM event_template_breaks" 0
+expect_count "cascade: template layout and lanes removed" "SELECT (SELECT count(*) FROM event_template_layout) + (SELECT count(*) FROM event_template_lanes) AS n" 0
 expect_count "existing events have an empty share message" "SELECT count(*) AS n FROM events WHERE share_message = ''" "$(sql "SELECT count(*) AS n FROM events" | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')"
 expect_ok "event with a share message of 1000 characters" "UPDATE events SET share_message = replace(hex(zeroblob(500)), '0', 'x') WHERE id = 2"
 expect_fail "event share message of 1001 characters" "UPDATE events SET share_message = replace(hex(zeroblob(500)), '0', 'x') || 'y' WHERE id = 2" "CHECK constraint failed"
@@ -198,9 +229,10 @@ expect_fail "break end <= start" "INSERT INTO breaks (event_id, start_utc, end_u
 expect_ok "delete event 1" "DELETE FROM events WHERE id = 1"
 expect_count "cascade: breaks removed" "SELECT count(*) AS n FROM breaks WHERE event_id = 1" 0
 expect_count "cascade: bookings removed" "SELECT count(*) AS n FROM bookings WHERE event_id = 1" 0
+expect_count "cascade: lanes and layout removed" "SELECT (SELECT count(*) FROM event_lanes WHERE event_id = 1) + (SELECT count(*) FROM event_layout WHERE event_id = 1) AS n" 0
 expect_count "other event's booking kept" "SELECT count(*) AS n FROM bookings WHERE event_id = 2" 1
 
-# Backfill: a database holding rows from before 0003 / 0004 gets random slugs and tokens (0005 and 0008 leave keys NULL, 0008 leaves break labels empty, 0009 adds the settings row).
+# Backfill: a database holding rows from before 0003 / 0004 gets random slugs and tokens (0005 and 0008 leave keys NULL, 0008 leaves break labels empty, 0009 adds the settings row), then goes through the rest of the migrations.
 OLD=$(mktemp -d)
 trap 'rm -rf "$STATE" "$OLD"' EXIT
 old() { npx wrangler d1 execute "$DB" --local --persist-to "$OLD" "$@" 2>&1; }
@@ -235,6 +267,24 @@ else echo "FAIL (event key on old rows): expected 1, got '$got'"; FAILS=$((FAILS
 got=$(old --command "SELECT count(*) AS n FROM site_settings WHERE id = 1" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
 if [ "$got" = "1" ]; then echo "PASS (count=1): 0009 added the settings row to a database with earlier data"
 else echo "FAIL (settings row on old database): expected 1, got '$got'"; FAILS=$((FAILS + 1)); fi
+
+# The bookings rebuild (0015 to 0017) on that database, which still holds the two v1.0-shaped bookings: ids, tokens and names carry over.
+old --command "SELECT token FROM bookings ORDER BY id" --json | grep -o '"token": *"[^"]*"' > "$OLD/tokens-before"
+for f in 0010 0011 0012 0013 0014 0015 0016 0017; do
+  old --file migrations/${f}_*.sql >/dev/null || { echo "FAIL: migration $f on the upgraded database"; FAILS=$((FAILS + 1)); }
+done
+old --command "SELECT token FROM bookings ORDER BY id" --json | grep -o '"token": *"[^"]*"' > "$OLD/tokens-after"
+if cmp -s "$OLD/tokens-before" "$OLD/tokens-after"; then echo "PASS: the rebuild kept every booking token"
+else echo "FAIL: tokens differ after the rebuild"; FAILS=$((FAILS + 1)); fi
+got=$(old --command "SELECT count(*) AS n FROM bookings WHERE place = 1 AND identity_seq = 1 AND lane_id IN (SELECT id FROM event_lanes WHERE event_id = bookings.event_id AND position = 1) AND identity_key IN ('rex' || char(31) || 'sam jones', 'fido' || char(31) || 'ann lee') AND value_1 IN ('Rex', 'Fido')" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+if [ "$got" = "2" ]; then echo "PASS (count=2): the rebuild moved both bookings into the event's lane with their identity keys"
+else echo "FAIL (rebuild): expected 2, got '$got'"; FAILS=$((FAILS + 1)); fi
+got=$(old --command "SELECT count(*) AS n FROM sqlite_master WHERE name LIKE '%legacy%'" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+if [ "$got" = "0" ]; then echo "PASS (count=0): the legacy table is gone"
+else echo "FAIL (legacy table): expected 0, got '$got'"; FAILS=$((FAILS + 1)); fi
+got=$(old --command "SELECT (SELECT count(*) FROM event_layout) + (SELECT count(*) FROM event_lanes) AS n" --json | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+if [ "$got" = "2" ]; then echo "PASS (count=2): one layout row and one lane for the existing event"
+else echo "FAIL (layout rows): expected 2, got '$got'"; FAILS=$((FAILS + 1)); fi
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS check(s) FAILED"; exit 1; fi
 echo "All schema checks passed"

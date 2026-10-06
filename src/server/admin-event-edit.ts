@@ -34,13 +34,16 @@ export const eventView = (e: EventRow) => ({
     .map((b) => ({ start: utcToLondon(b.start).time, end: utcToLondon(b.end).time, label: b.label, startUtc: b.start, endUtc: b.end })),
 });
 
-/** Every booking of the event, in slot order: one query. */
+/** Every booking of the event, in slot, lane and place order: one query. The booking form's two fields are value_1 and value_2. */
 export async function loadBookings(db: D1Database, eventId: number): Promise<BookingRef[]> {
   const { results } = await db
-    .prepare("SELECT id, slot_start_utc, dog_name, handler_name FROM bookings WHERE event_id = ? ORDER BY slot_start_utc, id")
+    .prepare(
+      `SELECT b.id, b.slot_start_utc, b.value_1, b.value_2 FROM bookings b JOIN event_lanes l ON l.id = b.lane_id
+       WHERE b.event_id = ? ORDER BY b.slot_start_utc, l.position, b.place, b.id`,
+    )
     .bind(eventId)
-    .all<{ id: number; slot_start_utc: string; dog_name: string; handler_name: string }>();
-  return results.map((r) => ({ id: r.id, slotStart: r.slot_start_utc, dogName: r.dog_name, handlerName: r.handler_name }));
+    .all<{ id: number; slot_start_utc: string; value_1: string; value_2: string }>();
+  return results.map((r) => ({ id: r.id, slotStart: r.slot_start_utc, dogName: r.value_1, handlerName: r.value_2 }));
 }
 
 /** The bookings whose slot is not among these slots: what a schedule change would orphan. */
@@ -62,7 +65,9 @@ export async function eventDetail(db: D1Database, event: EventRow) {
   const [bookings, { clubName }, defaultMessage] = await Promise.all([
     loadBookings(db, event.id), loadSettings(db), defaultShareMessageStatement(db).first<{ share_message: string }>(),
   ]);
-  const bySlot = new Map(bookings.map((b) => [b.slotStart, b]));
+  // One booking per slot is shown: the first by lane and place (the schedule page is not lane-aware yet).
+  const bySlot = new Map<string, BookingRef>();
+  for (const b of bookings) if (!bySlot.has(b.slotStart)) bySlot.set(b.slotStart, b);
   const withBookings = slots.map((s) => {
     const b = bySlot.get(s.start);
     return { ...s, booking: b ? { id: b.id, dogName: b.dogName, handlerName: b.handlerName } : null };
@@ -131,10 +136,10 @@ export async function saveEventEdit(
         db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (?, ?, ?, ?)").bind(event.id, b.startUtc, b.endUtc, b.label)),
       db.prepare(
         `DELETE FROM bookings WHERE event_id = ? AND ${outside} AND id IN (SELECT value FROM json_each(?))
-         RETURNING id, slot_start_utc, dog_name, handler_name`,
+         RETURNING id, slot_start_utc, value_1, value_2`,
       ).bind(event.id, starts, ids),
     ]);
-    const deleted = results[results.length - 1].results as { id: number; slot_start_utc: string; dog_name: string; handler_name: string }[];
+    const deleted = results[results.length - 1].results as { id: number; slot_start_utc: string; value_1: string; value_2: string }[];
     return {
       kind: "saved", slotCount: slots.length,
       event: {
@@ -143,7 +148,7 @@ export async function saveEventEdit(
         shareMessage: draft.shareMessage ?? event.shareMessage, listed,
         breaks: draft.breaks.map((b) => ({ start: b.startUtc, end: b.endUtc, label: b.label })),
       },
-      removed: deleted.map((r) => ({ id: r.id, slotStart: r.slot_start_utc, dogName: r.dog_name, handlerName: r.handler_name }))
+      removed: deleted.map((r) => ({ id: r.id, slotStart: r.slot_start_utc, dogName: r.value_1, handlerName: r.value_2 }))
         .sort((a, b) => (a.slotStart < b.slotStart ? -1 : a.slotStart > b.slotStart ? 1 : a.id - b.id)),
     };
   } catch (e) {

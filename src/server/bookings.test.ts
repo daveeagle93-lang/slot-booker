@@ -27,9 +27,11 @@ describe("readJsonObject body cap", () => {
   });
 });
 
+const ONE_LANE = { lanes: [{ id: 1, position: 1, name: "" }] };
+
 describe("validateBookingInput: names", () => {
   const input = (over: Record<string, unknown>) =>
-    validateBookingInput({ slot: "2026-10-24T09:00:00.000Z", dogName: "Fly", handlerName: "Pat", idempotencyKey: "k".repeat(16), ...over });
+    validateBookingInput({ slot: "2026-10-24T09:00:00.000Z", dogName: "Fly", handlerName: "Pat", idempotencyKey: "k".repeat(16), ...over }, ONE_LANE);
   const fieldsOf = (over: Record<string, unknown>) => {
     const r = input(over);
     return "fields" in r ? r.fields : null;

@@ -3,11 +3,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { identityKey } from "../core/identity";
-import { createTestEnv, insertEvent, type TestEnv } from "./db";
+import { generateSlug } from "../core/slug";
+import { createStagedDb, type StagedDb } from "./staged-db";
 import { hex } from "./format-chars";
 
-let t: TestEnv;
-beforeAll(async () => { t = await createTestEnv(); });
+// The migration rewrites the keys of the bookings table as it was when 0012 ran, so this runs on a database migrated
+// only as far as 0014 (the last migration before the bookings table was rebuilt for lanes and places, 0015).
+let t: StagedDb;
+beforeAll(async () => { t = await createStagedDb("0014"); }, 120_000);
 afterAll(() => t.dispose());
 
 /** Every code point with the Unicode property Default_Ignorable_Code_Point, found by scanning the whole range. */
@@ -27,6 +30,14 @@ async function runMigration(): Promise<void> {
   for (const statement of sql.split(";").map((s) => s.trim()).filter(Boolean)) {
     await t.env.DB.prepare(statement).run();
   }
+}
+
+/** An event of the schema at 0014 (it has no lanes or layout yet). */
+async function insertEvent(db: D1Database): Promise<{ id: number }> {
+  return (await db.prepare(
+    `INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, venue_postcode)
+     VALUES (?, 'Test event', '2026-06-13T08:00:00Z', '2026-06-13T11:00:00Z', 15, 'AB1 2CD') RETURNING id`,
+  ).bind(generateSlug()).first<{ id: number }>())!;
 }
 
 const BASE = Date.parse("2026-06-13T00:00:00Z");

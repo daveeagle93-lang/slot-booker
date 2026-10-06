@@ -22,3 +22,13 @@ export function identityKey(input: string): string {
     .replace(/\s+/g, " ")
     .toLocaleLowerCase("en-GB");
 }
+
+/**
+ * Separates the keys of the identity fields inside a stored identity key. U+001F is a control character, which the
+ * booking form refuses in every value, so it can never be part of a key and "ab" + "c" never collides with "a" + "bc".
+ * migrations/0016_lanes_and_places.sql joins the keys of existing bookings with the same character (char(31)).
+ */
+export const IDENTITY_SEPARATOR = "\u001f";
+
+/** The identity key of a booking: the key of each identity field's value, in field order, joined with U+001F. One field is just its key. */
+export const identityKeyOf = (values: readonly string[]): string => values.map(identityKey).join(IDENTITY_SEPARATOR);

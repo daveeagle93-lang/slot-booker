@@ -277,6 +277,17 @@ describe("POST /api/admin/templates", () => {
   });
 });
 
+describe("POST /api/admin/templates: layout", () => {
+  it("stores the template's layout (capacity 1, identity limit 1) and one unnamed lane with it, and none when the create is refused", async () => {
+    const made = await create();
+    expect((await t.env.DB.prepare("SELECT capacity, identity_limit FROM event_template_layout WHERE template_id = ?").bind(made.id).all()).results).toEqual([{ capacity: 1, identity_limit: 1 }]);
+    expect((await t.env.DB.prepare("SELECT position, name FROM event_template_lanes WHERE template_id = ?").bind(made.id).all()).results).toEqual([{ position: 1, name: "" }]);
+    expect((await post(body({ name: made.name.toUpperCase() }))).status, "a duplicate name is a field error").toBe(400);
+    expect(await countRows(t.env.DB, "event_template_layout")).toBe(1);
+    expect(await countRows(t.env.DB, "event_template_lanes")).toBe(1);
+  });
+});
+
 describe("POST /api/admin/templates: the default", () => {
   it("makes the first template ever the default, even when it says isDefault: false", async () => {
     expect((await create({ name: "First", isDefault: false })).isDefault).toBe(true);

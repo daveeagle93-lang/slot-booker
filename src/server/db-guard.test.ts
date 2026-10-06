@@ -92,6 +92,21 @@ describe("scheduleUnchanged", () => {
     await run(e);
   });
 
+  it("aborts when the layout's revision changed (lanes, capacity or identity limit were edited), and not when the layout is left as it was", async () => {
+    const e = await seed();
+    await t.env.DB.prepare("UPDATE event_layout SET capacity = 1 WHERE event_id = ?").bind(e.id).run();
+    await run(e);
+    await t.env.DB.prepare("UPDATE event_layout SET config_rev = config_rev + 1 WHERE event_id = ?").bind(e.id).run();
+    expect(await refused(e)).toBe(true);
+    await run({ ...e, event: (await loadEventBySlug(t.env.DB, e.slug))! });
+  });
+
+  it("treats an event with no layout row as revision 0", async () => {
+    const e = await seed();
+    await t.env.DB.prepare("DELETE FROM event_layout WHERE event_id = ?").bind(e.id).run();
+    await run({ ...e, event: (await loadEventBySlug(t.env.DB, e.slug))! });
+  });
+
   it("aborts when the start, end, session length or gap changed", async () => {
     for (const set of ["start_utc = '2026-06-13T07:45:00Z'", "end_utc = '2026-06-13T12:15:00Z'", "session_minutes = 10", "gap_minutes = 0"]) {
       const e = await seed();
