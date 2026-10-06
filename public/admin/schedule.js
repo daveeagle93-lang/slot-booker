@@ -12,7 +12,7 @@ const OFFLINE = "We couldn't reach the server. Check your connection and try aga
  * Wires the schedule page (`/admin/schedule?slug=...`) into `#app`: every slot and break in order with the
  * actions to add, move, swap and clear bookings. After every action the event is fetched again and drawn
  * afresh, so the page never shows what the server doesn't have. Names are user input: text nodes only.
- * A Share control sits under the date unless the event is archived. `settings` is the branding promise (see
+ * A Share control sits under the date unless the event is archived or over (their links are closed). `settings` is the branding promise (see
  * branding.js), whose club name heads the shared message once it has loaded.
  * Resolves once the first load has settled.
  */
@@ -339,7 +339,7 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
       h("p", { class: "event-name" }, event.name),
       ...(event.listed === false ? [h("p", {}, h("span", { class: "badge closed" }, "Not listed"))] : []),
       h("p", { class: "sched-date" }, formatDate(event.startUtc)),
-      ...(event.archived ? [] : [share()]),
+      ...(event.archived || !(Date.parse(event.endUtc) > Date.now()) || !isBookingPath(`/e/${slug}`) ? [] : [share()]),
       h("div", { class: "actions" }, ...links, copy),
       status,
       fallback,

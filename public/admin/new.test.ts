@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_SHARE_MESSAGE_LENGTH } from "../share-message.js";
 import { init } from "./new.js";
 
 const HOSTILE = "<img src=x onerror=alert(1)>";
@@ -1111,6 +1112,16 @@ describe("created view: Share", () => {
     }
   });
 
+  it("keeps the message, and so the WhatsApp link made from it, bounded however long the details are", async () => {
+    const huge = withEvent({ details: "é".repeat(2000), shareMessage: Array(111).fill("{details}").join("") });
+    await create({ create: huge });
+    expect(message().length).toBeLessThanOrEqual(MAX_SHARE_MESSAGE_LENGTH);
+    expect(message().endsWith("…\nhttps://club.example/e/abc123")).toBe(true);
+    const href = $$("a").find((a) => a.textContent === "Open in WhatsApp")!.getAttribute("href")!;
+    expect(href).toBe(`https://wa.me/?text=${encodeURIComponent(message())}`);
+    expect(href.length).toBeLessThanOrEqual("https://wa.me/?text=".length + MAX_SHARE_MESSAGE_LENGTH * 9);
+  });
+
   it("keeps hostile text inert: nothing in the page is built from it, and the message holds it as plain text", async () => {
     const hostile = withEvent({ name: HOSTILE, details: HOSTILE, shareMessage: "{event}\n{details}" });
     await create({ navigator: { share: vi.fn(async () => {}) }, create: hostile });
@@ -1143,6 +1154,14 @@ describe("template picker and share message", () => {
   const status = () => $(".form-status").textContent;
   const breakValues = () => $$(".break-row").map((r) => [...r.querySelectorAll("input")].map((i) => i.value));
   const created = (calls: Call[]) => calls.find((c) => c.url === CREATE)!.body;
+  // happy-dom's window.confirm isn't scriptable per answer: each test sets the one it needs, and afterEach puts the original back.
+  const originalConfirm = (document.defaultView as unknown as { confirm?: unknown }).confirm;
+  const answer = (value: boolean) => {
+    const confirm = vi.fn(() => value);
+    (document.defaultView as unknown as { confirm: unknown }).confirm = confirm;
+    return confirm;
+  };
+  afterEach(() => { (document.defaultView as unknown as { confirm?: unknown }).confirm = originalConfirm; });
   const gate = () => {
     let release!: () => void;
     const promise = new Promise<void>((resolve) => { release = resolve; });
@@ -1246,14 +1265,126 @@ describe("template picker and share message", () => {
     expect(input("name").value).toBe("Spring Scent Trial");
   });
 
-  it("replaces what the user typed in those fields when a template is chosen", async () => {
+  it("replaces what the user typed in those fields when a template is chosen and the user agrees", async () => {
     await start({ templates: BOTH });
     await tick();
+    const confirm = answer(true);
     set("postcode", "typed 1AA");
     set("details", "typed details");
     choose("2");
+    expect(confirm).toHaveBeenCalledTimes(1);
     expect(input("postcode").value).toBe("EF3 4GH");
     expect(input("details").value).toBe("");
+  });
+
+  describe("protecting what was typed", () => {
+    const MESSAGE = "Replace what you've typed in the details, times, cost, breaks and share message with this template?";
+    const typed: [string, () => void][] = [
+      ["details", () => set("details", "mine")], ["postcode", () => set("postcode", "ZZ1 1ZZ")], ["cost", () => set("cost", "3")],
+      ["start", () => set("start", "08:00")], ["end", () => set("end", "13:00")], ["session", () => set("session", "10")],
+      ["gap", () => set("gap", "0")], ["share message", () => set("share-message", "mine")],
+      ["a break time", () => set("break-1-start", "10:00")], ["a break name", () => set("break-1-label", "Coffee")],
+      ["adding a break", () => buttonNamed("Add break").click()], ["removing a break", () => $("button[aria-label='Remove break 1']").click()],
+    ];
+
+    it("applies silently when nothing was edited since the default was applied, name, date and Listed aside", async () => {
+      await start({ templates: BOTH });
+      await tick();
+      const confirm = answer(false);
+      set("name", "Spring Scent Trial");
+      set("date", "2026-06-13");
+      input("listed").click();
+      choose("2");
+      expect(confirm).not.toHaveBeenCalled();
+      expect(picker().value).toBe("2");
+      expect(input("postcode").value).toBe("EF3 4GH");
+    });
+
+    it.each(typed)("asks first when %s was changed, and changes nothing if the user declines", async (_what, edit) => {
+      await start({ templates: BOTH });
+      await tick();
+      const confirm = answer(false);
+      edit();
+      const before = [input("details").value, input("postcode").value, input("cost").value, input("start").value, input("end").value, area("share-message").value, JSON.stringify(breakValues())];
+      choose("2");
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(confirm).toHaveBeenCalledWith(MESSAGE);
+      expect(picker().value).toBe("1");
+      expect([input("details").value, input("postcode").value, input("cost").value, input("start").value, input("end").value, area("share-message").value, JSON.stringify(breakValues())]).toEqual(before);
+      expect(status()).toBe("Filled in from the template Saturday trial.");
+    });
+
+    it("applies the template when the user agrees, and then does not ask again until something else is typed", async () => {
+      await start({ templates: BOTH });
+      await tick();
+      const confirm = answer(true);
+      set("postcode", "ZZ1 1ZZ");
+      choose("2");
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(input("postcode").value).toBe("EF3 4GH");
+      expect(breakValues()).toEqual([["18:50", "19:00", ""], ["19:20", "19:30", "Water"]]);
+      choose("1");
+      expect(confirm).toHaveBeenCalledTimes(1); // nothing edited since the last apply
+      expect(input("postcode").value).toBe("AB1 2CD");
+      set("cost", "9");
+      choose("2");
+      expect(confirm).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps asking after a decline, because what was typed is still there", async () => {
+      await start({ templates: BOTH });
+      await tick();
+      const confirm = answer(false);
+      set("details", "mine");
+      choose("2");
+      choose("");
+      expect(confirm).toHaveBeenCalledTimes(2);
+      expect(picker().value).toBe("1");
+      expect(input("details").value).toBe("mine");
+      confirm.mockReturnValue(true);
+      choose("");
+      expect(input("details").value).toBe("");
+      expect(picker().value).toBe("");
+    });
+
+    it("counts edits made before any template was applied, and a decline puts the picker back on No template", async () => {
+      const g = gate();
+      await start({ templates: async () => { await g.promise; return BOTH(); } });
+      set("postcode", "ZZ1 1ZZ");
+      g.release();
+      await tick();
+      const confirm = answer(false);
+      choose("1");
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(picker().value).toBe("");
+      expect(input("postcode").value).toBe("ZZ1 1ZZ");
+      expect(breakValues()).toEqual([]);
+    });
+
+    it("applies without asking when the browser has no confirm", async () => {
+      await start({ templates: BOTH });
+      await tick();
+      (document.defaultView as unknown as { confirm?: unknown }).confirm = undefined;
+      set("details", "mine");
+      choose("2");
+      expect(input("postcode").value).toBe("EF3 4GH");
+    });
+  });
+
+  describe("while the event is being saved", () => {
+    it("disables the picker, and enables it again when the save fails", async () => {
+      const g = gate();
+      const { calls } = await start({ templates: BOTH, create: async () => { await g.promise; return reply(500, null); } });
+      await tick();
+      fillAll();
+      submit();
+      await tick();
+      expect(picker().disabled).toBe(true);
+      expect(calls.filter((c) => c.url === CREATE)).toHaveLength(1);
+      g.release();
+      await tick();
+      expect(picker().disabled).toBe(false);
+    });
   });
 
   it("No template clears exactly the template-held fields and removes the breaks", async () => {

@@ -360,7 +360,7 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
 
   /** Built from the event as it is now, each time it is tapped; the card is rebuilt from fresh data after every refresh. */
   const share = (ev) => shareControls({
-    h, navigator, clipboard, label: ev.name,
+    h, navigator, clipboard, label: ev.name, copyLink: false, // the card has its own "Copy booking link"
     getLink: () => location.origin + ev.path,
     getMessage: () => buildShareMessage({
       event: ev, clubName, link: location.origin + ev.path, template: pickShareTemplate(ev, data.defaultShareMessage),

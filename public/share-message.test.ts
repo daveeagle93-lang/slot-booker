@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BUILT_IN_SHARE_TEMPLATE, PLACEHOLDERS, buildShareMessage, pickShareTemplate, renderShareTemplate } from "./share-message.js";
+import { BUILT_IN_SHARE_TEMPLATE, MAX_SHARE_MESSAGE_LENGTH, PLACEHOLDERS, buildShareMessage, pickShareTemplate, renderShareTemplate } from "./share-message.js";
 
 const EVENT = {
   name: "Trial Day", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T15:00:00Z", costPence: 1200,
@@ -117,6 +117,86 @@ describe("buildShareMessage", () => {
 
   it("keeps line breaks inside a value", () => {
     expect(build("{details}\n{link}", {}, { details: "one\ntwo" })).toBe(`one\ntwo\n${LINK}`);
+  });
+});
+
+describe("cleaning the values", () => {
+  it("removes invisible and bidirectional-control characters from every value, but not from the template", () => {
+    const dirty = "a\u202Eb\u200Bc\u2028d\u2029e\u2066f\uFEFFg";
+    expect(build("{event}|{details}|{club}|{postcode}", { clubName: dirty }, { name: dirty, details: dirty, venuePostcode: dirty })).toBe(
+      `abcdefg|abcdefg|abcdefg|abcdefg\n${LINK}`,
+    );
+    expect(build("keep\u202E{event}")).toBe(`keep\u202ETrial Day\n${LINK}`);
+  });
+
+  it("removes control characters, keeping \\n in details and turning it into a space in the single-line values", () => {
+    const dirty = "a\u0000b\u0007c\td\u0085e\rf\ng";
+    expect(build("{details}", {}, { details: dirty })).toBe(`abcdef\ng\n${LINK}`);
+    expect(build("{event}|{club}|{postcode}", { clubName: dirty }, { name: dirty, venuePostcode: dirty })).toBe(`abcdef g|abcdef g|abcdef g\n${LINK}`);
+  });
+
+  it("strips control characters, and so any line break, from the link", () => {
+    expect(build("{link}", { link: "https://club.example/e/a\nbc\u0000" })).toBe("https://club.example/e/abc");
+  });
+
+  it("leaves an emoji name alone (a joined family sequence is shown as separate emoji: its joiners are invisible characters)", () => {
+    expect(build("{event}", {}, { name: "Dog 🐕 Day 🎉 ❤️" })).toBe(`Dog 🐕 Day 🎉 ❤️\n${LINK}`);
+    expect(build("{event}", {}, { name: "👨\u200D👩" })).toBe(`👨👩\n${LINK}`);
+  });
+
+  it("treats missing values as empty", () => {
+    expect(build("{event}|{details}|{club}", { clubName: undefined }, { name: undefined, details: undefined })).toBe(`||\n${LINK}`);
+  });
+});
+
+describe("the length cap", () => {
+  const details = "x".repeat(2000);
+  const many = Array(111).fill("{details}").join("");
+
+  it("exports the cap", () => {
+    expect(MAX_SHARE_MESSAGE_LENGTH).toBe(4000);
+  });
+
+  it("cuts the body, adds an ellipsis and keeps the link as the last line", () => {
+    const message = build(many, {}, { details });
+    expect(message.length).toBeLessThanOrEqual(MAX_SHARE_MESSAGE_LENGTH);
+    expect(message.endsWith(`…\n${LINK}`)).toBe(true);
+    expect(message.length).toBe(MAX_SHARE_MESSAGE_LENGTH);
+    expect(message.split("\n")).toHaveLength(2);
+  });
+
+  it("does not touch a message at or under the cap", () => {
+    const exact = build("{details}", {}, { details: "y".repeat(MAX_SHARE_MESSAGE_LENGTH - LINK.length - 1) });
+    expect(exact.length).toBe(MAX_SHARE_MESSAGE_LENGTH);
+    expect(exact).not.toContain("…");
+  });
+
+  it("never splits a surrogate pair, at either cut point", () => {
+    // Body room is 4000 - link - 2; put an emoji across it, with one more character either side to shift the cut by one.
+    const room = MAX_SHARE_MESSAGE_LENGTH - LINK.length - 2;
+    for (const pad of [room - 1, room - 2]) {
+      const message = build("{details}", {}, { details: `${"a".repeat(pad)}😀${"b".repeat(50)}` });
+      expect(message.length).toBeLessThanOrEqual(MAX_SHARE_MESSAGE_LENGTH);
+      expect(message.endsWith(`…\n${LINK}`)).toBe(true);
+      expect(encodeURIComponent(message)).toBeTypeOf("string"); // throws URIError on a lone surrogate
+    }
+    const whole = build("{details}\n{link}", {}, { details: `${"a".repeat(MAX_SHARE_MESSAGE_LENGTH - 2)}😀${"b".repeat(50)}` });
+    expect(whole.length).toBeLessThanOrEqual(MAX_SHARE_MESSAGE_LENGTH);
+    expect(() => encodeURIComponent(whole)).not.toThrow();
+  });
+
+  it("with {link} in the template cuts the whole text at the cap and adds an ellipsis", () => {
+    const long = build(`{link}\n${many}`, {}, { details });
+    expect(long.length).toBeLessThanOrEqual(MAX_SHARE_MESSAGE_LENGTH);
+    expect(long.endsWith("…")).toBe(true);
+    expect(long.startsWith(LINK)).toBe(true);
+    expect(build("{details}\n{link}\nafter", {}, { details })).toBe(`${details}\n${LINK}\nafter`); // short enough: untouched
+  });
+
+  it("bounds the encoded WhatsApp text too", () => {
+    const message = build(many, {}, { details: "é".repeat(2000) });
+    expect(message.length).toBeLessThanOrEqual(MAX_SHARE_MESSAGE_LENGTH);
+    expect(encodeURIComponent(message).length).toBeLessThanOrEqual(MAX_SHARE_MESSAGE_LENGTH * 9);
   });
 });
 

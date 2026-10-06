@@ -8,6 +8,8 @@ const URL_BASE = "/api/admin/templates";
 const MAX_TEMPLATES = 20;
 const OFFLINE = "We couldn't reach the server. Check your connection and try again.";
 const LOAD_FAILED = "We couldn't load your templates. Check your connection and try again.";
+const PREVIEW_FAILED = "The preview couldn't be built.";
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const MISSING = "That template no longer exists. The list has been refreshed.";
 // The preview uses a fixed winter date (London time is UTC then, so the times typed in the form show as typed) and
 // these examples for anything the form leaves blank.
@@ -140,9 +142,15 @@ export async function init({ document, fetch, navigate, location, settings = nul
     if (!t.isDefault) {
       const make = h("button", { type: "button", class: "button", "aria-label": `Make ${t.name} the default` }, "Make default");
       make.addEventListener("click", () => perform(async () => {
+        // The list may be older than the server's copy (another tab), so build the body from a fresh GET.
         let res;
         try {
-          res = await api.request("PUT", `${URL_BASE}/${t.id}`, { ...bodyOf(t), isDefault: true });
+          res = await api.request("GET", `${URL_BASE}/${t.id}`);
+          if (res.status === 200 && res.data?.template) {
+            res = await api.request("PUT", `${URL_BASE}/${t.id}`, { ...bodyOf(res.data.template), isDefault: true });
+          } else if (res.status === 200) {
+            res = { status: 500, data: null };
+          }
         } catch {
           return say(OFFLINE);
         }
@@ -306,20 +314,24 @@ export async function init({ document, fetch, navigate, location, settings = nul
       const blank = share.value.trim() === "";
       const message = blank ? BUILT_IN_SHARE_TEMPLATE : share.value;
       const priced = penceFromPounds(cost.value);
-      const time = (input, fallback) => (/^\d\d:\d\d$/.test(input.value) ? input.value : fallback);
-      previewText.textContent = buildShareMessage({
-        event: {
-          name: SAMPLE.name,
-          startUtc: `${SAMPLE.day}T${time(start, SAMPLE.start)}:00Z`,
-          endUtc: `${SAMPLE.day}T${time(end, SAMPLE.end)}:00Z`,
-          costPence: "pence" in priced ? priced.pence : SAMPLE.costPence,
-          venuePostcode: postcode.value.trim() || SAMPLE.postcode,
-          details: details.value.trim(),
-        },
-        clubName,
-        link: `${location.origin}/e/example`,
-        template: message,
-      });
+      const time = (input, fallback) => (TIME.test(input.value) ? input.value : fallback);
+      try {
+        previewText.textContent = buildShareMessage({
+          event: {
+            name: SAMPLE.name,
+            startUtc: `${SAMPLE.day}T${time(start, SAMPLE.start)}:00Z`,
+            endUtc: `${SAMPLE.day}T${time(end, SAMPLE.end)}:00Z`,
+            costPence: "pence" in priced ? priced.pence : SAMPLE.costPence,
+            venuePostcode: postcode.value.trim() || SAMPLE.postcode,
+            details: details.value.trim(),
+          },
+          clubName,
+          link: `${location.origin}/e/example`,
+          template: message,
+        });
+      } catch {
+        previewText.textContent = PREVIEW_FAILED;
+      }
       blankNote.textContent = blank ? blankMessage : "";
       const unknown = unknownPlaceholders(message);
       unknownNote.textContent = unknown.length > 0 ? `These will appear as typed: ${unknown.join(", ")}` : "";

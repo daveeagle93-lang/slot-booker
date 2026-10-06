@@ -7,10 +7,11 @@ const h = makeH(document);
 const tick = () => vi.advanceTimersByTimeAsync(0);
 const SHARE_FAILED = "Sharing isn't available here. Use Copy message or Copy link.";
 
-function mount(opts: { navigator?: unknown; clipboard?: unknown; message?: () => string; link?: () => string } = {}) {
+function mount(opts: { navigator?: unknown; clipboard?: unknown; message?: () => string; link?: () => string; copyLink?: boolean } = {}) {
   const node = shareControls({
     h, navigator: "navigator" in opts ? opts.navigator : {}, clipboard: "clipboard" in opts ? opts.clipboard : { writeText: vi.fn(async (_text: string) => {}) },
     getMessage: opts.message ?? (() => "Trial Day\nhttps://club.example/e/abc"), getLink: opts.link ?? (() => "https://club.example/e/abc"), label: "Trial Day",
+    ...("copyLink" in opts ? { copyLink: opts.copyLink } : {}),
   } as never);
   document.body.append(node);
   return node;
@@ -86,6 +87,7 @@ describe("where sharing is supported", () => {
     mount({ navigator: { share }, message: getMessage });
     expect(getMessage).not.toHaveBeenCalled();
     named("Share").click();
+    await tick(); // one share at a time: the first has to settle
     event.name = "Renamed";
     named("Share").click();
     expect(share.mock.calls.map((c) => (c[0] as { text: string }).text)).toEqual(["Message for First", "Message for Renamed"]);
@@ -99,6 +101,77 @@ describe("where sharing is supported", () => {
     expect(status().textContent).toBe(SHARE_FAILED);
     named("Share").click();
     expect(status().textContent).toBe("");
+  });
+});
+
+describe("a second tap while a share is pending", () => {
+  it("is ignored, and the pending share's AbortError later leaves the control as it was", async () => {
+    let finish: (error?: unknown) => void = () => {};
+    const share = vi.fn(() => new Promise<void>((resolve, reject) => { finish = (e) => (e ? reject(e) : resolve()); }));
+    mount({ navigator: { share } });
+    named("Share").click();
+    named("Share").click();
+    expect(share).toHaveBeenCalledTimes(1);
+    expect(status().textContent).toBe("");
+    finish();
+    await tick();
+    named("Share").click();
+    expect(share).toHaveBeenCalledTimes(2); // the flag was reset once the first share settled
+  });
+
+  it("is allowed again after a failed share", async () => {
+    const share = vi.fn().mockRejectedValueOnce(new Error("x")).mockResolvedValue(undefined);
+    mount({ navigator: { share } });
+    named("Share").click();
+    named("Share").click();
+    await tick();
+    expect(share).toHaveBeenCalledTimes(1);
+    named("Share").click();
+    expect(share).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a synchronous throw from navigator.share like a rejection", async () => {
+    const share = vi.fn(() => { throw new DOMException("already sharing", "InvalidStateError"); });
+    mount({ navigator: { share } });
+    named("Share").click();
+    await tick();
+    expect(status().textContent).toBe(SHARE_FAILED);
+    expect(named("Copy message").hidden).toBe(false);
+    expect(named("Copy link").hidden).toBe(false);
+    named("Share").click(); // and the flag was reset
+    expect(share).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a synchronous AbortError throw as a closed sheet", async () => {
+    mount({ navigator: { share: vi.fn(() => { throw new DOMException("closed", "AbortError"); }) } });
+    named("Share").click();
+    await tick();
+    expect(status().textContent).toBe("");
+  });
+});
+
+describe("with copyLink: false", () => {
+  it("has no Copy link button where sharing is missing, and Copy message still works", async () => {
+    const clipboard = { writeText: vi.fn(async (_text: string) => {}) };
+    mount({ copyLink: false, clipboard });
+    expect(buttons().map((b) => b.textContent)).toEqual(["Copy message"]);
+    named("Copy message").click();
+    await tick();
+    expect(clipboard.writeText).toHaveBeenCalledWith("Trial Day\nhttps://club.example/e/abc");
+  });
+
+  it("falls back to Copy message only when a share fails, and says so", async () => {
+    mount({ copyLink: false, navigator: { share: vi.fn(async () => { throw new Error("x"); }) } });
+    named("Share").click();
+    await tick();
+    expect(buttons().map((b) => b.textContent)).toEqual(["Share", "Copy message"]);
+    expect(named("Copy message").hidden).toBe(false);
+    expect(status().textContent).toBe("Sharing isn't available here. Use Copy message.");
+  });
+
+  it("keeps Copy link by default", () => {
+    mount({});
+    expect(buttons().map((b) => b.textContent)).toEqual(["Copy message", "Copy link"]);
   });
 });
 

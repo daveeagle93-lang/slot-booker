@@ -50,6 +50,7 @@ async function start(opts: { templates?: Template[]; override?: Override; settin
     }
     const id = Number(/\/(\d+)$/.exec(url)?.[1]);
     const index = server.templates.findIndex((t) => t.id === id);
+    if (call.method === "GET") return index < 0 ? reply(404, { error: { code: "not_found" } }) : reply(200, { template: server.templates[index] });
     if (call.method === "PUT") {
       if (call.body.isDefault) for (const t of server.templates) t.isDefault = false;
       server.templates[index] = { ...server.templates[index], ...call.body };
@@ -80,7 +81,7 @@ const button = (name: string) => $$("button").find((b) => b.textContent === name
 const cardOf = (name: string) => $$(".event-card").find((c) => c.querySelector("h2")!.textContent === name)!;
 const cardButton = (name: string, label: string) => [...cardOf(name).querySelectorAll("button")].find((b) => b.textContent === label) as HTMLButtonElement;
 const submit = () => $("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 const text = () => document.body.textContent ?? "";
 const errorOf = (id: string) => document.getElementById(`${id}-error`)!.textContent;
 const status = () => $(".list-status").textContent;
@@ -326,6 +327,44 @@ describe("make default", () => {
     expect(cardButton("Saturday trial", "Make default")).toBeDefined();
   });
 
+  it("builds the body from a fresh GET of the template, not from the list loaded earlier", async () => {
+    const { calls, server } = await start();
+    server.templates[1] = { ...server.templates[1], name: "Evening (edited elsewhere)", details: "New details", costPence: 500, breaks: [{ start: "19:00", end: "19:15", label: "Tea" }], shareMessage: "Hi {event}" };
+    cardButton("Evening", "Make default").click();
+    await flush();
+    const sequence = calls.filter((c) => c.url === `${URL_BASE}/2`);
+    expect(sequence.map((c) => c.method)).toEqual(["GET", "PUT"]);
+    expect(sequence[1].body).toEqual({
+      name: "Evening (edited elsewhere)", details: "New details", venuePostcode: "EF3 4GH", costPence: 500, start: "18:00", end: "20:00",
+      sessionMinutes: 15, gapMinutes: 0, breaks: [{ start: "19:00", end: "19:15", label: "Tea" }], shareMessage: "Hi {event}", isDefault: true,
+    });
+  });
+
+  it("refreshes the list with the message, and sends no PUT, when the fresh GET finds the template deleted", async () => {
+    const { calls, server } = await start();
+    server.templates.splice(1, 1);
+    cardButton("Evening", "Make default").click();
+    await flush();
+    expect(writes(calls)).toEqual([]);
+    expect(status()).toBe("That template no longer exists. The list has been refreshed.");
+    expect(cardOf("Saturday trial")).toBeDefined();
+    expect($$(".event-card")).toHaveLength(1);
+  });
+
+  it("reports an offline or failed GET on the page, sends no PUT and leaves the buttons usable", async () => {
+    let mode: "offline" | "failed" = "offline";
+    const { calls } = await start({ override: (c) => (c.method === "GET" && c.url === `${URL_BASE}/2` ? (mode === "offline" ? Promise.reject(new TypeError("offline")) : reply(500, { error: { message: "Boom." } })) : undefined) });
+    cardButton("Evening", "Make default").click();
+    await flush();
+    expect(status()).toBe("We couldn't reach the server. Check your connection and try again.");
+    expect(cardButton("Evening", "Make default").disabled).toBe(false);
+    mode = "failed";
+    cardButton("Evening", "Make default").click();
+    await flush();
+    expect(status()).toBe("We couldn't make Evening the default. Boom.");
+    expect(writes(calls)).toEqual([]);
+  });
+
   it("reports a refusal or an offline failure on the page and leaves the buttons usable", async () => {
     let mode: "offline" | "refused" = "offline";
     await start({ override: (c) => (c.method === "PUT" ? (mode === "offline" ? Promise.reject(new TypeError("offline")) : reply(400, { error: { message: "No." } })) : undefined) });
@@ -519,6 +558,33 @@ describe("the share message section", () => {
     expect(text()).toContain("A placeholder that isn't in this list is left exactly as you typed it.");
     expect(text()).toContain("If you leave out {link}, the booking link is added as the last line.");
     expect(field("tpl-share").maxLength).toBe(1000);
+  });
+
+  it("falls back to the example times for a time the server would refuse, instead of throwing", async () => {
+    await open();
+    set("tpl-start", "99:99");
+    set("tpl-end", "24:00");
+    expect(preview().split("\n")[1]).toBe("Saturday 16 January 2027, 09:00–16:00");
+    set("tpl-start", "10:30");
+    set("tpl-end", "23:59");
+    expect(preview().split("\n")[1]).toBe("Saturday 16 January 2027, 10:30–23:59");
+  });
+
+  it("shows a plain message when the preview can't be built, and recovers", async () => {
+    await open();
+    vi.spyOn(Intl.DateTimeFormat.prototype, "formatToParts").mockImplementationOnce(() => { throw new RangeError("boom"); });
+    set("tpl-details", "x");
+    expect(preview()).toBe("The preview couldn't be built.");
+    vi.restoreAllMocks();
+    set("tpl-details", "y");
+    expect(preview()).toContain("Spring Scent Trial");
+  });
+
+  it("sanitises the typed details like the shared message does", async () => {
+    await open();
+    set("tpl-share", "{details}");
+    set("tpl-details", "a\u202Eb");
+    expect(preview().split("\n")[0]).toBe("ab");
   });
 
   it("previews the built-in message while the box is blank, and says so", async () => {

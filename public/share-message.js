@@ -46,22 +46,51 @@ export function renderShareTemplate(template, values) {
   return lines.join("\n");
 }
 
+/** The longest message buildShareMessage returns, in UTF-16 code units (what String#length counts). */
+export const MAX_SHARE_MESSAGE_LENGTH = 4000;
+
+// Values are cleaned before they are substituted: a stored name or details can still hold characters the server
+// only learned to refuse later (for example U+202E, which reverses the text after it), and an edit may keep them.
+// \p{Cf} includes U+200D (zero width joiner), so a joined emoji such as a family is shown as its separate emoji: accepted.
+// Other emoji (and U+FE0F, which is not Cf) are untouched. The template text itself is not cleaned: the server validates it.
+const INVISIBLE = /[\p{Cf}\p{Zl}\p{Zp}]/gu;
+const CONTROLS = /[\p{Cc}]/gu;
+const CONTROLS_EXCEPT_NEWLINE = /[^\P{Cc}\n]/gu;
+const multiLine = (value) => String(value ?? "").replace(CONTROLS_EXCEPT_NEWLINE, "").replace(INVISIBLE, "");
+const oneLine = (value) => String(value ?? "").replace(/\r/g, "").replace(/\n/g, " ").replace(CONTROLS, "").replace(INVISIBLE, "");
+// The link is built by the page, so only control characters (including line breaks) can be wrong in it.
+const linkText = (value) => String(value ?? "").replace(CONTROLS, "");
+
+/** The first `limit` code units of `value`, without ending on the first half of a surrogate pair. */
+const clip = (value, limit) => {
+  const last = value.charCodeAt(limit - 1);
+  return value.slice(0, last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit);
+};
+
 /**
  * `event` has name, startUtc, endUtc, costPence, venuePostcode and details; `template` is the text to render
- * (see pickShareTemplate). Without a {link} in the template, the link goes on its own final line.
+ * (see pickShareTemplate). Without a {link} in the template, the link goes on its own final line. The result is at
+ * most MAX_SHARE_MESSAGE_LENGTH code units (a wa.me link made from it stays a sane length): a longer message is cut at
+ * a code point and "…" is added. When the link is the last line (no {link} in the template) only the text before it is
+ * cut and the link is kept; when {link} is in the template the whole message is cut, wherever the link is.
  */
 export function buildShareMessage({ event, clubName = "", link, template }) {
+  const cleanLink = linkText(link);
   const body = renderShareTemplate(template, {
-    event: event.name,
+    event: oneLine(event.name),
     date: formatDate(event.startUtc),
     start: formatTime(event.startUtc),
     end: formatTime(event.endUtc),
     cost: formatPounds(event.costPence),
-    postcode: event.venuePostcode,
-    details: event.details,
-    club: clubName,
-    link,
+    postcode: oneLine(event.venuePostcode),
+    details: multiLine(event.details),
+    club: oneLine(clubName),
+    link: cleanLink,
   }).trimEnd();
-  if (/\{link\}/.test(String(template))) return body;
-  return body === "" ? link : `${body}\n${link}`;
+  const linked = /\{link\}/.test(String(template));
+  const message = linked ? body : body === "" ? cleanLink : `${body}\n${cleanLink}`;
+  if (message.length <= MAX_SHARE_MESSAGE_LENGTH) return message;
+  const room = MAX_SHARE_MESSAGE_LENGTH - cleanLink.length - 2; // the line break and the "…"
+  if (linked || room < 0) return `${clip(message, MAX_SHARE_MESSAGE_LENGTH - 1)}…`;
+  return `${clip(body, room)}…\n${cleanLink}`;
 }

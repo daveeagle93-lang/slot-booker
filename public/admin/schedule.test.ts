@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { init } from "./schedule.js";
 
 const HOSTILE = "<img src=x onerror=alert(1)>";
@@ -516,6 +516,9 @@ describe("changes made while working, and requests in flight", () => {
 });
 
 describe("Share", () => {
+  // EVENT ends 2026-06-13T09:45:00Z: the clock is set to a moment before it, as only an event that has not ended is shared.
+  beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-06-13T07:00:00Z")); });
+  afterEach(() => { vi.useRealTimers(); });
   const SHARE_EVENT = { ...EVENT, details: "Bring water", shareMessage: "", costPence: 1500 };
   const BUILT_IN = `Trial Day\nSaturday 13 June 2026, 09:00–10:45\nVenue: AB1 2CD\nCost: £15.00\nBook your slot:\nhttps://club.example/e/${SLUG}`;
   const withShare = () => ({ share: vi.fn(async () => {}) });
@@ -535,6 +538,23 @@ describe("Share", () => {
     expect($$(".share")).toHaveLength(0);
     expect(shareButton()).toBeUndefined();
     expect($$("button").map((b) => b.textContent)).not.toContain("Copy message");
+  });
+
+  it("is absent once the event has ended, including at the very moment it ends, and present a millisecond before", async () => {
+    vi.setSystemTime(new Date("2026-06-13T09:45:00Z"));
+    await start({ navigator: withShare(), initial: withDetail(SHARE_EVENT) });
+    expect($$(".share")).toHaveLength(0);
+    vi.setSystemTime(new Date("2026-06-14T00:00:00Z"));
+    await start({ navigator: withShare(), initial: withDetail(SHARE_EVENT) });
+    expect($$(".share")).toHaveLength(0);
+    vi.setSystemTime(new Date("2026-06-13T09:44:59.999Z"));
+    await start({ navigator: withShare(), initial: withDetail(SHARE_EVENT) });
+    expect($$(".share")).toHaveLength(1);
+  });
+
+  it("is absent when the event has no readable end", async () => {
+    await start({ navigator: withShare(), initial: withDetail({ ...SHARE_EVENT, endUtc: undefined }) });
+    expect($$(".share")).toHaveLength(0);
   });
 
   it("shares the built-in message, as text only, in the tap itself", async () => {

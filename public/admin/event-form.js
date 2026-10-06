@@ -7,6 +7,7 @@ const SAVE_FAILED = "We couldn't save the event. Check your connection and try a
 const TEMPLATES_URL = "/api/admin/templates";
 const TEMPLATES_FAILED = "Templates couldn't be loaded. You can still fill the form in by hand.";
 const TEMPLATE_NOTE = "Choosing a template replaces the details, times, cost, breaks and share message below. The event name and date stay as they are. The event keeps its own copy: changing a template later never changes events already made.";
+const REPLACE_CONFIRM = "Replace what you've typed in the details, times, cost, breaks and share message with this template?";
 const SHARE_NOTE = "Used when you share this event. Leave it blank to use your default template's message. Placeholders such as {event} and {date} are filled in when you share. ";
 const SAVED_EARLIER = "We'd already saved an event from this page, so we haven't changed it. Here it is as saved. Any changes you made since weren't applied.";
 const AFFECTED_APPEARED = "Another booking has appeared since you checked, so please check the list again.";
@@ -14,6 +15,8 @@ const AFFECTED_APPEARED = "Another booking has appeared since you checked, so pl
 const PREVIEW_ONLY = { name: "Preview", costPence: 0, venuePostcode: "AB1 2CD", details: "" };
 const SCHEDULE_KEYS = new Set(["date", "start", "end", "sessionMinutes", "gapMinutes"]);
 const isScheduleKey = (key) => SCHEDULE_KEYS.has(key) || key === "breaks" || key.startsWith("breaks.");
+// The fields a template fills in (its breaks are the `breaks.*` keys).
+const TEMPLATE_HELD = new Set(["details", "venuePostcode", "costPence", "start", "end", "sessionMinutes", "gapMinutes", "shareMessage"]);
 const wholeNumber = (text) => (/^\d+$/.test(text) ? Number(text) : null);
 const plural = (n, one, many) => (n === 1 ? one : many);
 
@@ -59,6 +62,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
   let seq = 0; // bumped whenever a pending or in-flight preview stops being wanted
   let affected = []; // edit: the bookings the last preview said the draft would remove
   let edited = false; // create: the user has changed something, so a template arriving late must not overwrite it
+  let templateEdited = false; // create: a template-held field changed since the last template apply (or since load)
   let previewCurrent = false; // edit: whether `affected` answers the form as it is now
 
   // ---- form ----
@@ -155,6 +159,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     const remove = h("button", { type: "button", class: "button remove" }, "Remove");
     const row = { id, legend, startInput: times.start, endInput: times.end, labelInput };
     remove.addEventListener("click", () => {
+      templateEdited = true;
       removeRow(row);
       addBreak.focus();
       onScheduleChange();
@@ -221,6 +226,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     edited = true;
     const fld = [...fields.values()].find((x) => x.input === e.target);
     if (!fld) return;
+    if (TEMPLATE_HELD.has(fld.key) || fld.key.startsWith("breaks.")) templateEdited = true;
     fld.touched = true;
     delete serverErrors[fld.key];
     renderErrors();
@@ -234,6 +240,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
   });
   addBreak.addEventListener("click", () => {
     edited = true;
+    templateEdited = true;
     addRow();
   });
   form.addEventListener("submit", onSubmit);
@@ -364,6 +371,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
           `Move ${what} to ${s.suggestedLocal.start}–${s.suggestedLocal.end} to keep the ${formatTime(s.droppedSlot.start)} session?`),
         h("div", { class: "actions" }, move, keep));
       move.addEventListener("click", () => {
+        templateEdited = true;
         row.startInput.value = s.suggestedLocal.start;
         row.endInput.value = s.suggestedLocal.end;
         for (const k of ["start", "end"]) {
@@ -471,6 +479,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
   function setSaving(busy) {
     saving = busy;
     saveButton.disabled = busy;
+    picker.disabled = busy; // switching templates mid-save would remove the rows and fields the reply refers to
     for (const b of confirmButtons) b.disabled = busy;
     form.setAttribute("aria-busy", String(busy));
     progress.textContent = busy ? (editing ? "Saving the changes…" : "Saving the event…") : "";
@@ -580,11 +589,24 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     const def = templateList.find((t) => t.isDefault);
     if (def && !edited) {
       picker.value = String(def.id);
+      appliedValue = picker.value;
       applyTemplate(def);
     }
   }
 
-  picker.addEventListener("change", () => applyTemplate(templateList.find((t) => String(t.id) === picker.value) ?? null));
+  let appliedValue = ""; // the picker's value at the last apply: where it goes back to if the replacement is declined
+
+  picker.addEventListener("change", () => {
+    if (templateEdited) {
+      const view = document.defaultView;
+      if (typeof view?.confirm === "function" && !view.confirm(REPLACE_CONFIRM)) {
+        picker.value = appliedValue;
+        return;
+      }
+    }
+    appliedValue = picker.value;
+    applyTemplate(templateList.find((t) => String(t.id) === picker.value) ?? null);
+  });
 
   /** Fills (or, with null, clears) exactly the template-held fields: never the name, date or "listed". */
   function applyTemplate(t) {
@@ -606,6 +628,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
       row.labelInput.value = b.label;
       for (const which of ["start", "end", "label"]) fields.get(`breaks.${row.id}.${which}`).touched = true;
     }
+    templateEdited = false;
     renderErrors();
     onScheduleChange();
     templateStatus.textContent = t ? `Filled in from the template ${t.name}.` : "Cleared the template fields.";

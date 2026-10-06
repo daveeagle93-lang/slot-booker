@@ -38,7 +38,8 @@ describe("the admin pages", () => {
     it("marks only the current page with aria-current", () => {
       const current = EVENTS_PAGES.includes(page) ? "/admin/" : page === "templates.html" ? "/admin/templates" : "/admin/settings";
       const marked = linksIn(navOf(html)![1]).filter((l) => l.current !== null);
-      expect(marked.map((l) => [l.href, l.current])).toEqual([[current, "page"]]);
+      // The Events link is the page itself on the list, and only the section it belongs to on the pages reached from it.
+      expect(marked.map((l) => [l.href, l.current])).toEqual([[current, page === "index.html" || !EVENTS_PAGES.includes(page) ? "page" : "true"]]);
     });
 
     it("puts the navigation inside <body>, before <main>", () => {
