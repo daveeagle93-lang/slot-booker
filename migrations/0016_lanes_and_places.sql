@@ -15,15 +15,20 @@
 -- that every edit of the lanes, the capacity or the limit must increase in the same batch, which is how a booking
 -- request notices that the layout it read has since been edited (src/server/db-guard.ts, scheduleUnchanged).
 --
--- event_lanes: the lanes of an event in order (position 1 to 10). A lane's name is unique within the event ignoring
--- ASCII case, so an event cannot have two unnamed lanes either (the application also makes every lane of a
--- multi-lane event named). A booking points at its lane without ON DELETE CASCADE: a lane that still has bookings
--- cannot be deleted by mistake. Deleting an event still works, because its bookings go in the same statement.
+-- event_lanes: the lanes of an event in order. The application allows at most 10 lanes, but position is only checked
+-- to be 1 to 1000: saving a reordered list updates the positions one row at a time, and UNIQUE (event_id, position) is
+-- checked after every row, so the batch first parks the lanes at a position above 100 and then sets the final ones;
+-- a CHECK of 1 to 10 would refuse the parking. A lane's name is unique within the event ignoring ASCII case, so an
+-- event cannot have two unnamed lanes either (the application also makes every lane of a multi-lane event named).
+-- UNIQUE (id, event_id) exists so that a booking can point at (lane, event) together: see bookings below. A booking
+-- points at its lane without ON DELETE CASCADE: a lane that still has bookings cannot be deleted by mistake.
+-- Deleting an event still works, because its bookings go in the same statement.
 --
 -- event_template_layout and event_template_lanes are the same for event templates. An event stores a COPY of the
 -- template's layout, as it does for the rest of the template.
 --
--- bookings, final columns: the lane, the place (1 up), up to four field values (value_1 is required; the booking
+-- bookings, final columns: the lane (the foreign key is on lane_id and event_id together, so a booking can only be in a
+-- lane of its own event), the place (1 up), up to four field values (value_1 is required; the booking
 -- form has two fields so far, dog and handler, kept in value_1 and value_2) and the identity: identity_key is the
 -- identity fields' keys (identityKey() in src/core/identity.ts) joined with U+001F, a character the booking form
 -- refuses so it can never be part of a value, and identity_seq numbers an identity's bookings in the event (1 to
@@ -52,9 +57,10 @@ CREATE TABLE IF NOT EXISTS event_layout (
 CREATE TABLE IF NOT EXISTS event_lanes (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id  INTEGER NOT NULL REFERENCES events (id) ON DELETE CASCADE,
-  position  INTEGER NOT NULL CHECK (position BETWEEN 1 AND 10),
+  position  INTEGER NOT NULL CHECK (position BETWEEN 1 AND 1000),
   name      TEXT    NOT NULL DEFAULT '' CHECK (length(name) <= 40),
-  UNIQUE (event_id, position)
+  UNIQUE (event_id, position),
+  UNIQUE (id, event_id)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS event_lanes_name ON event_lanes (event_id, lower(name));
@@ -68,7 +74,7 @@ CREATE TABLE IF NOT EXISTS event_template_layout (
 CREATE TABLE IF NOT EXISTS event_template_lanes (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   template_id  INTEGER NOT NULL REFERENCES event_templates (id) ON DELETE CASCADE,
-  position     INTEGER NOT NULL CHECK (position BETWEEN 1 AND 10),
+  position     INTEGER NOT NULL CHECK (position BETWEEN 1 AND 1000),
   name         TEXT    NOT NULL DEFAULT '' CHECK (length(name) <= 40),
   UNIQUE (template_id, position)
 );
@@ -94,7 +100,7 @@ DROP INDEX IF EXISTS bookings_one_run_per_dog_handler_keys;
 CREATE TABLE IF NOT EXISTS bookings (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id         INTEGER NOT NULL REFERENCES events (id) ON DELETE CASCADE,
-  lane_id          INTEGER NOT NULL REFERENCES event_lanes (id),
+  lane_id          INTEGER NOT NULL,
   slot_start_utc   TEXT    NOT NULL,
   place            INTEGER NOT NULL DEFAULT 1 CHECK (place >= 1),
   value_1          TEXT    NOT NULL CHECK (trim(value_1) <> ''),
@@ -107,7 +113,8 @@ CREATE TABLE IF NOT EXISTS bookings (
   token            TEXT    NOT NULL,
   idempotency_key  TEXT,
   CHECK (substr(slot_start_utc, 1, 10) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND substr(slot_start_utc, 11) GLOB 'T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
-  CHECK (substr(created_at, 1, 10) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND substr(created_at, 11) GLOB 'T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z')
+  CHECK (substr(created_at, 1, 10) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND substr(created_at, 11) GLOB 'T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
+  FOREIGN KEY (lane_id, event_id) REFERENCES event_lanes (id, event_id)
 );
 
 INSERT OR IGNORE INTO bookings (id, event_id, lane_id, slot_start_utc, place, value_1, value_2, identity_key, identity_seq, created_at, token, idempotency_key)

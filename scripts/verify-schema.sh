@@ -56,7 +56,9 @@ expect_fail "identity limit 21" "UPDATE event_layout SET identity_limit = 21 WHE
 expect_ok "capacity 50 and identity limit 20" "UPDATE event_layout SET capacity = 50, identity_limit = 20 WHERE event_id = 1"
 expect_ok "capacity back to 1 and identity limit to 1" "UPDATE event_layout SET capacity = 1, identity_limit = 1 WHERE event_id = 1"
 expect_fail "a second layout row for an event" "INSERT INTO event_layout (event_id) VALUES (1)" "UNIQUE constraint failed"
-expect_fail "a lane at position 11" "INSERT INTO event_lanes (event_id, position, name) VALUES (1, 11, 'Ring 11')" "CHECK constraint failed"
+expect_fail "a lane at position 1001" "INSERT INTO event_lanes (event_id, position, name) VALUES (1, 1001, 'Ring 1001')" "CHECK constraint failed"
+expect_ok "a lane parked at position 105 (a reorder parks lanes above 100)" "INSERT INTO event_lanes (event_id, position, name) VALUES (1, 105, 'Parked')"
+expect_ok "remove the parked lane" "DELETE FROM event_lanes WHERE position = 105"
 expect_fail "a second lane at the same position" "INSERT INTO event_lanes (event_id, position, name) VALUES (1, 1, 'Ring 1')" "UNIQUE constraint failed"
 expect_fail "a second unnamed lane" "INSERT INTO event_lanes (event_id, position, name) VALUES (1, 2, '')" "UNIQUE constraint failed"
 expect_ok "a named lane" "INSERT INTO event_lanes (event_id, position, name) VALUES (1, 2, 'Ring 1')"
@@ -85,6 +87,7 @@ expect_fail "blank first field" "$BK $(row 1 '2026-03-14T10:00:00Z' '  ' 'Ann Le
 expect_fail "bad booking timestamp format" "$BK $(row 1 '2026-03-14 10:00' 'Bo' 'Ann Lee')" "CHECK constraint failed"
 expect_fail "booking for missing event" "$BK (99, 1, '2026-03-14T10:00:00Z', 1, 'Bo', 'Ann Lee', 'bo' || char(31) || 'ann lee', 'tok-missing-event-aaaa')" "FOREIGN KEY constraint failed"
 expect_fail "booking in a missing lane" "$BK (1, 999, '2026-03-14T10:00:00Z', 1, 'Bo', 'Ann Lee', 'bo' || char(31) || 'ann lee', 'tok-missing-lane-aaaaaa')" "FOREIGN KEY constraint failed"
+expect_fail "booking in another event's lane" "$BK (2, (SELECT id FROM event_lanes WHERE event_id = 1 AND position = 1), '2026-06-13T10:00:00Z', 1, 'Bo', 'Ann Lee', 'bo' || char(31) || 'ann lee', 'tok-other-lane-aaaaaa')" "FOREIGN KEY constraint failed"
 expect_fail "a lane that still has bookings cannot be deleted" "DELETE FROM event_lanes WHERE event_id = 1" "FOREIGN KEY constraint failed"
 
 # Unicode identity: keys come from identityKey(), display columns keep the text as entered.

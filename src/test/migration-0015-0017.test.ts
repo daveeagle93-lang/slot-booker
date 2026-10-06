@@ -172,6 +172,26 @@ describe("0015 to 0017 applied by wrangler to a v1.0 database", () => {
     await expect(insert({ lane_id: 999, place: 4, identity_key: "z", token: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb7" })).rejects.toThrow(/FOREIGN KEY constraint failed/);
   });
 
+  it("refuses a booking in a lane that belongs to another event, and a lane or event that does not exist", async () => {
+    const lane = (ev: number) => `(SELECT id FROM event_lanes WHERE event_id = ${ev})`;
+    const book = (ev: number, laneSql: string, token: string) => db().prepare(
+      `INSERT INTO bookings (event_id, lane_id, slot_start_utc, value_1, identity_key, token) VALUES (${ev}, ${laneSql}, '2026-10-18T08:30:00Z', 'Stray', 'stray-${token}', 'dddddddddddddddddddddddddddddd${token}')`,
+    ).run();
+    await expect(book(2, lane(1), "01")).rejects.toThrow(/FOREIGN KEY constraint failed/);
+    await expect(book(1, lane(3), "02")).rejects.toThrow(/FOREIGN KEY constraint failed/);
+    await book(2, lane(2), "03"); // its own lane is fine
+    await db().prepare("DELETE FROM bookings WHERE token LIKE 'dddddddddddddddddddddddddddddd%'").run();
+  });
+
+  it("has a lane position check wide enough to park lanes while they are reordered, but not unlimited", async () => {
+    const lane = (position: number) => db().prepare("INSERT INTO event_lanes (event_id, position, name) VALUES (2, ?, ?)").bind(position, `L${position}`).run();
+    await lane(105);
+    await lane(1000);
+    await expect(lane(1001)).rejects.toThrow(/CHECK constraint failed/);
+    await expect(lane(0)).rejects.toThrow(/CHECK constraint failed/);
+    await db().prepare("DELETE FROM event_lanes WHERE event_id = 2 AND position > 1").run();
+  });
+
   it("has no foreign key violations", async () => {
     expect(await all(db(), "PRAGMA foreign_key_check")).toEqual([]);
   });
