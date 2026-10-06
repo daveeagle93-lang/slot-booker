@@ -3,7 +3,7 @@ import { identityKey } from "../../../../core/identity";
 import { utcToLondon } from "../../../../core/london";
 import { generateBookingToken } from "../../../../core/slug";
 import type { AppEnv } from "../../../../server/env";
-import { countRows, createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../../../../test/db";
+import { countRows, createTestEnv, insertBooking, insertBreak, insertEvent, insertTemplate, type TestEnv } from "../../../../test/db";
 import { onRequestPost as book } from "../../events/[slug]/bookings";
 import { onRequestGet as publicGet } from "../../events/[slug]/index";
 import { onRequestGet, onRequestPost } from "./index";
@@ -82,7 +82,7 @@ describe("POST /api/admin/events", () => {
       event: {
         slug: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/), name: "Saturday trial day",
         startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z", sessionMinutes: 15, gapMinutes: 0,
-        costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water",
+        costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water", shareMessage: "",
       },
       path: `/e/${body.event.slug}`,
       slotCount: 9, // 09:00 09:15 09:30 09:45, then 10:30 10:45, then 11:10 11:25 11:40
@@ -501,7 +501,7 @@ describe("GET /api/admin/events", () => {
     const events = ((await (await list({ BOOKING_CUTOFF_OFFSET_MINUTES: "-60" })).json()) as { events: Record<string, unknown>[] }).events;
     expect(events[0]).toEqual({
       slug, name: "Show", startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T11:00:00Z", costPence: 900,
-      venuePostcode: "ZZ9 9ZZ", slotCount: 10, bookedCount: 2, archived: false, listed: true, full: false,
+      venuePostcode: "ZZ9 9ZZ", details: "private notes", shareMessage: "", slotCount: 10, bookedCount: 2, archived: false, listed: true, full: false,
       bookings: { open: true, closesAt: "2026-06-13T07:00:00Z" }, path: `/e/${slug}`,
     });
     expect(events[1]).toMatchObject({ slotCount: 4, bookedCount: 0 });
@@ -666,5 +666,146 @@ describe("GET /api/admin/events: Past and Archived", () => {
     const body = await listing();
     expect(body.past).toHaveLength(100);
     expect(body.pastHasMore).toBe(false);
+  });
+});
+
+describe("POST /api/admin/events: share message", () => {
+  const storedShare = async (slug: string) =>
+    (await t.env.DB.prepare("SELECT share_message AS m FROM events WHERE slug = ?").bind(slug).first<{ m: string }>())!.m;
+  const refusedWith = async (shareMessage: unknown, message: string) => {
+    const events = await countRows(t.env.DB, "events");
+    const res = await post(draft({ shareMessage }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: unknown }).fields).toEqual({ shareMessage: message });
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+  };
+
+  it("stores the message with the event and returns it in the created event", async () => {
+    const { event } = await create({ shareMessage: "Book {event} on {date}!\nSee you there" });
+    expect(event.shareMessage).toBe("Book {event} on {date}!\nSee you there");
+    expect(await storedShare(event.slug)).toBe("Book {event} on {date}!\nSee you there");
+  });
+
+  it("stores no message (\"\") when the request has none, and an explicit empty one the same", async () => {
+    const missing = await create();
+    const empty = await create({ shareMessage: "" });
+    expect([missing.event.shareMessage, empty.event.shareMessage]).toEqual(["", ""]);
+    expect([await storedShare(missing.event.slug), await storedShare(empty.event.slug)]).toEqual(["", ""]);
+  });
+
+  it("stores placeholders as plain text without parsing or refusing any, and turns \\r\\n into \\n", async () => {
+    const text = "{event} {nonsense} {{x}} {} <b>hi</b>\r\nsecond line";
+    const { event } = await create({ shareMessage: text });
+    expect(await storedShare(event.slug)).toBe("{event} {nonsense} {{x}} {} <b>hi</b>\nsecond line");
+  });
+
+  it("accepts 1000 characters, counting emoji as one each, and refuses 1001", async () => {
+    expect((await create({ shareMessage: "x".repeat(1000) })).event.shareMessage).toBe("x".repeat(1000));
+    expect((await create({ shareMessage: "\u{1F415}".repeat(1000) })).event.shareMessage).toBe("\u{1F415}".repeat(1000));
+    await refusedWith("x".repeat(1001), "The share message must be at most 1000 characters.");
+    await refusedWith("\u{1F415}".repeat(1001), "The share message must be at most 1000 characters.");
+  });
+
+  it("refuses a message that is not text, with the field's own message", async () => {
+    for (const bad of [5, null, true, ["a"], { a: 1 }]) await refusedWith(bad, "The share message must be text (it can be empty).");
+  });
+
+  it("refuses invisible characters, line separators, control characters and unpaired surrogates, writing nothing", async () => {
+    await refusedWith("Pay now\u202E", "The share message can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.");
+    await refusedWith("a\u200Db", "The share message can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.");
+    await refusedWith("a\u2028b", "The share message can't contain line or paragraph separators.");
+    await refusedWith("a\u2029b", "The share message can't contain line or paragraph separators.");
+    await refusedWith("a\u0007b", "The share message can't contain control characters.");
+    await refusedWith("a\tb", "The share message can't contain control characters.");
+    await refusedWith("a\rb", "The share message can't contain control characters.");
+    await refusedWith("a\uD800b", "The share message can't contain unpaired surrogate characters.");
+  });
+
+  it("answers a retry (same key, same message) with the original, and a retry that changes or drops the message with 422 and the original", async () => {
+    const body = draft({ shareMessage: "Hello {event}" });
+    const first = await post(body);
+    expect(first.status).toBe(201);
+    const created = await first.text();
+    const again = await post(body);
+    expect(again.status).toBe(201);
+    expect(again.headers.get("idempotent-replayed")).toBe("true");
+    expect(await again.text()).toBe(created);
+    const events = await countRows(t.env.DB, "events");
+    for (const changed of [{ shareMessage: "Different" }, { shareMessage: undefined }, { shareMessage: "" }]) {
+      const res = await post({ ...body, ...changed });
+      expect(res.status, JSON.stringify(changed)).toBe(422);
+      const reuse = (await res.json()) as { error: { code: string }; event: { shareMessage: string } };
+      expect(reuse.error.code).toBe("idempotency_key_reuse");
+      expect(reuse.event.shareMessage).toBe("Hello {event}");
+    }
+    expect(await countRows(t.env.DB, "events")).toBe(events);
+    expect(await t.env.DB.prepare("SELECT share_message AS m FROM events WHERE idempotency_key = ?").bind(body.idempotencyKey).first()).toEqual({ m: "Hello {event}" });
+  });
+
+  it("treats a missing message and an empty one as the same request on a retry", async () => {
+    const body = draft();
+    expect((await post(body)).status).toBe(201);
+    const again = await post({ ...body, shareMessage: "" });
+    expect(again.status).toBe(201);
+    expect(again.headers.get("idempotent-replayed")).toBe("true");
+  });
+
+  it("does not use the default template: an event without a message stores none", async () => {
+    await t.env.DB.prepare("DELETE FROM event_templates").run();
+    await insertTemplate(t.env.DB, { name: "Default", isDefault: true, shareMessage: "From the template" });
+    const { event } = await create();
+    expect(await storedShare(event.slug)).toBe("");
+    await t.env.DB.prepare("DELETE FROM event_templates").run();
+  });
+});
+
+describe("GET /api/admin/events: details, cost, share message and the default share message", () => {
+  beforeEach(async () => {
+    await t.env.DB.prepare("DELETE FROM events").run();
+    await t.env.DB.prepare("DELETE FROM event_templates").run();
+  });
+  type Listing = { events: Record<string, unknown>[]; defaultShareMessage: string };
+  const listing = async (): Promise<Listing> => (await (await list()).json()) as Listing;
+  const upcoming = { startUtc: "2026-10-10T08:00:00Z", endUtc: "2026-10-10T09:00:00Z" };
+
+  it("gives each upcoming event its details, cost and share message", async () => {
+    await insertEvent(t.env.DB, { ...upcoming, costPence: 1750, details: "Bring water\nand a lead", shareMessage: "Come along to {event}" });
+    await insertEvent(t.env.DB, { startUtc: "2026-10-11T08:00:00Z", endUtc: "2026-10-11T09:00:00Z", costPence: 0, details: "", shareMessage: "" });
+    const { events } = await listing();
+    expect(events.map((e) => [e.costPence, e.details, e.shareMessage])).toEqual([
+      [1750, "Bring water\nand a lead", "Come along to {event}"], [0, "", ""],
+    ]);
+  });
+
+  it("has an empty defaultShareMessage with no templates", async () => {
+    expect((await listing()).defaultShareMessage).toBe("");
+  });
+
+  it("returns the default template's share message, and not another template's", async () => {
+    await insertTemplate(t.env.DB, { name: "Other", shareMessage: "Not this one" });
+    await insertTemplate(t.env.DB, { name: "Default", isDefault: true, shareMessage: "Join us: {event}" });
+    expect((await listing()).defaultShareMessage).toBe("Join us: {event}");
+  });
+
+  it("has an empty defaultShareMessage when the default template's message is empty, or no template is the default", async () => {
+    const def = await insertTemplate(t.env.DB, { name: "Default", isDefault: true, shareMessage: "" });
+    await insertTemplate(t.env.DB, { name: "Other", shareMessage: "Not this one" });
+    expect((await listing()).defaultShareMessage).toBe("");
+    await t.env.DB.prepare("UPDATE event_templates SET is_default = 0 WHERE id = ?").bind(def.id).run();
+    expect((await listing()).defaultShareMessage).toBe("");
+  });
+
+  it("answers in the same single batch as before (no extra round trip for the default message)", async () => {
+    let batches = 0;
+    let statements = 0;
+    const db = {
+      prepare: (q: string) => t.env.DB.prepare(q),
+      batch: (list: D1PreparedStatement[]) => { batches++; statements = list.length; return t.env.DB.batch(list); },
+    };
+    const res = await onRequestGet({
+      request: new Request("http://localhost/api/admin/events"), env: { DB: db }, data: ADMIN,
+    } as unknown as Parameters<typeof onRequestGet>[0]);
+    expect(res.status).toBe(200);
+    expect([batches, statements]).toEqual([1, 6]);
   });
 });

@@ -37,7 +37,7 @@ export const onRequestPut: RouteHandler<"slug"> = async ({ request, env, data, p
     if (body instanceof Response) return body;
     const remove = checkRemoveIds(body.removeBookingIds);
     const now = new Date();
-    const stored = { name: event.name, details: event.details, breakLabels: event.breaks.map((b) => b.label) };
+    const stored = { name: event.name, details: event.details, shareMessage: event.shareMessage, breakLabels: event.breaks.map((b) => b.label) };
     const parsed = parseEventDraft(body, { now, requireFuture: false, stored });
     if ("fields" in parsed) return invalidInput({ ...parsed.fields, ...("message" in remove ? { removeBookingIds: remove.message } : {}) });
     if ("message" in remove) return invalidInput({ removeBookingIds: remove.message });

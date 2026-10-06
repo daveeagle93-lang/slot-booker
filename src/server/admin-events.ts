@@ -8,13 +8,14 @@ import { errorResponse } from "./http";
 const MAX_NAME_CODE_POINTS = 100;
 const MAX_LABEL_CODE_POINTS = 40;
 const MAX_DETAILS_CODE_POINTS = 2000;
+const MAX_SHARE_MESSAGE_CODE_POINTS = 1000;
 const MAX_BREAKS = 20;
 const MAX_SLOTS = 500;
 const MAX_DAYS_AHEAD = 730;
 const MAX_LIST = 100;
 const MAX_BODY_BYTES = 32_768;
 // Any date works to check that a time is well formed; this one is not near a clock change.
-const PROBE_DATE = "2026-01-15";
+export const PROBE_DATE = "2026-01-15";
 
 export interface EventDraft {
   name: string;
@@ -22,6 +23,8 @@ export interface EventDraft {
   date: string; start: string; end: string;
   sessionMinutes: number; gapMinutes: number; costPence: number;
   venuePostcode: string; details: string;
+  /** The text the Share button builds its message from; undefined when the request didn't say (create: ""; edit: unchanged). */
+  shareMessage?: string;
   /** Whether the landing page lists the event; undefined when the request didn't say (create: listed; edit: unchanged). */
   listed?: boolean;
   startUtc: string; endUtc: string;
@@ -51,17 +54,20 @@ function londonTime(date: string, value: unknown): { utc: string } | { message: 
  * The text an edit may keep without the invisible-character check: what is stored now. Rows written before that
  * check existed can hold such a character, and an admin changing only the cost must not be locked out by it.
  */
-export interface StoredText { name: string; details: string; breakLabels: readonly string[] }
+export interface StoredText { name: string; details: string; shareMessage: string; breakLabels: readonly string[] }
 
-function checkName(value: unknown, stored?: string): { name: string } | { message: string } {
-  if (typeof value !== "string") return { message: "Enter the event name." };
-  if (!value.isWellFormed()) return { message: "The event name can't contain unpaired surrogate characters." };
-  if (value !== stored && INVISIBLE.test(value)) return { message: invisibleMessage("event name") };
-  if (LINE_SEPARATORS.test(value)) return { message: "The event name can't contain line or paragraph separators." };
+/** `what` is the field as the sentences name it: the event's name by default, "template name" for a template's. */
+export function checkName(
+  value: unknown, stored?: string, what = "event name", max = MAX_NAME_CODE_POINTS,
+): { name: string } | { message: string } {
+  if (typeof value !== "string") return { message: `Enter the ${what}.` };
+  if (!value.isWellFormed()) return { message: `The ${what} can't contain unpaired surrogate characters.` };
+  if (value !== stored && INVISIBLE.test(value)) return { message: invisibleMessage(what) };
+  if (LINE_SEPARATORS.test(value)) return { message: `The ${what} can't contain line or paragraph separators.` };
   const name = value.trim();
-  if (name === "") return { message: "Enter the event name." };
-  if ([...name].length > MAX_NAME_CODE_POINTS) return { message: `The event name must be at most ${MAX_NAME_CODE_POINTS} characters.` };
-  if (/\p{Cc}/u.test(name)) return { message: "The event name can't contain control characters." };
+  if (name === "") return { message: `Enter the ${what}.` };
+  if ([...name].length > max) return { message: `The ${what} must be at most ${max} characters.` };
+  if (/\p{Cc}/u.test(name)) return { message: `The ${what} can't contain control characters.` };
   return { name };
 }
 
@@ -88,15 +94,31 @@ function checkPostcode(value: unknown): { postcode: string } | { message: string
   return { postcode: tidy.toUpperCase() };
 }
 
+/** Free text that may be empty and have several lines (\r\n becomes \n), kept as written: the details and the share message. */
+function checkFreeText(
+  value: unknown, what: string, max: number, notText: string, stored?: string,
+): { text: string } | { message: string } {
+  if (typeof value !== "string") return { message: notText };
+  if (!value.isWellFormed()) return { message: `The ${what} can't contain unpaired surrogate characters.` };
+  if (value !== stored && INVISIBLE.test(value)) return { message: invisibleMessage(what) };
+  if (LINE_SEPARATORS.test(value)) return { message: `The ${what} can't contain line or paragraph separators.` };
+  const text = value.replaceAll("\r\n", "\n");
+  if (/(?!\n)\p{Cc}/u.test(text)) return { message: `The ${what} can't contain control characters.` };
+  if ([...text].length > max) return { message: `The ${what} must be at most ${max} characters.` };
+  return { text };
+}
+
 function checkDetails(value: unknown, stored?: string): { details: string } | { message: string } {
-  if (typeof value !== "string") return { message: "Details must be text (they can be empty)." };
-  if (!value.isWellFormed()) return { message: "The details can't contain unpaired surrogate characters." };
-  if (value !== stored && INVISIBLE.test(value)) return { message: invisibleMessage("details") };
-  if (LINE_SEPARATORS.test(value)) return { message: "The details can't contain line or paragraph separators." };
-  const details = value.replaceAll("\r\n", "\n");
-  if (/(?!\n)\p{Cc}/u.test(details)) return { message: "The details can't contain control characters." };
-  if ([...details].length > MAX_DETAILS_CODE_POINTS) return { message: `The details must be at most ${MAX_DETAILS_CODE_POINTS} characters.` };
-  return { details };
+  const r = checkFreeText(value, "details", MAX_DETAILS_CODE_POINTS, "Details must be text (they can be empty).", stored);
+  return "text" in r ? { details: r.text } : r;
+}
+
+/**
+ * Placeholders such as {event} are not parsed or restricted here: the server stores the text as written, and the
+ * browser fills the placeholders in and shows the result as plain text.
+ */
+function checkShareMessage(value: unknown, stored?: string): { text: string } | { message: string } {
+  return checkFreeText(value, "share message", MAX_SHARE_MESSAGE_CODE_POINTS, "The share message must be text (it can be empty).", stored);
 }
 
 const checkInteger = (value: unknown, min: number, max: number): number | null =>
@@ -142,6 +164,12 @@ export function parseEventDraft(
   if ("message" in postcode) fields.venuePostcode = postcode.message;
   const details = checkDetails(raw.details, opts.stored?.details);
   if ("message" in details) fields.details = details.message;
+  let shareMessage: string | undefined;
+  if (raw.shareMessage !== undefined) {
+    const message = checkShareMessage(raw.shareMessage, opts.stored?.shareMessage);
+    if ("message" in message) fields.shareMessage = message.message;
+    else shareMessage = message.text;
+  }
   if (raw.listed !== undefined && typeof raw.listed !== "boolean") fields.listed = "Listed must be true or false.";
 
   const breaks: EventDraft["breaks"] = [];
@@ -173,7 +201,7 @@ export function parseEventDraft(
     name: (name as { name: string }).name, date: dateText, start: raw.start as string, end: raw.end as string,
     sessionMinutes: sessionMinutes!, gapMinutes: gapMinutes!, costPence: costPence!,
     venuePostcode: (postcode as { postcode: string }).postcode, details: (details as { details: string }).details,
-    listed: raw.listed as boolean | undefined, startUtc: startUtc!, endUtc: endUtc!, breaks,
+    shareMessage, listed: raw.listed as boolean | undefined, startUtc: startUtc!, endUtc: endUtc!, breaks,
   };
   const slotCount = previewSchedule(draft).slots.length;
   if (slotCount === 0) return { fields: { end: "No sessions fit between the start and end." } };
@@ -245,7 +273,7 @@ export function previewSchedule(draft: EventDraft): { slots: TimeRange[]; sugges
 /** An event as stored, with the breaks as stored: all that create answers with and compares. */
 export interface SavedEvent {
   slug: string; name: string; startUtc: string; endUtc: string; sessionMinutes: number; gapMinutes: number;
-  costPence: number; venuePostcode: string; details: string; listed: boolean;
+  costPence: number; venuePostcode: string; details: string; shareMessage: string; listed: boolean;
   breaks: { startUtc: string; endUtc: string; label: string }[];
 }
 
@@ -256,6 +284,7 @@ export const createdBody = (e: SavedEvent) => ({
   event: {
     slug: e.slug, name: e.name, startUtc: e.startUtc, endUtc: e.endUtc, sessionMinutes: e.sessionMinutes,
     gapMinutes: e.gapMinutes, costPence: e.costPence, venuePostcode: e.venuePostcode, details: e.details,
+    shareMessage: e.shareMessage,
   },
   path: `/e/${e.slug}`,
   slotCount: generateSchedule({
@@ -272,7 +301,8 @@ function sameEvent(saved: SavedEvent, d: EventDraft): boolean {
   const theirs = saved.breaks.map(breakKey).sort();
   return saved.name === d.name && saved.startUtc === d.startUtc && saved.endUtc === d.endUtc
     && saved.sessionMinutes === d.sessionMinutes && saved.gapMinutes === d.gapMinutes && saved.costPence === d.costPence
-    && saved.venuePostcode === d.venuePostcode && saved.details === d.details && saved.listed === (d.listed ?? true)
+    && saved.venuePostcode === d.venuePostcode && saved.details === d.details && saved.shareMessage === (d.shareMessage ?? "")
+    && saved.listed === (d.listed ?? true)
     && mine.length === theirs.length && mine.every((k, i) => k === theirs[i]);
 }
 
@@ -286,7 +316,7 @@ export async function findEventByKey(
 ): Promise<{ kind: "replayed" | "idempotency_key_reuse"; saved: SavedEvent } | null> {
   const [events, breaks] = await db.batch([
     db.prepare(
-      `SELECT slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, listed
+      `SELECT slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, share_message, listed
        FROM events WHERE idempotency_key = ?`,
     ).bind(key),
     db.prepare(
@@ -296,13 +326,13 @@ export async function findEventByKey(
   ]);
   const e = (events.results as {
     slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number; gap_minutes: number;
-    cost_pence: number; venue_postcode: string; details: string; listed: number;
+    cost_pence: number; venue_postcode: string; details: string; share_message: string; listed: number;
   }[])[0];
   if (!e) return null;
   const saved: SavedEvent = {
     slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc, sessionMinutes: e.session_minutes,
     gapMinutes: e.gap_minutes, costPence: e.cost_pence, venuePostcode: e.venue_postcode, details: e.details,
-    listed: e.listed === 1,
+    shareMessage: e.share_message, listed: e.listed === 1,
     breaks: (breaks.results as { start_utc: string; end_utc: string; label: string }[])
       .map((b) => ({ startUtc: b.start_utc, endUtc: b.end_utc, label: b.label })),
   };
@@ -327,7 +357,7 @@ export async function createEvent(db: D1Database, d: EventDraft, key: string): P
     if (won) return won;
     throw e;
   }
-  return { kind: "created", saved: { ...d, listed: d.listed ?? true, slug } };
+  return { kind: "created", saved: { ...d, shareMessage: d.shareMessage ?? "", listed: d.listed ?? true, slug } };
 }
 
 /**
@@ -337,17 +367,17 @@ export async function createEvent(db: D1Database, d: EventDraft, key: string): P
 export async function insertEventWithBreaks(db: D1Database, slug: string, d: EventDraft, idempotencyKey: string): Promise<void> {
   await db.batch([
     db.prepare(
-      `INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, listed, idempotency_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO events (slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, share_message, listed, idempotency_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(slug, d.name, d.startUtc, d.endUtc, d.sessionMinutes, d.gapMinutes, d.costPence, d.venuePostcode, d.details,
-      d.listed === false ? 0 : 1, idempotencyKey),
+      d.shareMessage ?? "", d.listed === false ? 0 : 1, idempotencyKey),
     ...d.breaks.map((b) =>
       db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES ((SELECT id FROM events WHERE slug = ?), ?, ?, ?)")
         .bind(slug, b.startUtc, b.endUtc, b.label)),
   ]);
 }
 
-interface ListedEvent { id: number; slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number; gap_minutes: number; cost_pence: number; venue_postcode: string; listed: number }
+interface ListedEvent { id: number; slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number; gap_minutes: number; cost_pence: number; venue_postcode: string; details: string; share_message: string; listed: number }
 
 interface ListedOld { slug: string; name: string; start_utc: string; end_utc: string; venue_postcode: string; archived: number; listed: number; booked: number }
 
@@ -372,24 +402,30 @@ function olderGroup(rows: ListedOld[]) {
   };
 }
 
+/** The default template's share message, if any: one row. The Share button falls back to it when an event has none of its own. */
+export const defaultShareMessageStatement = (db: D1Database): D1PreparedStatement =>
+  db.prepare("SELECT share_message FROM event_templates WHERE is_default = 1");
+
 /**
  * The admin list in three groups; every event is in exactly one (archived wins, then the end time decides):
  * `events` (Upcoming: not archived, ends after now, soonest first), `past` (not archived, ended at or before
  * now) and `archived`, each of the last two at most 100, most recently started first, with a HasMore flag.
- * One batch of five queries: the upcoming events, their breaks and booking counts, then Past and Archived.
+ * One batch of six queries: the upcoming events, their breaks and booking counts, then Past and Archived, then the
+ * default template's share message (`defaultShareMessage`, "" if there is none).
  */
 export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMinutes: number) {
   const nowIso = `${now.toISOString().slice(0, 19)}Z`;
   const upcoming = `SELECT id FROM events WHERE archived = 0 AND end_utc > ?1 ORDER BY start_utc, id LIMIT ${MAX_LIST}`;
-  const [events, breaks, counts, pastRows, archivedRows] = await db.batch([
+  const [events, breaks, counts, pastRows, archivedRows, defaultMessage] = await db.batch([
     db.prepare(
-      `SELECT id, slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, listed
+      `SELECT id, slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, share_message, listed
        FROM events WHERE id IN (${upcoming}) ORDER BY start_utc, id`,
     ).bind(nowIso),
     db.prepare(`SELECT event_id, start_utc, end_utc, label FROM breaks WHERE event_id IN (${upcoming})`).bind(nowIso),
     db.prepare(`SELECT event_id, COUNT(*) AS n FROM bookings WHERE event_id IN (${upcoming}) GROUP BY event_id`).bind(nowIso),
     olderEvents(db, "archived = 0 AND end_utc <= ?1").bind(nowIso),
     olderEvents(db, "archived = 1").bind(),
+    defaultShareMessageStatement(db),
   ]);
   const breaksOf = new Map<number, EventRow["breaks"]>();
   for (const b of (breaks.results as { event_id: number; start_utc: string; end_utc: string; label: string }[])) {
@@ -400,7 +436,7 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
     const row = {
       id: e.id, slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc,
       sessionMinutes: e.session_minutes, gapMinutes: e.gap_minutes, costPence: e.cost_pence,
-      venuePostcode: e.venue_postcode, details: "", archived: false, listed: e.listed === 1, breaks: breaksOf.get(e.id) ?? [],
+      venuePostcode: e.venue_postcode, details: e.details, shareMessage: e.share_message, archived: false, listed: e.listed === 1, breaks: breaksOf.get(e.id) ?? [],
     } satisfies EventRow;
     const slotCount = generateSchedule({
       start: row.startUtc, end: row.endUtc, sessionMinutes: row.sessionMinutes, gapMinutes: row.gapMinutes, breaks: row.breaks,
@@ -408,7 +444,8 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
     const bookedCount = bookedOf.get(e.id) ?? 0;
     return {
       slug: e.slug, name: e.name, startUtc: e.start_utc, endUtc: e.end_utc, costPence: e.cost_pence,
-      venuePostcode: e.venue_postcode, slotCount, bookedCount, archived: false, listed: e.listed === 1,
+      venuePostcode: e.venue_postcode, details: e.details, shareMessage: e.share_message, slotCount, bookedCount, archived: false,
+      listed: e.listed === 1,
       full: slotCount > 0 && bookedCount >= slotCount,
       bookings: bookingWindow(row, cutoffOffsetMinutes, now),
       path: `/e/${e.slug}`,
@@ -416,5 +453,9 @@ export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMin
   });
   const past = olderGroup(pastRows.results as unknown as ListedOld[]);
   const archived = olderGroup(archivedRows.results as unknown as ListedOld[]);
-  return { events: upcomingList, past: past.items, archived: archived.items, pastHasMore: past.hasMore, archivedHasMore: archived.hasMore };
+  const defaultShareMessage = (defaultMessage.results as { share_message: string }[])[0]?.share_message ?? "";
+  return {
+    events: upcomingList, past: past.items, archived: archived.items, pastHasMore: past.hasMore, archivedHasMore: archived.hasMore,
+    defaultShareMessage,
+  };
 }

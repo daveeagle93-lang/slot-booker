@@ -2,7 +2,7 @@
 
 This page gets your club its own copy of the app on Cloudflare's free plan. The first part is for a club organiser and needs no terminal. The advanced parts are for people comfortable with a command line.
 
-Your copy is **one Cloudflare Worker**, named `slot-booker` unless you change it. It serves the website and the booking API, and it uses one D1 database, `slot-booker-db`. The migrations in `migrations/` (0001 to 0013) build the database.
+Your copy is **one Cloudflare Worker**, named `slot-booker` unless you change it. It serves the website and the booking API, and it uses one D1 database, `slot-booker-db`. The migrations in `migrations/` (0001 to 0014) build the database.
 
 **What was and was not checked.** The button steps follow Cloudflare's documentation ([Deploy buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/)) and this repository's code and configuration. Nobody has run them against a real public copy of this repository, and no Cloudflare screen was seen while writing this. Where the text describes what a Cloudflare screen looks like, or says something the documentation and the code do not confirm, it says **unverified**. Dashboard labels may have changed.
 

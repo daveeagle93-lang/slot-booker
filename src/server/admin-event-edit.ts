@@ -1,7 +1,7 @@
 import { buildLineup } from "../core/lineup";
 import { utcToLondon } from "../core/london";
 import { generateSchedule, type TimeRange } from "../core/schedule";
-import { previewSchedule, type EventDraft } from "./admin-events";
+import { defaultShareMessageStatement, previewSchedule, type EventDraft } from "./admin-events";
 import { noStore } from "./bookings";
 import { guard, isGuardFailure } from "./db-guard";
 import type { EventRow } from "./events";
@@ -28,7 +28,7 @@ export const eventView = (e: EventRow) => ({
   slug: e.slug, name: e.name, archived: e.archived, listed: e.listed,
   date: utcToLondon(e.startUtc).date, start: utcToLondon(e.startUtc).time, end: utcToLondon(e.endUtc).time,
   sessionMinutes: e.sessionMinutes, gapMinutes: e.gapMinutes, costPence: e.costPence,
-  venuePostcode: e.venuePostcode, details: e.details,
+  venuePostcode: e.venuePostcode, details: e.details, shareMessage: e.shareMessage,
   startUtc: e.startUtc, endUtc: e.endUtc,
   breaks: [...e.breaks].sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0))
     .map((b) => ({ start: utcToLondon(b.start).time, end: utcToLondon(b.end).time, label: b.label, startUtc: b.start, endUtc: b.end })),
@@ -53,12 +53,15 @@ export const bookingsOutside = (bookings: BookingRef[], slots: TimeRange[]): Boo
  * The saved schedule with each slot's booking, and any booking whose slot is not in it (there should be none).
  * `lineup` is the WhatsApp text for the schedule page's Copy button, built here so the page can copy it
  * synchronously from what it already loaded (a clipboard write has to happen inside the click).
+ * `defaultShareMessage` is the default template's share message ("" if none), for events that have none of their own.
  */
 export async function eventDetail(db: D1Database, event: EventRow) {
   const { slots } = generateSchedule({
     start: event.startUtc, end: event.endUtc, sessionMinutes: event.sessionMinutes, gapMinutes: event.gapMinutes, breaks: event.breaks,
   });
-  const [bookings, { clubName }] = await Promise.all([loadBookings(db, event.id), loadSettings(db)]);
+  const [bookings, { clubName }, defaultMessage] = await Promise.all([
+    loadBookings(db, event.id), loadSettings(db), defaultShareMessageStatement(db).first<{ share_message: string }>(),
+  ]);
   const bySlot = new Map(bookings.map((b) => [b.slotStart, b]));
   const withBookings = slots.map((s) => {
     const b = bySlot.get(s.start);
@@ -68,6 +71,7 @@ export async function eventDetail(db: D1Database, event: EventRow) {
     event: eventView(event),
     slots: withBookings,
     orphans: bookingsOutside(bookings, slots),
+    defaultShareMessage: defaultMessage?.share_message ?? "",
     lineup: buildLineup({ clubName, name: event.name, venuePostcode: event.venuePostcode, startUtc: event.startUtc, slots: withBookings, breaks: event.breaks }),
   };
 }
@@ -104,7 +108,7 @@ export async function saveEventEdit(
   if (affected.some((b) => !confirmed.has(b.id))) return { kind: "bookings_affected", affected };
   await hooks.afterRead?.();
 
-  // A request without `listed` leaves it as it is in the database now (COALESCE with null), not as it was when the event was loaded.
+  // A request without `listed` (or `shareMessage`) leaves it as it is in the database now (COALESCE with null), not as it was when the event was loaded.
   const listed = draft.listed ?? event.listed;
   const starts = JSON.stringify(slots.map((s) => s.start));
   const ids = JSON.stringify(affected.map((b) => b.id));
@@ -119,9 +123,9 @@ export async function saveEventEdit(
       ),
       db.prepare(
         `UPDATE events SET name = ?, start_utc = ?, end_utc = ?, session_minutes = ?, gap_minutes = ?, cost_pence = ?,
-           venue_postcode = ?, details = ?, listed = COALESCE(?, listed) WHERE id = ?`,
+           venue_postcode = ?, details = ?, share_message = COALESCE(?, share_message), listed = COALESCE(?, listed) WHERE id = ?`,
       ).bind(draft.name, draft.startUtc, draft.endUtc, draft.sessionMinutes, draft.gapMinutes, draft.costPence,
-        draft.venuePostcode, draft.details, draft.listed === undefined ? null : draft.listed ? 1 : 0, event.id),
+        draft.venuePostcode, draft.details, draft.shareMessage ?? null, draft.listed === undefined ? null : draft.listed ? 1 : 0, event.id),
       db.prepare("DELETE FROM breaks WHERE event_id = ?").bind(event.id),
       ...draft.breaks.map((b) =>
         db.prepare("INSERT INTO breaks (event_id, start_utc, end_utc, label) VALUES (?, ?, ?, ?)").bind(event.id, b.startUtc, b.endUtc, b.label)),
@@ -135,7 +139,8 @@ export async function saveEventEdit(
       kind: "saved", slotCount: slots.length,
       event: {
         ...event, name: draft.name, startUtc: draft.startUtc, endUtc: draft.endUtc, sessionMinutes: draft.sessionMinutes,
-        gapMinutes: draft.gapMinutes, costPence: draft.costPence, venuePostcode: draft.venuePostcode, details: draft.details, listed,
+        gapMinutes: draft.gapMinutes, costPence: draft.costPence, venuePostcode: draft.venuePostcode, details: draft.details,
+        shareMessage: draft.shareMessage ?? event.shareMessage, listed,
         breaks: draft.breaks.map((b) => ({ start: b.startUtc, end: b.endUtc, label: b.label })),
       },
       removed: deleted.map((r) => ({ id: r.id, slotStart: r.slot_start_utc, dogName: r.dog_name, handlerName: r.handler_name }))

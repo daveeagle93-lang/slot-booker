@@ -3,7 +3,7 @@ import { buildLineup } from "../../../../../core/lineup";
 import { generateSlug } from "../../../../../core/slug";
 import type { AppEnv } from "../../../../../server/env";
 import { saveSettings } from "../../../../../server/settings";
-import { countRows, createTestEnv, insertBooking, insertBreak, insertEvent, type TestEnv } from "../../../../../test/db";
+import { countRows, createTestEnv, insertBooking, insertBreak, insertEvent, insertTemplate, type TestEnv } from "../../../../../test/db";
 import { onRequestPost as book } from "../../../events/[slug]/bookings";
 import { onRequestGet as publicGet } from "../../../events/[slug]/index";
 import { onRequestDelete as clearBooking } from "./bookings/[id]/index";
@@ -36,6 +36,7 @@ interface Detail {
   slots: { start: string; end: string; booking: { id: number; dogName: string; handlerName: string } | null }[];
   orphans: { id: number; slotStart: string; dogName: string; handlerName: string }[];
   lineup: string;
+  defaultShareMessage: string;
 }
 const detail = async (slug: string): Promise<Detail> => {
   const res = await get(slug);
@@ -56,7 +57,7 @@ describe("GET /api/admin/events/[slug]", () => {
     const body = (await res.json()) as Detail;
     expect(body.event).toEqual({
       slug, name: "Saturday trial day", archived: false, listed: true, date: "2026-10-24", start: "09:00", end: "12:00",
-      sessionMinutes: 15, gapMinutes: 5, costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water",
+      sessionMinutes: 15, gapMinutes: 5, costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water", shareMessage: "",
       startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z",
       breaks: [{ start: "10:00", end: "10:30", label: "Lunch", startUtc: "2026-10-24T09:00:00Z", endUtc: "2026-10-24T09:30:00Z" }],
     });
@@ -251,7 +252,7 @@ describe("PUT /api/admin/events/[slug]: saving without bookings in the way", () 
     const body = (await res.json()) as Saved;
     expect(body.event).toEqual({
       slug, name: "Renamed day", archived: false, listed: true, date: "2026-10-31", start: "10:00", end: "13:00",
-      sessionMinutes: 20, gapMinutes: 5, costPence: 2000, venuePostcode: "CD3 4EF", details: "New details",
+      sessionMinutes: 20, gapMinutes: 5, costPence: 2000, venuePostcode: "CD3 4EF", details: "New details", shareMessage: "",
       startUtc: "2026-10-31T10:00:00Z", endUtc: "2026-10-31T13:00:00Z",
       breaks: [{ start: "11:00", end: "11:15", label: "Tea", startUtc: "2026-10-31T11:00:00Z", endUtc: "2026-10-31T11:15:00Z" }],
     });
@@ -703,6 +704,120 @@ describe("PUT /api/admin/events/[slug]: text already stored with an invisible ch
     const res = await put(slug, draft({ name: "Dogs\u200D day", details: "Pay\u2028now\u200D", breaks: [] }));
     expect(res.status).toBe(400);
     expect(((await res.json()) as { fields: Record<string, string> }).fields.details).toMatch(/line or paragraph separators/);
+  });
+});
+
+describe("share message: GET and PUT /api/admin/events/[slug]", () => {
+  const storedShare = async (id: number) =>
+    (await t.env.DB.prepare("SELECT share_message AS m FROM events WHERE id = ?").bind(id).first<{ m: string }>())!.m;
+  const FIELD_MESSAGE = "The share message can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.";
+
+  it("returns the event's share message in the detail and in the saved event", async () => {
+    const { slug } = await seed({ shareMessage: "Come to {event}" });
+    expect((await detail(slug)).event.shareMessage).toBe("Come to {event}");
+    const saved = (await (await put(slug, draft({ shareMessage: "Come to {event}" }))).json()) as Saved;
+    expect(saved.event.shareMessage).toBe("Come to {event}");
+  });
+
+  it("changes the message when the request has one, including to the empty one", async () => {
+    const { id, slug } = await seed({ shareMessage: "Old message" });
+    const changed = await put(slug, draft({ shareMessage: "New {event}\r\nline two" }));
+    expect(changed.status).toBe(200);
+    expect(((await changed.json()) as Saved).event.shareMessage).toBe("New {event}\nline two");
+    expect(await storedShare(id)).toBe("New {event}\nline two");
+    expect((await detail(slug)).event.shareMessage).toBe("New {event}\nline two");
+    expect((await put(slug, draft({ shareMessage: "" }))).status).toBe(200);
+    expect(await storedShare(id)).toBe("");
+  });
+
+  it("leaves the message as it is when the request has none, whatever else it changes", async () => {
+    const { id, slug } = await seed({ shareMessage: "Keep me" });
+    const res = await put(slug, draft({ costPence: 2500, name: "Renamed" }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Saved;
+    expect(body.event).toMatchObject({ costPence: 2500, name: "Renamed", shareMessage: "Keep me" });
+    expect(await storedShare(id)).toBe("Keep me");
+  });
+
+  it("leaves the message as it is in the database now, not as it was when the event was loaded", async () => {
+    const { id, slug } = await seed({ shareMessage: "Before" });
+    const hooked = {
+      prepare: (q: string) => t.env.DB.prepare(q),
+      batch: async (statements: D1PreparedStatement[]) => {
+        await t.env.DB.prepare("UPDATE events SET share_message = 'Changed meanwhile' WHERE id = ?").bind(id).run();
+        return t.env.DB.batch(statements);
+      },
+    };
+    expect((await put(slug, draft({ costPence: 1600 }), { env: { DB: hooked } })).status).toBe(200);
+    expect(await storedShare(id)).toBe("Changed meanwhile");
+  });
+
+  it.each([
+    ["a number", 5, "The share message must be text (it can be empty)."],
+    ["null", null, "The share message must be text (it can be empty)."],
+    ["too long", "x".repeat(1001), "The share message must be at most 1000 characters."],
+    ["with a line separator", "a\u2028b", "The share message can't contain line or paragraph separators."],
+    ["with a control character", "a\u0007b", "The share message can't contain control characters."],
+    ["with an invisible character", "a\u202Eb", FIELD_MESSAGE],
+  ])("refuses a message that is %s, changing nothing", async (_n, shareMessage, message) => {
+    const { id, slug } = await seed({ shareMessage: "Keep me" });
+    const before = await snapshot(id);
+    const res = await put(slug, draft({ shareMessage, costPence: 1 }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { fields: unknown }).fields).toEqual({ shareMessage: message });
+    expect(await snapshot(id)).toBe(before);
+  });
+
+  describe("a message already stored with an invisible character", () => {
+    const LEGACY = "Join us \u200D now";
+    it("saves a changed cost with the message sent back unchanged, and keeps it", async () => {
+      const { id, slug } = await seed({ shareMessage: LEGACY });
+      const res = await put(slug, draft({ shareMessage: LEGACY, costPence: 2500 }));
+      expect(res.status).toBe(200);
+      expect(await t.env.DB.prepare("SELECT share_message AS m, cost_pence AS c FROM events WHERE id = ?").bind(id).first()).toEqual({ m: LEGACY, c: 2500 });
+    });
+
+    it("saves a changed cost when the request leaves the message out", async () => {
+      const { id, slug } = await seed({ shareMessage: LEGACY });
+      expect((await put(slug, draft({ costPence: 2600 }))).status).toBe(200);
+      expect(await storedShare(id)).toBe(LEGACY);
+    });
+
+    it("still refuses a changed message that has one, and a stored line separator", async () => {
+      const { id, slug } = await seed({ shareMessage: LEGACY });
+      const before = await snapshot(id);
+      const res = await put(slug, draft({ shareMessage: `${LEGACY} too` }));
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { fields: unknown }).fields).toEqual({ shareMessage: FIELD_MESSAGE });
+      expect(await snapshot(id)).toBe(before);
+      const bad = await seed({ shareMessage: "a\u2028b\u200D" });
+      const refused = await put(bad.slug, draft({ shareMessage: "a\u2028b\u200D" }));
+      expect(refused.status).toBe(400);
+      expect(((await refused.json()) as { fields: Record<string, string> }).fields.shareMessage).toMatch(/line or paragraph separators/);
+    });
+  });
+});
+
+describe("GET /api/admin/events/[slug]: defaultShareMessage", () => {
+  beforeEach(async () => { await t.env.DB.prepare("DELETE FROM event_templates").run(); });
+
+  it("is the default template's share message, whatever the event's own message is", async () => {
+    const { slug } = await seed({ shareMessage: "Mine" });
+    expect((await detail(slug)).defaultShareMessage).toBe("");
+    await insertTemplate(t.env.DB, { name: "Other", shareMessage: "Not this one" });
+    await insertTemplate(t.env.DB, { name: "Default", isDefault: true, shareMessage: "Default {event}" });
+    const body = await detail(slug);
+    expect(body.defaultShareMessage).toBe("Default {event}");
+    expect(body.event.shareMessage).toBe("Mine");
+  });
+
+  it("is empty when the default template's message is empty, and when no template is the default", async () => {
+    const { slug } = await seed();
+    const def = await insertTemplate(t.env.DB, { name: "Default", isDefault: true });
+    await insertTemplate(t.env.DB, { name: "Other", shareMessage: "Not this one" });
+    expect((await detail(slug)).defaultShareMessage).toBe("");
+    await t.env.DB.prepare("UPDATE event_templates SET is_default = 0 WHERE id = ?").bind(def.id).run();
+    expect((await detail(slug)).defaultShareMessage).toBe("");
   });
 });
 

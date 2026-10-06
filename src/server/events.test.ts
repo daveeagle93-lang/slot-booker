@@ -4,7 +4,7 @@ import { bookingWindow, isSlotBookable, type EventRow } from "./events";
 const START = "2026-06-13T08:00:00Z";
 const event = (o: Partial<EventRow> = {}): EventRow => ({
   id: 1, slug: "x", name: "Test", startUtc: START, endUtc: "2026-06-13T11:00:00Z", sessionMinutes: 15, gapMinutes: 0,
-  costPence: 0, venuePostcode: "AB1 2CD", details: "", archived: false, listed: true, breaks: [], ...o,
+  costPence: 0, venuePostcode: "AB1 2CD", details: "", shareMessage: "", archived: false, listed: true, breaks: [], ...o,
 });
 const at = (iso: string) => new Date(iso);
 

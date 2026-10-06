@@ -169,6 +169,26 @@ expect_fail "upper-case logo digest" "$LG (1, 'image/png', x'010203', 10, 10, '$
 expect_fail "short logo digest" "$LG (1, 'image/png', x'010203', 10, 10, 'abc')" "CHECK constraint failed"
 expect_fail "NULL logo bytes" "$LG (1, 'image/png', NULL, 10, 10, '$SHA')" "NOT NULL constraint failed"
 
+# Event templates (0014): name unique ignoring case, one default at most, HH:MM times, caps; breaks go with their template.
+TP="INSERT INTO event_templates (name, is_default, venue_postcode, start_time, end_time, session_minutes) VALUES"
+expect_ok "a default template" "$TP ('Saturday', 1, 'AB1 2CD', '09:00', '12:00', 15)"
+expect_ok "a second, non-default template" "$TP ('Sunday', 0, 'AB1 2CD', '09:00', '12:00', 15)"
+expect_fail "template name differing only in case" "$TP ('SATURDAY', 0, 'AB1 2CD', '09:00', '12:00', 15)" "UNIQUE constraint failed"
+expect_fail "a second default template" "$TP ('Third', 1, 'AB1 2CD', '09:00', '12:00', 15)" "UNIQUE constraint failed"
+expect_fail "template name of 61 characters" "$TP (replace(hex(zeroblob(30)), '0', 'x') || 'yy', 0, 'AB1 2CD', '09:00', '12:00', 15)" "CHECK constraint failed"
+expect_fail "blank template name" "$TP ('  ', 0, 'AB1 2CD', '09:00', '12:00', 15)" "CHECK constraint failed"
+expect_fail "template start 24:00" "$TP ('Late', 0, 'AB1 2CD', '24:00', '24:30', 15)" "CHECK constraint failed"
+expect_fail "template end not after start" "$TP ('Backwards', 0, 'AB1 2CD', '12:00', '09:00', 15)" "CHECK constraint failed"
+expect_fail "template session of 0 minutes" "$TP ('Zero', 0, 'AB1 2CD', '09:00', '12:00', 0)" "CHECK constraint failed"
+expect_ok "template break" "INSERT INTO event_template_breaks (template_id, start_time, end_time, label) VALUES (1, '10:00', '10:30', 'Lunch')"
+expect_fail "template break label of 41 characters" "INSERT INTO event_template_breaks (template_id, start_time, end_time, label) VALUES (1, '10:00', '10:30', replace(hex(zeroblob(20)), '0', 'x') || 'yy' || 'z')" "CHECK constraint failed"
+expect_fail "template break for a missing template" "INSERT INTO event_template_breaks (template_id, start_time, end_time) VALUES (99, '10:00', '10:30')" "FOREIGN KEY constraint failed"
+expect_ok "delete a template" "DELETE FROM event_templates WHERE id = 1"
+expect_count "cascade: template breaks removed" "SELECT count(*) AS n FROM event_template_breaks" 0
+expect_count "existing events have an empty share message" "SELECT count(*) AS n FROM events WHERE share_message = ''" "$(sql "SELECT count(*) AS n FROM events" | grep -o '"n": *[0-9]*' | head -1 | grep -o '[0-9]*$')"
+expect_ok "event with a share message of 1000 characters" "UPDATE events SET share_message = replace(hex(zeroblob(500)), '0', 'x') WHERE id = 2"
+expect_fail "event share message of 1001 characters" "UPDATE events SET share_message = replace(hex(zeroblob(500)), '0', 'x') || 'y' WHERE id = 2" "CHECK constraint failed"
+
 expect_fail "trailing junk after timestamp" "$BK $(row 1 '2026-03-14T10:00:00Zx' 'Bo' 'Ann Lee')" "CHECK constraint failed"
 expect_fail "bad event timestamp format" "$EV ('Bad', '2026-03-14 09:00', '2026-03-14T16:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"
 expect_fail "event end == start" "$EV ('Bad', '2026-03-14T09:00:00Z', '2026-03-14T09:00:00Z', 15, 'AB1 2CD')" "CHECK constraint failed"

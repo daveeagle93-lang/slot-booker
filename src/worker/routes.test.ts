@@ -88,11 +88,14 @@ describe("access", () => {
       "DELETE /api/admin/events/:slug/bookings/:id",
       "DELETE /api/admin/settings/logo",
       "DELETE /api/admin/settings/theme",
+      "DELETE /api/admin/templates/:id",
       "GET /api/admin/events",
       "GET /api/admin/events/:slug",
       "GET /api/admin/events/:slug/export.csv",
       "GET /api/admin/session",
       "GET /api/admin/settings",
+      "GET /api/admin/templates",
+      "GET /api/admin/templates/:id",
       "POST /api/admin/events",
       "POST /api/admin/events/:slug/archive",
       "POST /api/admin/events/:slug/bookings",
@@ -103,11 +106,13 @@ describe("access", () => {
       "POST /api/admin/events/preview",
       "POST /api/admin/login",
       "POST /api/admin/logout",
+      "POST /api/admin/templates",
       "PUT /api/admin/events/:slug",
       "PUT /api/admin/settings",
       "PUT /api/admin/settings/icons/:size",
       "PUT /api/admin/settings/logo",
       "PUT /api/admin/settings/theme",
+      "PUT /api/admin/templates/:id",
     ]);
   });
 });

@@ -424,6 +424,29 @@ describe("previewSchedule", () => {
   });
 });
 
+describe("parseEventDraft: shareMessage", () => {
+  it("is left unset when the input has none, and kept as written (\\r\\n to \\n) when it has", () => {
+    expect(draftOf().shareMessage).toBeUndefined();
+    expect(draftOf({ shareMessage: "" }).shareMessage).toBe("");
+    expect(draftOf({ shareMessage: "{event}\r\nBook now" }).shareMessage).toBe("{event}\nBook now");
+  });
+
+  it("applies the details' rules under its own key and wording", () => {
+    expect(fieldsOf({ shareMessage: 5 })).toEqual({ shareMessage: "The share message must be text (it can be empty)." });
+    expect(fieldsOf({ shareMessage: "x".repeat(1001) })).toEqual({ shareMessage: "The share message must be at most 1000 characters." });
+    expect(fieldsOf({ shareMessage: "a\u2028b" })).toEqual({ shareMessage: "The share message can't contain line or paragraph separators." });
+    expect(fieldsOf({ shareMessage: "a\u0000b" })).toEqual({ shareMessage: "The share message can't contain control characters." });
+    expect(fieldsOf({ shareMessage: "a\uD800" })).toEqual({ shareMessage: "The share message can't contain unpaired surrogate characters." });
+  });
+
+  it("lets an edit keep the stored message even with an invisible character, but not change it to another with one", () => {
+    const stored = { name: "x", details: "x", shareMessage: "Hi\u200D", breakLabels: [] };
+    const run = (shareMessage: string) => parseEventDraft(valid({ shareMessage }), { now: NOW, requireFuture: false, stored });
+    expect("draft" in run("Hi\u200D")).toBe(true);
+    expect(run("Hi\u200D!")).toEqual({ fields: { shareMessage: expect.stringContaining("invisible") } });
+  });
+});
+
 describe("insertEventWithBreaks", () => {
   let t: TestEnv;
   beforeAll(async () => { t = await createTestEnv(); });
@@ -455,6 +478,15 @@ describe("insertEventWithBreaks", () => {
       { start: "2026-10-24T09:00:00Z", end: "2026-10-24T09:15:00Z", label: "Lunch 🍽" },
       { start: "2026-10-24T10:00:00Z", end: "2026-10-24T10:15:00Z", label: "" },
     ]);
+  });
+
+  it("stores the share message, or an empty one when the draft has none, and loadEventBySlug returns it", async () => {
+    const withMessage = generateSlug();
+    await insertEventWithBreaks(t.env.DB, withMessage, draftOf({ shareMessage: "Join {event}" }), "insert-key-dddddddddddddd");
+    const without = generateSlug();
+    await insertEventWithBreaks(t.env.DB, without, draftOf(), "insert-key-eeeeeeeeeeeeee");
+    expect((await loadEventBySlug(t.env.DB, withMessage))?.shareMessage).toBe("Join {event}");
+    expect((await loadEventBySlug(t.env.DB, without))?.shareMessage).toBe("");
   });
 
   it("is atomic: a break the database refuses after the event insert leaves no event and no breaks", async () => {

@@ -12,6 +12,10 @@ import { onRequestPost as adminAddBooking } from "../routes/api/admin/events/[sl
 import { onRequestPost as adminSwap } from "../routes/api/admin/events/[slug]/bookings/swap";
 import { onRequestDelete as adminDeleteBooking } from "../routes/api/admin/events/[slug]/bookings/[id]/index";
 import { onRequestPost as adminMove } from "../routes/api/admin/events/[slug]/bookings/[id]/move";
+import { onRequestGet as adminTemplatesGet, onRequestPost as adminTemplatesPost } from "../routes/api/admin/templates/index";
+import {
+  onRequestDelete as adminTemplateDelete, onRequestGet as adminTemplateGet, onRequestPut as adminTemplatePut,
+} from "../routes/api/admin/templates/[id]/index";
 import { createLoginHandler } from "../routes/api/admin/login";
 import { onRequestPost as adminLogout } from "../routes/api/admin/logout";
 import { onRequestGet as adminSession } from "../routes/api/admin/session";
@@ -59,6 +63,11 @@ export function createRoutes(deps?: AuthDeps): Route[] {
     { method: "POST", pattern: "/api/admin/events/:slug/bookings/swap", handler: adminSwap, access: "admin" },
     { method: "DELETE", pattern: "/api/admin/events/:slug/bookings/:id", handler: adminDeleteBooking, access: "admin" },
     { method: "POST", pattern: "/api/admin/events/:slug/bookings/:id/move", handler: adminMove, access: "admin" },
+    { method: "GET", pattern: "/api/admin/templates", handler: adminTemplatesGet, access: "admin" },
+    { method: "POST", pattern: "/api/admin/templates", handler: adminTemplatesPost, access: "admin" },
+    { method: "GET", pattern: "/api/admin/templates/:id", handler: adminTemplateGet, access: "admin" },
+    { method: "PUT", pattern: "/api/admin/templates/:id", handler: adminTemplatePut, access: "admin" },
+    { method: "DELETE", pattern: "/api/admin/templates/:id", handler: adminTemplateDelete, access: "admin" },
     { method: "POST", pattern: "/api/admin/login", handler: createLoginHandler(deps), access: "admin" },
     { method: "POST", pattern: "/api/admin/logout", handler: adminLogout, access: "admin" },
     { method: "GET", pattern: "/api/admin/session", handler: adminSession, access: "admin" },
