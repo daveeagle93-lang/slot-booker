@@ -587,6 +587,16 @@ describe("Share", () => {
     expect(sent(navigator.share)).toBe(`Hillside Dog Club\n${BUILT_IN}`);
   });
 
+  it("offers Copy message beside Share where navigator.share exists, and Copy link only as a fallback", async () => {
+    const navigator = withShare();
+    const { clipboard } = await start({ navigator, initial: withDetail(SHARE_EVENT) });
+    expect($$(".share button").map((b) => [b.textContent, b.hidden])).toEqual([["Share", false], ["Copy message", false], ["Copy link", true]]);
+    $$("button").find((b) => b.textContent === "Copy message")!.click();
+    await settle();
+    expect(clipboard.writeText).toHaveBeenCalledWith(BUILT_IN);
+    expect(navigator.share).not.toHaveBeenCalled();
+  });
+
   it("offers Copy message and Copy link where navigator.share is missing", async () => {
     const { clipboard } = await start({ navigator: {}, initial: withDetail(SHARE_EVENT) });
     expect(shareButton()).toBeUndefined();

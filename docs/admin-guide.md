@@ -330,11 +330,13 @@ Every upcoming event has a "Share" button. You find it in three places:
 
 Past and archived events have no Share button. Their booking links are closed.
 
+Next to "Share" there is always a "Copy message" button. Tap it, you see "Copied", then paste the message into WhatsApp Web or any other app. If your browser won't let the page copy, the text appears in a box with it already selected. Copy it by hand.
+
 **On a phone or tablet**, tap "Share". Your device's own share sheet opens with the message ready. Pick WhatsApp, then pick one chat or several. You can pick any other app in the sheet too. If you close the sheet without choosing, nothing happens.
 
-**On a computer**, some browsers also have a share sheet, and then "Share" works the same way. Where there is none, you see "Copy message" and "Copy link" instead. Tap one, you see "Copied", then paste it into WhatsApp Web or any other app. If your browser won't let the page copy, the text appears in a box with it already selected. Copy it by hand.
+**On a computer**, some browsers also have a share sheet, and then "Share" works the same way, with "Copy message" beside it. Where there is none, you see "Copy message" and, on the schedule page, "Copy link" instead. (On the events page the event already has "Copy booking link".)
 
-If "Share" fails on a phone, the same two Copy buttons appear, with a note saying so.
+If "Share" fails, a note says so, and on the schedule page "Copy link" appears too.
 
 ### The message
 

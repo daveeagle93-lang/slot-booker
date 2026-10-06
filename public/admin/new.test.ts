@@ -1075,7 +1075,7 @@ describe("created view: Share", () => {
     // the existing link box, message box, Copy buttons and WhatsApp link are all still there
     expect(input("booking-link").value).toBe(ADDRESS);
     expect(buttonNamed("Copy link")).toBeDefined();
-    expect(buttonNamed("Copy message")).toBeDefined();
+    expect($$("button").filter((b) => b.textContent === "Copy message" && !b.hidden)).toHaveLength(1); // the page's own, not a second one
     expect($$("a").some((a) => a.textContent === "Open in WhatsApp")).toBe(true);
     shareButton()!.click();
     expect(share).toHaveBeenCalledTimes(1);

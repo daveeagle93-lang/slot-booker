@@ -7,11 +7,12 @@ const h = makeH(document);
 const tick = () => vi.advanceTimersByTimeAsync(0);
 const SHARE_FAILED = "Sharing isn't available here. Use Copy message or Copy link.";
 
-function mount(opts: { navigator?: unknown; clipboard?: unknown; message?: () => string; link?: () => string; copyLink?: boolean } = {}) {
+function mount(opts: { navigator?: unknown; clipboard?: unknown; message?: () => string; link?: () => string; copyLink?: boolean; copyMessage?: boolean } = {}) {
   const node = shareControls({
     h, navigator: "navigator" in opts ? opts.navigator : {}, clipboard: "clipboard" in opts ? opts.clipboard : { writeText: vi.fn(async (_text: string) => {}) },
     getMessage: opts.message ?? (() => "Trial Day\nhttps://club.example/e/abc"), getLink: opts.link ?? (() => "https://club.example/e/abc"), label: "Trial Day",
     ...("copyLink" in opts ? { copyLink: opts.copyLink } : {}),
+    ...("copyMessage" in opts ? { copyMessage: opts.copyMessage } : {}),
   } as never);
   document.body.append(node);
   return node;
@@ -25,11 +26,13 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 afterEach(() => { vi.useRealTimers(); document.body.innerHTML = ""; });
 
 describe("where sharing is supported", () => {
-  it("shows a Share button with the event name in its accessible name, and keeps Copy hidden", () => {
+  it("shows a Share button with the event name in its accessible name, and Copy message beside it", () => {
     mount({ navigator: { share: vi.fn(async (_data: { text: string }) => {}) } });
     expect(named("Share").getAttribute("aria-label")).toBe('Share "Trial Day"');
     expect(named("Share").hidden).toBe(false);
-    expect(named("Copy message").hidden).toBe(true);
+    expect(buttons().map((b) => b.textContent)).toEqual(["Share", "Copy message", "Copy link"]);
+    expect(named("Copy message").hidden).toBe(false);
+    expect(named("Copy message").getAttribute("aria-label")).toBe('Copy message for "Trial Day"');
     expect(named("Copy link").hidden).toBe(true);
     expect(status().getAttribute("aria-live")).toBe("polite");
   });
@@ -49,7 +52,19 @@ describe("where sharing is supported", () => {
     named("Share").click();
     await tick();
     expect(status().textContent).toBe("");
-    expect(named("Copy message").hidden).toBe(true);
+    expect(named("Copy message").hidden).toBe(false);
+    expect(named("Copy link").hidden).toBe(true);
+  });
+
+  it("copies the message from beside Share, without sharing", async () => {
+    const clipboard = { writeText: vi.fn(async (_text: string) => {}) };
+    const share = vi.fn(async (_data: { text: string }) => {});
+    mount({ navigator: { share }, clipboard });
+    named("Copy message").click();
+    await tick();
+    expect(clipboard.writeText).toHaveBeenCalledWith("Trial Day\nhttps://club.example/e/abc");
+    expect(share).not.toHaveBeenCalled();
+    expect(status().textContent).toBe("Copied");
   });
 
   it("says nothing after a successful share", async () => {
@@ -160,7 +175,21 @@ describe("with copyLink: false", () => {
     expect(clipboard.writeText).toHaveBeenCalledWith("Trial Day\nhttps://club.example/e/abc");
   });
 
-  it("falls back to Copy message only when a share fails, and says so", async () => {
+  it("shows Share and Copy message together where sharing works", async () => {
+    mount({ copyLink: false, navigator: { share: vi.fn(async () => {}) } });
+    expect(buttons().map((b) => [b.textContent, b.hidden])).toEqual([["Share", false], ["Copy message", false]]);
+  });
+
+  it("with copyMessage: false, hides Copy message until a share fails (the page has its own)", async () => {
+    mount({ copyMessage: false, navigator: { share: vi.fn(async () => { throw new Error("x"); }) } });
+    expect(named("Share").hidden).toBe(false);
+    expect(named("Copy message").hidden).toBe(true);
+    named("Share").click();
+    await tick();
+    expect(named("Copy message").hidden).toBe(false);
+  });
+
+  it("keeps Copy message after a failed share, and says so", async () => {
     mount({ copyLink: false, navigator: { share: vi.fn(async () => { throw new Error("x"); }) } });
     named("Share").click();
     await tick();

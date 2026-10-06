@@ -757,6 +757,11 @@ describe("Share", () => {
     }
   });
 
+  it("offers Copy message beside Share where navigator.share exists, and no second Copy booking link", async () => {
+    await start([SHARE_EVENT], { navigator: withShare() });
+    expect([...rowOf("Trial Day").querySelectorAll<HTMLButtonElement>(".share button")].map((b) => [b.textContent, b.hidden])).toEqual([["Share", false], ["Copy message", false]]);
+  });
+
   it("offers only Copy message (the card has its own Copy booking link) when navigator.share is missing", async () => {
     const { clipboard } = await start([SHARE_EVENT], { navigator: {} });
     expect(shareButtonOf("Trial Day")).toBeUndefined();

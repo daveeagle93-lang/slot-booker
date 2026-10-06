@@ -6,21 +6,23 @@ const COPY_FAILED = "Couldn't copy automatically. Copy the selected text manuall
 
 /**
  * The Share control for one event, shared by the events list, the schedule page and the "Event created" page.
- * With navigator.share (phones) it is a Share button that opens the native share sheet; without it, or if sharing
- * fails, it is "Copy message" and "Copy link" buttons. `getMessage()` and `getLink()` are called at click time, so
- * the text always follows the event as it is now; nothing is cached here. `label` (the event name) goes in the
- * buttons' accessible names, as several controls can be on one page. `copyLink: false` leaves out the "Copy link"
- * button, for a page that already has its own. Returns the element to insert.
+ * "Copy message" is always shown. With navigator.share (phones, some desktops) a Share button that opens the native
+ * share sheet comes first; without it, "Copy link" is shown too, and it also appears if sharing fails.
+ * `getMessage()` and `getLink()` are called at click time, so the text always follows the event as it is now;
+ * nothing is cached here. `label` (the event name) goes in the buttons' accessible names, as several controls can
+ * be on one page. `copyLink: false` leaves out the "Copy link" button, for a page that already has its own.
+ * `copyMessage: false` hides "Copy message" until a share fails, for a page that already has its own. Returns the
+ * element to insert.
  * The message is plain text: it is only ever set with .value, textContent or handed to share and the clipboard.
  */
-export function shareControls({ h, navigator, clipboard, getMessage, getLink, label, copyLink: withCopyLink = true }) {
+export function shareControls({ h, navigator, clipboard, getMessage, getLink, label, copyLink: withCopyLink = true, copyMessage: alwaysCopyMessage = true }) {
   const status = h("p", { class: "share-status", "aria-live": "polite" });
   const manual = h("div", { class: "field", hidden: true });
   const canShare = typeof navigator?.share === "function";
   let timer;
 
-  const copyButton = (text, aria, read, makeField) => {
-    const button = h("button", { type: "button", class: "button", "aria-label": aria, hidden: canShare }, text);
+  const copyButton = (text, aria, read, makeField, hidden) => {
+    const button = h("button", { type: "button", class: "button", "aria-label": aria, hidden }, text);
     button.addEventListener("click", async () => {
       clearTimeout(timer);
       const value = read();
@@ -41,9 +43,11 @@ export function shareControls({ h, navigator, clipboard, getMessage, getLink, la
     return button;
   };
   const copyMessage = copyButton("Copy message", `Copy message for "${label}"`, getMessage,
-    () => h("textarea", { readonly: true, rows: "8", "aria-label": `Message for "${label}"` }));
+    () => h("textarea", { readonly: true, rows: "8", "aria-label": `Message for "${label}"` }),
+    canShare && !alwaysCopyMessage);
   const copyLinkButton = copyButton("Copy link", `Copy link for "${label}"`, getLink,
-    () => h("input", { type: "text", readonly: true, "aria-label": `Booking link for "${label}"` }));
+    () => h("input", { type: "text", readonly: true, "aria-label": `Booking link for "${label}"` }),
+    canShare);
 
   const buttons = withCopyLink ? [copyMessage, copyLinkButton] : [copyMessage];
   if (canShare) {

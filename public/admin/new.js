@@ -69,9 +69,10 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
     root.replaceChildren(...(noticeText ? [h("p", { class: "notice", role: "status" }, noticeText)] : []), h("section", { class: "created" },
       heading,
       h("p", { class: "event-name" }, event.name),
-      // Without navigator.share the Copy buttons below do the same job, so the shared control would only repeat them.
+      // Without navigator.share the Copy buttons below do the same job, so the shared control would only repeat them;
+      // with it, the page's own Copy message is already beside the message, so the shared one stays hidden.
       ...(typeof navigator?.share === "function"
-        ? [shareControls({ h, navigator, clipboard, label: event.name, getLink: () => url, getMessage: build })]
+        ? [shareControls({ h, navigator, clipboard, label: event.name, getLink: () => url, getMessage: build, copyMessage: false })]
         : []),
       h("div", { class: "field" }, h("label", { for: "booking-link" }, "Booking link"), link,
         h("div", { class: "actions" }, copyButton("Copy link", link))),
