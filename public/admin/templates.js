@@ -16,6 +16,14 @@ const MISSING = "That template no longer exists. The list has been refreshed.";
 const SAMPLE = { name: "Spring Scent Trial", day: "2027-01-16", start: "09:00", end: "16:00", costPence: 1200, postcode: "AB1 2CD" };
 const TOKENS = new Set(PLACEHOLDERS.map((p) => p.token));
 const wholeNumber = (text) => (/^\d+$/.test(text) ? Number(text) : null);
+const MAX_LANES = 10;
+const plural = (n, one, many) => (n === 1 ? one : many);
+/** "3 lanes × 2 places" for a template that isn't one lane with one place (the default), else null. */
+const lanesLine = (t) => {
+  const lanes = t.lanes?.length ?? 1;
+  const places = t.capacity ?? 1;
+  return lanes === 1 && places === 1 ? null : `${lanes} ${plural(lanes, "lane", "lanes")} × ${places} ${plural(places, "place", "places")}`;
+};
 const summaryLine = (t) => `${t.start}–${t.end}, ${t.sessionMinutes} min sessions, ${formatPounds(t.costPence)}`;
 
 /** The `{...}` words in the message that aren't placeholders: they are shown exactly as typed. */
@@ -127,7 +135,8 @@ export async function init({ document, fetch, navigate, location, settings = nul
     const li = h("li", { class: "event-card" },
       h("h2", {}, t.name),
       ...(t.isDefault ? [h("p", {}, h("span", { class: "badge open" }, "Default"))] : []),
-      h("p", { class: "when" }, summaryLine(t)));
+      h("p", { class: "when" }, summaryLine(t)),
+      ...(lanesLine(t) ? [h("p", { class: "note" }, lanesLine(t))] : []));
     const edit = h("button", { type: "button", class: "button", "aria-label": `Edit ${t.name}` }, "Edit");
     edit.addEventListener("click", () => { if (!busy) showForm(t); });
     const remove = h("button", { type: "button", class: "button", "aria-label": `Delete ${t.name}` }, "Delete");
@@ -170,6 +179,7 @@ export async function init({ document, fetch, navigate, location, settings = nul
   const bodyOf = (t) => ({
     name: t.name, details: t.details, venuePostcode: t.venuePostcode, costPence: t.costPence, start: t.start, end: t.end,
     sessionMinutes: t.sessionMinutes, gapMinutes: t.gapMinutes, breaks: t.breaks, shareMessage: t.shareMessage,
+    lanes: t.lanes, capacity: t.capacity,
   });
 
   function deletePanel(t, cancel) {
@@ -237,6 +247,10 @@ export async function init({ document, fetch, navigate, location, settings = nul
     const session = minutesInput("tpl-session", 1, 480);
     const gap = minutesInput("tpl-gap", 0, 120);
     const share = control("textarea", "tpl-share", { rows: "6", maxlength: "1000" });
+    const capacity = control("input", "tpl-capacity", { type: "number", inputmode: "numeric", min: 1, max: 50, step: 1, required: true });
+    const startLanes = editing && t.lanes?.length > 0 ? t.lanes.map((l) => ({ name: l.name })) : [{ name: "" }];
+    const startCapacity = editing && Number.isInteger(t.capacity) ? t.capacity : 1;
+    capacity.value = String(startCapacity);
     if (editing) {
       name.value = t.name;
       details.value = t.details;
@@ -302,6 +316,61 @@ export async function init({ document, fetch, navigate, location, settings = nul
     for (const b of editing ? t.breaks : []) addRow(b);
     const usedRows = () => rows.filter((r) => r.startInput.value !== "" || r.endInput.value !== "");
 
+    // Lanes: one row per lane, names only (a template's lanes have no ids, and an event made from it gets its own copy).
+    const lanesError = h("p", { id: "tpl-lanes-error", class: "field-error", role: "alert", tabindex: "-1" });
+    const lanesTarget = { input: null, error: lanesError };
+    targets.add(lanesTarget);
+    fields.set("lanes", lanesTarget);
+    const laneList = h("div", { class: "lanes" });
+    const addLaneButton = h("button", { type: "button", class: "button" }, "Add lane");
+    const laneRows = [];
+    let laneSeq = 0;
+    function addLane(name) {
+      const id = `tpl-lane-${++laneSeq}-name`;
+      const input = h("input", { id, name: id, type: "text", maxlength: "40", autocomplete: "off", "aria-describedby": `${id}-hint ${id}-error` });
+      input.value = name;
+      const cell = target(id, input);
+      const legend = h("legend", {});
+      const label = h("label", { for: id });
+      const hint = h("p", { class: "note", id: `${id}-hint` }, "Leave blank if you only have one");
+      const remove = h("button", { type: "button", class: "button remove" }, "Remove");
+      const row = { input, cell, legend, label, hint, remove };
+      remove.addEventListener("click", () => {
+        laneRows.splice(laneRows.indexOf(row), 1);
+        targets.delete(cell);
+        row.el.remove();
+        numberLanes();
+        setError(lanesTarget, "");
+        updatePreview();
+        addLaneButton.focus();
+      });
+      row.el = h("fieldset", { class: "lane-row" }, legend, h("div", { class: "field" }, label, input, hint, cell.error), remove);
+      laneRows.push(row);
+      laneList.append(row.el);
+      numberLanes();
+      return row;
+    }
+    /** One lane: its name is optional and there is nothing to remove. Two or more: each is named, and any can be removed. */
+    function numberLanes() {
+      const one = laneRows.length === 1;
+      laneRows.forEach((r, i) => {
+        r.legend.textContent = `Lane ${i + 1}`;
+        r.legend.className = one ? "visually-hidden" : "";
+        r.label.textContent = one ? "Lane name (optional)" : "Name";
+        r.input.required = !one;
+        r.hint.hidden = !one;
+        r.remove.hidden = one;
+        r.remove.setAttribute("aria-label", `Remove lane ${i + 1}`);
+      });
+      addLaneButton.disabled = laneRows.length >= MAX_LANES;
+    }
+    addLaneButton.addEventListener("click", () => {
+      addLane("").input.focus();
+      setError(lanesTarget, "");
+      updatePreview();
+    });
+    for (const l of startLanes) addLane(l.name);
+
     // The share message and its live preview.
     const placeholderList = h("dl", { class: "facts" },
       ...PLACEHOLDERS.flatMap((p) => [h("dt", {}, p.token), h("dd", {}, p.meaning)]));
@@ -324,6 +393,7 @@ export async function init({ document, fetch, navigate, location, settings = nul
             costPence: "pence" in priced ? priced.pence : SAMPLE.costPence,
             venuePostcode: postcode.value.trim() || SAMPLE.postcode,
             details: details.value.trim(),
+            lanes: laneRows.map((r) => ({ name: r.input.value })),
           },
           clubName,
           link: `${location.origin}/e/example`,
@@ -360,6 +430,12 @@ export async function init({ document, fetch, navigate, location, settings = nul
         field("sessionMinutes", "tpl-session", "Session length (minutes)", session),
         field("gapMinutes", "tpl-gap", "Gap between sessions (minutes)", gap)),
       h("fieldset", { class: "breaks-group" }, h("legend", {}, "Breaks (optional)"), breakList, breaksError, addBreak),
+      h("fieldset", { class: "breaks-group lanes-group" },
+        h("legend", {}, "Lanes"),
+        h("p", { class: "note" }, "Lanes run side by side at the same time, such as separate rings. Most events have just one."),
+        laneList, lanesError, addLaneButton,
+        field("capacity", "tpl-capacity", "Places per lane per time", capacity,
+          "How many bookings each lane takes at the same time. Leave it at 1 for one booking per time.")),
       field("shareMessage", "tpl-share", "Share message (optional)", share,
         "Used when you share an event made from this template. Leave it blank to use the built-in message."),
       h("p", { class: "note" }, "Placeholders are filled in when an event is shared:"),
@@ -379,8 +455,8 @@ export async function init({ document, fetch, navigate, location, settings = nul
       else x.input.removeAttribute("aria-invalid");
     }
     const clearErrors = () => { summary.textContent = ""; for (const x of targets) setError(x, ""); };
-    // First in page order: the first field marked invalid, else the breaks message, else the summary.
-    const focusFirstError = () => (form.querySelector("[aria-invalid='true']") ?? (breaksError.textContent ? breaksError : summary)).focus();
+    // First in page order: the first field marked invalid, else the breaks message, else the lanes message, else the summary.
+    const focusFirstError = () => (form.querySelector("[aria-invalid='true']") ?? (breaksError.textContent ? breaksError : lanesError.textContent ? lanesError : summary)).focus();
 
     form.addEventListener("input", (e) => {
       const x = [...targets].find((y) => y.input === e.target);
@@ -399,11 +475,16 @@ export async function init({ document, fetch, navigate, location, settings = nul
         return focusFirstError();
       }
       const used = usedRows();
+      // Only what differs from the template as it was (a new one: one unnamed lane, one place): left out, the server keeps it.
+      const lanes = laneRows.map((r) => ({ name: r.input.value.trim() }));
+      const places = wholeNumber(capacity.value.trim());
       const body = {
         name: name.value.trim(), details: details.value.trim(), venuePostcode: postcode.value.trim(), costPence: priced.pence,
         start: start.value, end: end.value, sessionMinutes: wholeNumber(session.value.trim()), gapMinutes: wholeNumber(gap.value.trim()),
         breaks: used.map((r) => ({ start: r.startInput.value, end: r.endInput.value, label: r.labelInput.value })),
         shareMessage: share.value.trim(),
+        ...(JSON.stringify(lanes) === JSON.stringify(startLanes) ? {} : { lanes }),
+        ...(places === startCapacity ? {} : { capacity: places }),
         ...(locked ? {} : { isDefault: defaultBox.checked }),
       };
       saving = true;
@@ -424,7 +505,9 @@ export async function init({ document, fetch, navigate, location, settings = nul
         const unplaced = [];
         for (const [key, message] of Object.entries(res.data.fields)) {
           const m = /^breaks\.(\d+)\.(start|end|label)$/.exec(key);
-          const x = m ? used[Number(m[1])]?.cells[m[2]] : key.startsWith("breaks.") ? breaksTarget : fields.get(key);
+          const lane = /^lanes\.(\d+)\.name$/.exec(key);
+          const x = m ? used[Number(m[1])]?.cells[m[2]] : lane ? laneRows[Number(lane[1])]?.cell
+            : key.startsWith("breaks.") ? breaksTarget : key.startsWith("lanes.") ? lanesTarget : fields.get(key);
           if (x) setError(x, message);
           else unplaced.push(message);
         }

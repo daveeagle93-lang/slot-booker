@@ -100,7 +100,7 @@ describe("form", () => {
     const labels = $$("label").map((l) => l.textContent);
     expect(labels).toEqual([
       "Template", "Event name", "Date", "Start time", "End time", "Session length (minutes)", "Gap between sessions (minutes)",
-      "Cost (£)", "Venue postcode", "Details (optional)", "Share message (optional)", "Listed on the home page",
+      "Lane name (optional)", "Places per lane per time", "Cost (£)", "Venue postcode", "Details (optional)", "Share message (optional)", "Listed on the home page",
     ]);
     for (const label of $$("label")) expect(document.getElementById(label.getAttribute("for")!)).not.toBeNull();
     expect(input("date").type).toBe("date");
@@ -1175,7 +1175,7 @@ describe("template picker and share message", () => {
     expect([...picker().options].map((o) => o.textContent)).toEqual(["No template", "Saturday trial (default)", "Evening"]);
     expect([...picker().options].map((o) => o.value)).toEqual(["", "1", "2"]);
     expect(document.getElementById("template-hint")!.textContent).toBe(
-      "Choosing a template replaces the details, times, cost, breaks and share message below. The event name and date stay as they are. The event keeps its own copy: changing a template later never changes events already made.");
+      "Choosing a template replaces the details, times, cost, breaks, lanes, places and share message below. The event name and date stay as they are. The event keeps its own copy: changing a template later never changes events already made.");
     expect(picker().getAttribute("aria-describedby")).toBe("template-hint");
     expect(picker().closest(".field")!.hasAttribute("hidden")).toBe(false);
   });
@@ -1278,7 +1278,7 @@ describe("template picker and share message", () => {
   });
 
   describe("protecting what was typed", () => {
-    const MESSAGE = "Replace what you've typed in the details, times, cost, breaks and share message with this template?";
+    const MESSAGE = "Replace what you've typed in the details, times, cost, breaks, lanes, places and share message with this template?";
     const typed: [string, () => void][] = [
       ["details", () => set("details", "mine")], ["postcode", () => set("postcode", "ZZ1 1ZZ")], ["cost", () => set("cost", "3")],
       ["start", () => set("start", "08:00")], ["end", () => set("end", "13:00")], ["session", () => set("session", "10")],
@@ -1548,5 +1548,281 @@ describe("template picker and share message", () => {
     expect(area("share-message").value).toBe(HOSTILE);
     expect(status()).toBe(`Filled in from the template ${HOSTILE}.`);
     expect(document.querySelector("img, [onerror]")).toBeNull();
+  });
+});
+
+describe("lanes and places", () => {
+  const laneInputs = () => $$(".lane-row input") as HTMLInputElement[];
+  const laneName = (n: number, value: string) => {
+    laneInputs()[n].value = value;
+    laneInputs()[n].dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const created = (calls: Call[]) => calls.find((c) => c.url === CREATE)!.body;
+  const addLane = () => buttonNamed("Add lane").click();
+  const removeButton = (n: number) => $(`button[aria-label='Remove lane ${n}']`) as HTMLButtonElement;
+
+  it("starts with one lane whose name is optional, a hint, no Remove, and one place per time", async () => {
+    await start();
+    expect(laneInputs()).toHaveLength(1);
+    expect($(".lane-row label").textContent).toBe("Lane name (optional)");
+    expect(laneInputs()[0].required).toBe(false);
+    const hint = document.getElementById(laneInputs()[0].id + "-hint")!;
+    expect(hint.textContent).toBe("Leave blank if you only have one");
+    expect(hint.hidden).toBe(false);
+    expect(laneInputs()[0].getAttribute("aria-describedby")).toBe(`${laneInputs()[0].id}-hint ${laneInputs()[0].id}-error`);
+    expect(removeButton(1).hidden).toBe(true);
+    expect($(".lanes-group legend").textContent).toBe("Lanes");
+    expect(input("capacity").value).toBe("1");
+    expect($("label[for='capacity']").textContent).toBe("Places per lane per time");
+    expect(input("capacity").type).toBe("number");
+    expect([input("capacity").min, input("capacity").max, input("capacity").step]).toEqual(["1", "50", "1"]);
+    expect(input("capacity").getAttribute("inputmode")).toBe("numeric");
+    expect(document.getElementById("capacity-hint")!.textContent).toContain("Leave it at 1");
+    expect(input("capacity").getAttribute("aria-describedby")).toBe("capacity-hint capacity-error");
+    expect($(".places-summary").textContent).toBe("");
+  });
+
+  it("adds and removes lanes: each is then named, numbered and removable, and the last one can't be removed", async () => {
+    await start();
+    laneName(0, "Ring 1");
+    addLane();
+    expect(laneInputs()).toHaveLength(2);
+    expect(document.activeElement).toBe(laneInputs()[1]);
+    expect($$(".lane-row label").map((l) => l.textContent)).toEqual(["Name", "Name"]);
+    expect($$(".lane-row legend").map((l) => [l.textContent, l.className])).toEqual([["Lane 1", ""], ["Lane 2", ""]]);
+    expect(laneInputs().map((i) => i.required)).toEqual([true, true]);
+    expect($$(".lane-row .note").every((n) => n.hidden)).toBe(true);
+    expect(removeButton(1).hidden).toBe(false);
+    expect(removeButton(2).hidden).toBe(false);
+    laneName(1, "Ring 2");
+    removeButton(1).click();
+    expect(laneInputs().map((i) => i.value)).toEqual(["Ring 2"]);
+    expect($(".lane-row label").textContent).toBe("Lane name (optional)");
+    expect(document.activeElement).toBe(buttonNamed("Add lane"));
+    expect($$("button").filter((b) => b.getAttribute("aria-label")?.startsWith("Remove lane") && !b.hidden)).toHaveLength(0);
+  });
+
+  it("stops at ten lanes", async () => {
+    await start();
+    for (let i = 0; i < 9; i++) addLane();
+    expect(laneInputs()).toHaveLength(10);
+    expect((buttonNamed("Add lane") as HTMLButtonElement).disabled).toBe(true);
+    removeButton(10).click();
+    expect((buttonNamed("Add lane") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("sends the lanes (named, in order, no ids) and the places on create, and nothing for one unnamed lane with one place", async () => {
+    const { calls } = await start();
+    fillAll();
+    addLane();
+    addLane();
+    laneName(0, " Ring 1 ");
+    laneName(1, "Ring 2");
+    laneName(2, "Ring 3");
+    set("capacity", "2");
+    submit();
+    await tick();
+    expect(created(calls)).toMatchObject({ lanes: [{ name: "Ring 1" }, { name: "Ring 2" }, { name: "Ring 3" }], capacity: 2 });
+    expect(created(calls).lanes.every((l: object) => !("id" in l))).toBe(true);
+    const plain = await start();
+    fillAll();
+    submit();
+    await tick();
+    expect(created(plain.calls)).not.toHaveProperty("lanes");
+    expect(created(plain.calls)).not.toHaveProperty("capacity");
+  });
+
+  it("sends a single named lane, and places alone", async () => {
+    const { calls } = await start();
+    fillAll();
+    laneName(0, "Main ring");
+    submit();
+    await tick();
+    expect(created(calls)).toMatchObject({ lanes: [{ name: "Main ring" }] });
+    expect(created(calls)).not.toHaveProperty("capacity");
+    const more = await start();
+    fillAll();
+    set("capacity", "4");
+    submit();
+    await tick();
+    expect(created(more.calls).capacity).toBe(4);
+    expect(created(more.calls)).not.toHaveProperty("lanes");
+  });
+
+  it("sends a capacity that isn't a whole number as null so the server says so, against the capacity field", async () => {
+    const { calls } = await start({ create: () => reply(400, { error: { code: "invalid_input" }, fields: { capacity: "Enter a whole number of places from 1 to 50." } }) });
+    fillAll();
+    set("capacity", "");
+    submit();
+    await tick();
+    expect(created(calls).capacity).toBeNull();
+    expect(errorOf("capacity")).toBe("Enter a whole number of places from 1 to 50.");
+    expect(input("capacity").getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(input("capacity"));
+  });
+
+  it("puts the server's lane errors on the right lane, however many were removed before, and focuses the first", async () => {
+    const { calls } = await start({
+      create: () => reply(400, { error: { code: "invalid_input" }, fields: { "lanes.1.name": "Two lanes can't have the same name.", "lanes.0.name": "Each lane needs a name." } }),
+    });
+    fillAll();
+    addLane();
+    addLane();
+    removeButton(1).click(); // the first row is gone: the payload's lane 0 is now the second row
+    laneName(0, "");
+    laneName(1, "Same");
+    submit();
+    await tick();
+    expect(created(calls).lanes).toEqual([{ name: "" }, { name: "Same" }]);
+    const [first, second] = laneInputs();
+    expect(document.getElementById(`${first.id}-error`)!.textContent).toBe("Each lane needs a name.");
+    expect(document.getElementById(`${second.id}-error`)!.textContent).toBe("Two lanes can't have the same name.");
+    expect([first.getAttribute("aria-invalid"), second.getAttribute("aria-invalid")]).toEqual(["true", "true"]);
+    expect(document.activeElement).toBe(first);
+    laneName(0, "Other");
+    expect(document.getElementById(`${first.id}-error`)!.textContent).toBe("");
+    expect(first.hasAttribute("aria-invalid")).toBe(false);
+    expect(document.getElementById(`${second.id}-error`)!.textContent).toBe("Two lanes can't have the same name.");
+  });
+
+  it("shows the lanes list error under the lanes, and clears it when a lane is added or removed", async () => {
+    await start({ create: () => reply(400, { error: { code: "invalid_input" }, fields: { lanes: "You can have at most 10 lanes." } }) });
+    fillAll();
+    submit();
+    await tick();
+    expect(errorOf("lanes")).toBe("You can have at most 10 lanes.");
+    addLane();
+    expect(errorOf("lanes")).toBe("");
+  });
+
+  it("shows a lane error the preview reports about the places (too many), against the places field", async () => {
+    await start({ preview: () => reply(400, { error: { code: "invalid_input" }, fields: { capacity: "That would make 3000 places." } }) });
+    fillAll();
+    set("capacity", "50");
+    await settle();
+    expect(errorOf("capacity")).toBe("That would make 3000 places.");
+    expect(input("capacity").getAttribute("aria-invalid")).toBe("true");
+    set("capacity", "40");
+    expect(errorOf("capacity")).toBe("");
+  });
+
+  describe("the preview and the summary", () => {
+    it("previews with the lane count and the places, never the typed names, and only when they differ from one lane with one place", async () => {
+      const { calls } = await start();
+      fillSchedule();
+      await settle();
+      expect(previewCalls(calls).at(-1)!.body).not.toHaveProperty("lanes");
+      expect(previewCalls(calls).at(-1)!.body).not.toHaveProperty("capacity");
+      addLane();
+      addLane();
+      set("capacity", "2");
+      await settle();
+      expect(previewCalls(calls).at(-1)!.body).toMatchObject({ lanes: [{ name: "Lane 1" }, { name: "Lane 2" }, { name: "Lane 3" }], capacity: 2 });
+    });
+
+    it("leaves a capacity that isn't 1 to 50 out of the preview, so typing never blanks the schedule", async () => {
+      const { calls } = await start();
+      fillSchedule();
+      await settle();
+      for (const bad of ["", "0", "51", "1.5"]) {
+        set("capacity", bad);
+        await settle();
+        expect(previewCalls(calls).at(-1)!.body, bad).not.toHaveProperty("capacity");
+      }
+      expect(chips()).toEqual(["09:00", "09:20", "09:40"]);
+    });
+
+    it("shows 'N times × L lanes × C places = P places' from the preview, and clears it when the draft is unusable", async () => {
+      await start({ preview: () => preview({ placeCount: 18 }) });
+      fillSchedule();
+      addLane();
+      addLane();
+      set("capacity", "2");
+      await settle();
+      expect($(".places-summary").textContent).toBe("3 times × 3 lanes × 2 places = 18 places");
+      expect($(".places-summary").getAttribute("aria-live")).toBe("polite");
+      expect($(".preview-summary").textContent).toBe("3 slots");
+      set("end", "");
+      expect($(".places-summary").textContent).toBe("");
+    });
+
+    it("says nothing for one lane with one place, and uses singular words", async () => {
+      await start({ preview: () => preview({ placeCount: 3 }) });
+      fillSchedule();
+      await settle();
+      expect($(".places-summary").textContent).toBe("");
+      expect($(".preview-summary").textContent).toBe("3 slots");
+      set("capacity", "1");
+      addLane();
+      await settle();
+      expect($(".places-summary").textContent).toBe("3 times × 2 lanes × 1 place = 3 places");
+    });
+  });
+
+  describe("templates", () => {
+    const WITH_LANES = {
+      id: 1, name: "Rings", isDefault: false, details: "", venuePostcode: "AB1 2CD", costPence: 1500, start: "09:00", end: "12:00",
+      sessionMinutes: 15, gapMinutes: 5, breaks: [], shareMessage: "", lanes: [{ name: "Ring 1" }, { name: "Ring 2" }], capacity: 3,
+    };
+    const OLD_STYLE = { ...WITH_LANES, id: 2, name: "Old", lanes: undefined, capacity: undefined };
+    const picker = () => document.getElementById("template") as HTMLSelectElement;
+    const choose = (value: string) => {
+      picker().value = value;
+      picker().dispatchEvent(new Event("change", { bubbles: true }));
+    };
+
+    it("copies the template's lane names and places into the form, and sends them", async () => {
+      const { calls } = await start({ templates: () => reply(200, { templates: [{ ...WITH_LANES, isDefault: true }] }) });
+      await tick();
+      expect(laneInputs().map((i) => i.value)).toEqual(["Ring 1", "Ring 2"]);
+      expect(input("capacity").value).toBe("3");
+      set("name", "Trial Day");
+      set("date", "2026-06-13");
+      submit();
+      await tick();
+      expect(created(calls)).toMatchObject({ lanes: [{ name: "Ring 1" }, { name: "Ring 2" }], capacity: 3 });
+      expect(created(calls).lanes.every((l: object) => !("id" in l))).toBe(true);
+    });
+
+    it("switches between templates and No template, leaving one unnamed lane and one place for a template without lanes", async () => {
+      await start({ templates: () => reply(200, { templates: [WITH_LANES, OLD_STYLE] }) });
+      await tick();
+      choose("1");
+      expect(laneInputs().map((i) => i.value)).toEqual(["Ring 1", "Ring 2"]);
+      expect($$(".lane-row legend").map((l) => l.textContent)).toEqual(["Lane 1", "Lane 2"]);
+      choose("2");
+      expect(laneInputs().map((i) => i.value)).toEqual([""]);
+      expect(input("capacity").value).toBe("1");
+      choose("1");
+      expect(input("capacity").value).toBe("3");
+      choose("");
+      expect(laneInputs().map((i) => i.value)).toEqual([""]);
+      expect(input("capacity").value).toBe("1");
+      expect($(".lane-row label").textContent).toBe("Lane name (optional)");
+    });
+
+    it("counts lane and places edits as edits a template must ask before replacing", async () => {
+      const confirm = vi.fn(() => false);
+      (document.defaultView as unknown as { confirm: unknown }).confirm = confirm;
+      await start({ templates: () => reply(200, { templates: [WITH_LANES, OLD_STYLE] }) });
+      await tick();
+      choose("1");
+      expect(confirm).not.toHaveBeenCalled();
+      set("capacity", "5");
+      choose("2");
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(picker().value).toBe("1");
+      expect(input("capacity").value).toBe("5");
+      for (const edit of [() => laneName(0, "Changed"), () => addLane(), () => removeButton(1).click()]) {
+        await start({ templates: () => reply(200, { templates: [WITH_LANES, OLD_STYLE] }) });
+        await tick();
+        choose("1");
+        confirm.mockClear();
+        edit();
+        choose("2");
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(picker().value).toBe("1");
+      }
+    });
   });
 });

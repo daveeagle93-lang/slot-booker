@@ -12,6 +12,14 @@
 // the break rows) and checks that the other cell's label and input stay level with the first cell's (within 1px). Under 360px the cells stack (one
 // column), so that check applies at 390px only; at 320px the rows are checked for stacking, not alignment.
 //
+// The admin pages for lanes and places (an event with three lanes of two places) are checked in these states: the schedule
+// (every time as a header with a row per booking and an Add row per lane with room; then with the Move panel open, then
+// with the Add panel open), the event edit form with its Lanes card (three lanes; with validation errors under a lane and
+// under the places; after removing a lane, with the bookings it would strand listed), and the templates page (the list with
+// its "3 lanes x 2 places" line, the create form with three lanes, the edit form of a template with lanes). Besides the checks
+// every state gets, these check that every button, select and field in them is at least 48px tall and wide, and that rows,
+// lane rows, buttons and fields stay inside the card that holds them.
+//
 // The public booking page (/e/<slug>, event.html with the booking API stubbed) is checked in these states: one lane with
 // one place (the v1.0 look), one lane with two places, one named lane, three lanes with two places each (all open; one
 // lane full and a started time; long lane names; a lane chosen with the form open; the confirmation with its Lane row).
@@ -25,8 +33,8 @@
 // --engine      webkit (default) or chromium. Chromium never showed the bug, so it is only a sanity check of the
 //               script and the page; only a WebKit run says anything about iOS.
 // --allow-skip  exit 0 instead of 2 when WebKit can't launch here (Playwright supports a limited set of systems).
-// --break-css   self-test: forces a wide min-width on the inputs, and wide, short lane buttons on the booking page, so
-//               the run must FAIL.
+// --break-css   self-test: forces a wide min-width on the inputs, short buttons and fields in the schedule rows and lane
+//               rows, and wide, short lane buttons on the booking page, so the run must FAIL.
 // --shots       also writes full-page PNGs of the main states (<name>-<width>-<scheme>.png) to --shots-dir (default:
 //               slot-booker-layout in the system temp folder), for looking at.
 // Every state runs at both widths in light and dark.
@@ -97,6 +105,21 @@ const SCHEDULE_SLOTS = [
   { start: "2030-06-15T09:20:00.000Z", end: "2030-06-15T09:35:00.000Z", booking: { id: 1, dogName: "Bartholomew-Maximilian", handlerName: "Alexandria Featherstonehaugh-Cholmondeley" } },
   { start: "2030-06-15T10:40:00.000Z", end: "2030-06-15T10:55:00.000Z", booking: { id: 2, dogName: "Pip", handlerName: "Sam" } },
 ];
+// An event with three lanes and two places in each (the shape of eventDetail's `event`, and its slots with `places`).
+const RING_LANES = [{ id: 31, name: "Ring 1" }, { id: 32, name: "Ring 2" }, { id: 33, name: "Indoor hall, far end" }];
+const LANED_EVENT = { ...EVENT, lanes: RING_LANES, capacity: 2 };
+const LONG_DOG = { id: 1, dogName: "Bartholomew-Maximilian", handlerName: "Alexandria Featherstonehaugh-Cholmondeley" };
+const heldIn = (lane, free, ...bookings) => ({ laneId: lane.id, laneName: lane.name, free, bookings });
+// 10:00 (London) all free; 10:20 Ring 1 full (a long name and a short one), Ring 2 one booking, hall free; 11:40 the hall full, Rings free.
+const LANE_SLOTS = [
+  { start: "2030-06-15T09:00:00.000Z", end: "2030-06-15T09:15:00.000Z", booking: null, places: RING_LANES.map((l) => heldIn(l, 2)) },
+  { start: "2030-06-15T09:20:00.000Z", end: "2030-06-15T09:35:00.000Z", booking: null,
+    places: [heldIn(RING_LANES[0], 0, LONG_DOG, { id: 2, dogName: "Pip", handlerName: "Sam" }), heldIn(RING_LANES[1], 1, { id: 3, dogName: "Moss", handlerName: "Lee Ann" }), heldIn(RING_LANES[2], 2)] },
+  { start: "2030-06-15T10:40:00.000Z", end: "2030-06-15T10:55:00.000Z", booking: null,
+    places: [heldIn(RING_LANES[0], 2), heldIn(RING_LANES[1], 2), heldIn(RING_LANES[2], 0, { id: 4, dogName: "Fly", handlerName: "Jo" }, { id: 5, dogName: "Tess", handlerName: "Ali" })] },
+];
+// Bookings that removing the third lane would strand, as the preview lists them.
+const STRANDED = [{ id: 4, slotStart: "2030-06-15T10:40:00.000Z", dogName: "Fly", handlerName: "Jo", lane: RING_LANES[2] }, { id: 5, slotStart: "2030-06-15T10:40:00.000Z", dogName: "Tess", handlerName: "Ali", lane: RING_LANES[2] }];
 // The events list (GET /api/admin/events): two upcoming events, the second with a long unbroken name.
 const LIST_EVENTS = [
   { slug: SLUG, path: `/e/${SLUG}`, name: "Saturday agility", startUtc: EVENT.startUtc, endUtc: EVENT.endUtc, bookedCount: 3, slotCount: 12, full: false, listed: true, bookings: { open: true } },
@@ -134,7 +157,8 @@ const tpl = (id, name, isDefault, breaks, more = {}) => ({
 // The templates page's list: a default, a long name with spaces (60 characters, the most allowed) and one with no spaces at all.
 const LIST_TEMPLATES = [
   tpl(1, "Weekend scent trial", true, [{ start: "12:00", end: "12:30", label: "Lunch" }, { start: "14:00", end: "14:15", label: "" }]),
-  tpl(2, "Regional qualifier, novice and intermediate scent work", false, [{ start: "11:00", end: "11:30", label: "Tea break for everyone and the judges" }, { start: "13:00", end: "13:45", label: "Lunch" }]),
+  tpl(2, "Regional qualifier, novice and intermediate scent work", false, [{ start: "11:00", end: "11:30", label: "Tea break for everyone and the judges" }, { start: "13:00", end: "13:45", label: "Lunch" }],
+    { lanes: [{ name: "Ring 1" }, { name: "Ring 2" }, { name: "Indoor hall, far end" }], capacity: 2 }),
   tpl(3, "Extraordinarily-long-template-name-without-any-spaces-at-a", false, []),
 ];
 // The create page's picker: the default has two breaks, the other three.
@@ -173,8 +197,11 @@ async function stubApi(page, stub) {
       if (!found) return json(route, { error: { code: "not_found", message: "No such template" } }, 404);
       return method === "DELETE" ? json(route, { deleted: { id: found.id, name: found.name } }) : json(route, { template: found });
     }
-    if (pathname === `/api/admin/events/${SLUG}`) return json(route, { event: EVENT, slots: stub.slots, orphans: [], lineup: "", defaultShareMessage: "" });
-    if (pathname.endsWith("/preview")) return json(route, { slots: SLOTS, suggestions: [], affected: [] });
+    if (pathname === `/api/admin/events/${SLUG}`) {
+      if (method === "PUT" && stub.putFields) return json(route, { error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: stub.putFields }, 400);
+      return json(route, { event: stub.event ?? EVENT, slots: stub.slots, orphans: [], lineup: "", defaultShareMessage: "" });
+    }
+    if (pathname.endsWith("/preview")) return json(route, { slots: SLOTS, suggestions: [], affected: stub.affected ?? [], ...(stub.placeCount ? { placeCount: stub.placeCount } : {}) });
     return json(route, { error: { code: "not_stubbed", message: pathname } }, 404);
   });
 }
@@ -348,6 +375,42 @@ function check(label, m, { ids: expectedIds = [], breakInputs }) {
   return failures;
 }
 
+/**
+ * What the lane states add: every visible control matching `targets` (its size), and for each [inner, outer] pair every inner
+ * element with its rect and that of the outer element that holds it.
+ */
+const measureLayout = ({ targets, inside }) => {
+  const box = (el) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  const name = (el) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${el.getAttribute("aria-label") ? ` "${el.getAttribute("aria-label")}"` : el.textContent && el.tagName === "BUTTON" ? ` "${el.textContent.trim()}"` : ""}`;
+  const controls = targets ? [...document.querySelectorAll(targets)].map((el) => ({ what: name(el), rect: box(el) })).filter((c) => c.rect.width > 0 && c.rect.height > 0) : [];
+  const held = inside.flatMap(([innerSelector, outerSelector]) => [...document.querySelectorAll(innerSelector)].flatMap((el) => {
+    const outer = el.closest(outerSelector);
+    const rect = box(el);
+    return outer && rect.width > 0 ? [{ what: name(el), innerSelector, outerSelector, rect, outer: box(outer) }] : [];
+  }));
+  return { controls, held };
+};
+
+/** The failures of measureLayout: controls under 48px either way, and elements that leave the card, row or group that holds them. */
+function checkLayout(label, m, o) {
+  const failures = [];
+  const round = (n) => Math.round(n * 10) / 10;
+  if (o.targets && m.controls.length === 0) failures.push(`${label}: no controls matched ${o.targets}`);
+  for (const c of m.controls) {
+    if (c.rect.height < 48 - TOLERANCE || c.rect.width < 48 - TOLERANCE) failures.push(`${label}: ${c.what} is ${round(c.rect.width)}x${round(c.rect.height)}, under 48x48`);
+  }
+  for (const [innerSelector] of o.inside ?? []) {
+    if (!m.held.some((x) => x.innerSelector === innerSelector)) failures.push(`${label}: nothing matched ${innerSelector}`);
+  }
+  for (const x of m.held) {
+    if (!inside(x.rect, x.outer)) failures.push(`${label}: ${x.what} (${round(x.rect.left)}..${round(x.rect.right)}) leaves its ${x.outerSelector} (${round(x.outer.left)}..${round(x.outer.right)})`);
+  }
+  return failures;
+}
+
 /** The public booking page's facts: sideways scroll, anything past the right edge, and every time and lane button. */
 // `width` is the screen width asked for: on an emulated phone the layout viewport grows to fit overflowing content, so window.innerWidth can't be trusted.
 const measurePublic = (width) => {
@@ -416,12 +479,13 @@ async function main() {
   let loads = 0;
   let pairedChecked = 0;
   let publicChecked = 0;
+  let laneChecked = 0;
   try {
     for (const width of WIDTHS) {
       for (const scheme of schemes) {
         const context = await browser.newContext({ ...phone, viewport: { width, height: 844 }, colorScheme: scheme });
         const page = await context.newPage();
-        const stub = { templates: [], slots: [], public: null };
+        const stub = { templates: [], slots: [], public: null, event: null, affected: [], placeCount: 0, putFields: null };
         await stubApi(page, stub);
 
         /** Checks the page as it is now; `o.shot` names its screenshot. */
@@ -438,6 +502,14 @@ async function main() {
             failures.push(...checkPairs(`${label} @${width}px ${scheme}`, pairs));
             pairedChecked += pairs.filter((p) => p.sideBySide).length;
           }
+          if (o.targets || o.inside) {
+            if (flag("break-css")) {
+              await page.addStyleTag({ content: ".sched-actions .button, .lane-row .button, .lane-row input, #capacity, #tpl-capacity { min-height: 20px !important; height: 20px !important; }" });
+            }
+            const lm = await page.evaluate(measureLayout, { targets: o.targets ?? "", inside: o.inside ?? [] });
+            failures.push(...checkLayout(`${label} @${width}px ${scheme}`, lm, o));
+            laneChecked++;
+          }
           if (flag("shots") && o.shot) await page.screenshot({ path: join(shotsDir, `${o.shot}-${width}-${scheme}.png`), fullPage: true });
         };
         /**
@@ -447,6 +519,10 @@ async function main() {
         const run = async (label, path, o) => {
           stub.templates = o.templates ?? [];
           stub.slots = o.slots ?? [];
+          stub.event = o.event ?? null;
+          stub.affected = o.affected ?? [];
+          stub.placeCount = o.placeCount ?? 0;
+          stub.putFields = o.putFields ?? null;
           await page.goto(`${origin}${path}`);
           await page.waitForSelector(".site-header");
           await page.waitForSelector(o.ready);
@@ -455,7 +531,7 @@ async function main() {
           await verify(label, o);
           for (const step of o.then ?? []) {
             await step.act();
-            await verify(`${label} > ${step.label}`, { form: o.form, ...step });
+            await verify(`${label} > ${step.label}`, { form: o.form, targets: o.targets, inside: o.inside, ...step });
           }
         };
 
@@ -509,6 +585,83 @@ async function main() {
           },
         });
 
+        // The lane states (admin side): every control at least 48px, and every row, lane row and field inside its card.
+        const SCHED_CONTROLS = ".sched-actions button";
+        const SCHED_INSIDE = [[".sched-place", ".sched-group"], [".sched-actions button", ".sched-place"]];
+        const PANEL_INSIDE = [...SCHED_INSIDE, [".sched-panel", ".sched-place"]];
+        await run("schedule, three lanes of two places", `/admin/schedule?slug=${SLUG}`, {
+          ready: ".sched-group", slots: LANE_SLOTS, event: LANED_EVENT, shot: "schedule-lanes", targets: SCHED_CONTROLS, inside: SCHED_INSIDE,
+          then: [
+            {
+              label: "Move panel open", shot: "schedule-lanes-move",
+              targets: `${SCHED_CONTROLS}, .sched-panel button, .sched-panel select`, inside: [...PANEL_INSIDE, [".sched-panel select", ".sched-panel"]],
+              act: async () => {
+                await page.click('button[aria-label="Move Bartholomew-Maximilian at 10:20 · Ring 1"]');
+                await page.waitForSelector("#pick-move");
+              },
+            },
+            {
+              label: "Add panel open", shot: "schedule-lanes-add",
+              targets: `${SCHED_CONTROLS}, .sched-panel button, .sched-panel input`, inside: [...PANEL_INSIDE, [".sched-panel input", ".sched-panel"]],
+              act: async () => {
+                await page.click(".sched-panel button:has-text('Cancel')");
+                await page.click('button[aria-label="Add booking at 10:20 · Indoor hall, far end"]');
+                await page.waitForSelector("#add-dog");
+              },
+            },
+          ],
+        });
+        const LANE_CONTROLS = ".lane-row button, .lane-row input, .lanes-group > button, #capacity";
+        const LANE_INSIDE = [[".lane-row", ".lanes-group"], [".lane-row input", ".lane-row"], [".lane-row button", ".lane-row"], ["#capacity", ".lanes-group"], [".lanes-group", "#event-form"]];
+        await run("edit, Lanes card with three lanes", `/admin/edit?slug=${SLUG}`, {
+          ready: "#lane-3-name", form, event: LANED_EVENT, placeCount: 6, ids: [...plain, ...breakIds(2)], shot: "edit-lanes",
+          targets: LANE_CONTROLS, inside: LANE_INSIDE,
+          then: [{
+            label: "errors under a lane and the places", shot: "edit-lanes-errors",
+            act: async () => {
+              stub.putFields = {
+                "lanes.2.name": "Two lanes can't have the same name. Give this lane a different name from the others.",
+                capacity: "Enter a whole number of places from 1 to 50.",
+              };
+              await page.fill("#lane-3-name", "Ring 1");
+              await page.click("button:has-text('Save changes')");
+              await page.waitForSelector("#lane-3-name-error:not(:empty)");
+            },
+          }],
+        });
+        await run("edit, a lane removed with bookings in it", `/admin/edit?slug=${SLUG}`, {
+          ready: "#lane-3-name", form, event: LANED_EVENT, placeCount: 4, affected: STRANDED, ids: [...plain, ...breakIds(2)], shot: "edit-lanes-affected",
+          targets: LANE_CONTROLS, inside: LANE_INSIDE,
+          prepare: async () => {
+            await page.click('button[aria-label="Remove lane 3"]');
+            await page.waitForSelector(".affected li");
+          },
+        });
+        const TPL_CONTROLS = ".lane-row button, .lane-row input, .lanes-group > button, #tpl-capacity";
+        const TPL_INSIDE = [[".lane-row", ".lanes-group"], [".lane-row input", ".lane-row"], [".lane-row button", ".lane-row"], ["#tpl-capacity", ".lanes-group"]];
+        await run("templates create, three lanes", "/admin/templates", {
+          ready: ".event-card", templates: LIST_TEMPLATES, form: tform, ids: [...tplIds, ...breakIds(0, "tpl-break")], shot: "template-create-lanes",
+          targets: TPL_CONTROLS, inside: TPL_INSIDE,
+          prepare: async () => {
+            await page.click("text=New template");
+            await page.waitForSelector(tform);
+            await page.click("text=Add lane");
+            await page.click("text=Add lane");
+            await page.fill("#tpl-lane-1-name", "Ring 1");
+            await page.fill("#tpl-lane-2-name", "Ring 2");
+            await page.fill("#tpl-lane-3-name", "Indoor hall, far end");
+            await page.fill("#tpl-capacity", "2");
+          },
+        });
+        await run("templates edit, a template with lanes", "/admin/templates", {
+          ready: ".event-card", templates: LIST_TEMPLATES, form: tform, ids: [...tplIds, ...breakIds(2, "tpl-break")], breakInputs: 4, shot: "template-edit-lanes",
+          targets: TPL_CONTROLS, inside: TPL_INSIDE,
+          prepare: async () => {
+            await page.click(`[aria-label="Edit ${LIST_TEMPLATES[1].name}"]`);
+            await page.waitForSelector("#tpl-lane-3-name");
+          },
+        });
+
         /** Loads the public booking page with `state` stubbed, runs `o.act`, then checks it and takes `o.shot`. */
         const runPublic = async (label, state, o) => {
           stub.public = PUBLIC_STATES[state];
@@ -559,7 +712,7 @@ async function main() {
     for (const f of failures) console.log(`  ${f}`);
     process.exit(1);
   }
-  console.log(`PASS (${engineName}): ${loads} page loads (${checked} checks) at ${WIDTHS.join(" and ")}px in light and dark, every date and time input fits its field, row and card, no overlaps, nothing past the screen edge, no sideways scroll; an error under one cell of a paired row leaves the other cell level (${pairedChecked} cases); the admin nav is whole and under the header band; the public booking page in ${publicChecked / (WIDTHS.length * schemes.length)} states: no sideways scroll, time and lane buttons at least 48px tall with their text whole, lane buttons inside their card and apart, three on one row at 390px${flag("shots") ? `; screenshots in ${shotsDir}` : ""}`);
+  console.log(`PASS (${engineName}): ${loads} page loads (${checked} checks) at ${WIDTHS.join(" and ")}px in light and dark, every date and time input fits its field, row and card, no overlaps, nothing past the screen edge, no sideways scroll; an error under one cell of a paired row leaves the other cell level (${pairedChecked} cases); the admin nav is whole and under the header band; the admin lane states (${laneChecked} checks): every control at least 48px, rows and fields inside their card; the public booking page in ${publicChecked / (WIDTHS.length * schemes.length)} states: no sideways scroll, time and lane buttons at least 48px tall with their text whole, lane buttons inside their card and apart, three on one row at 390px${flag("shots") ? `; screenshots in ${shotsDir}` : ""}`);
 }
 
 await main();

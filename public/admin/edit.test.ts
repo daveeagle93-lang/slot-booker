@@ -774,3 +774,243 @@ describe("the share message", () => {
     expect(document.querySelector("img")).toBeNull();
   });
 });
+
+describe("lanes and places", () => {
+  const RINGS = [{ id: 9001, name: "Ring 1" }, { id: 9002, name: "Ring 2" }, { id: 9003, name: "Ring 3" }];
+  const LANED = { ...DETAIL, event: { ...EVENT, lanes: RINGS, capacity: 2 } };
+  const inRing = (booking: typeof REX, n: number) => ({ ...booking, lane: RINGS[n - 1] });
+  const laneInputs = () => $$(".lane-row input") as HTMLInputElement[];
+  const laneName = (n: number, value: string) => {
+    laneInputs()[n].value = value;
+    laneInputs()[n].dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const removeLane = (n: number) => ($(`button[aria-label='Remove lane ${n}']`) as HTMLButtonElement).click();
+  const laned = (over: Options = {}) => start({ get: () => reply(200, LANED), ...over });
+  /** A preview that lists `booked` only when the draft drops lane 3 or lowers the places, as the server would. */
+  const strands = (booked: unknown[]) => (c: Call) =>
+    preview((c.body.lanes && c.body.lanes.length < 3) || (c.body.capacity !== undefined && c.body.capacity < 2) ? booked : []);
+
+  it("fills the lane rows from the event, in order, with the places, and shows no ids", async () => {
+    await laned();
+    expect(laneInputs().map((i) => i.value)).toEqual(["Ring 1", "Ring 2", "Ring 3"]);
+    expect($$(".lane-row legend").map((l) => l.textContent)).toEqual(["Lane 1", "Lane 2", "Lane 3"]);
+    expect(input("capacity").value).toBe("2");
+    expect(document.body.innerHTML).not.toContain("9001");
+    expect(document.body.innerHTML).not.toContain("9003");
+  });
+
+  it("shows one named lane as optional-name, and an event from before lanes as one unnamed lane with one place", async () => {
+    await start({ get: () => reply(200, { ...DETAIL, event: { ...EVENT, lanes: [{ id: 1, name: "Main ring" }], capacity: 1 } }) });
+    expect(laneInputs().map((i) => i.value)).toEqual(["Main ring"]);
+    expect($(".lane-row label").textContent).toBe("Lane name (optional)");
+    await start();
+    expect(laneInputs().map((i) => i.value)).toEqual([""]);
+    expect(input("capacity").value).toBe("1");
+  });
+
+  it("leaves lanes and capacity out of a save that didn't change them, and keeps the preview free of them too", async () => {
+    const { calls } = await laned();
+    await tick();
+    set("name", "Renamed");
+    submit();
+    await tick();
+    expect(puts(calls)[0].body).not.toHaveProperty("lanes");
+    expect(puts(calls)[0].body).not.toHaveProperty("capacity");
+    expect(previewCalls(calls)[0].body).not.toHaveProperty("lanes");
+    expect(previewCalls(calls)[0].body).not.toHaveProperty("capacity");
+  });
+
+  it("sends renamed lanes with their ids (hidden state), so bookings stay with them", async () => {
+    const { calls } = await laned();
+    await tick();
+    laneName(1, "  Paddock ");
+    submit();
+    await tick();
+    expect(puts(calls)[0].body.lanes).toEqual([{ id: 9001, name: "Ring 1" }, { id: 9002, name: "Paddock" }, { id: 9003, name: "Ring 3" }]);
+    expect(puts(calls)[0].body).not.toHaveProperty("capacity");
+  });
+
+  it("sends the remaining lanes with their ids after one was removed, and a new lane with none", async () => {
+    const { calls } = await laned();
+    await tick();
+    removeLane(2);
+    addLaneAndName("Ring 4");
+    submit();
+    await tick();
+    expect(puts(calls)[0].body.lanes).toEqual([{ id: 9001, name: "Ring 1" }, { id: 9003, name: "Ring 3" }, { name: "Ring 4" }]);
+    function addLaneAndName(name: string) {
+      buttonNamed("Add lane").click();
+      laneName(laneInputs().length - 1, name);
+    }
+  });
+
+  it("sends just the places when only they changed", async () => {
+    const { calls } = await laned();
+    await tick();
+    set("capacity", "3");
+    submit();
+    await tick();
+    expect(puts(calls)[0].body.capacity).toBe(3);
+    expect(puts(calls)[0].body).not.toHaveProperty("lanes");
+  });
+
+  it("previews a removed lane or lowered places through the event's own endpoint, with the lane ids and no typed names", async () => {
+    const { calls } = await laned({ preview: () => preview([], { placeCount: 6 }) });
+    await tick();
+    removeLane(3);
+    await settle();
+    expect(previewCalls(calls).at(-1)!.body.lanes).toEqual([{ id: 9001, name: "Lane 1" }, { id: 9002, name: "Lane 2" }]);
+    set("capacity", "1");
+    await settle();
+    expect(previewCalls(calls).at(-1)!.body).toMatchObject({ capacity: 1 });
+    expect(previewCalls(calls).at(-1)!.url).toBe(PREVIEW);
+  });
+
+  describe("the clash prompt", () => {
+    it("names the lane in each booking line, and says a removed lane is why", async () => {
+      await laned({ preview: strands([inRing(REX, 3), inRing(FLO, 3)]) });
+      await tick();
+      expect($(".affected").textContent).toBe("");
+      removeLane(3);
+      await settle();
+      expect($(".affected-title").textContent).toBe("2 bookings are in a lane you removed:");
+      expect(affectedLines()).toEqual(["10:05 — Ring 3 — Rex — Sam Smith", "10:25 — Ring 3 — Flo — Pat Jones"]);
+    });
+
+    it("says lowered places are why, in the singular for one", async () => {
+      await laned({ preview: strands([inRing(FLO, 1)]) });
+      await tick();
+      set("capacity", "1");
+      await settle();
+      expect($(".affected-title").textContent).toBe("1 booking is over the places you set for each lane:");
+      expect(affectedLines()).toEqual(["10:25 — Ring 1 — Flo — Pat Jones"]);
+    });
+
+    it("says every cause that applies, the times first", async () => {
+      await laned({ preview: strands([inRing(REX, 3)]) });
+      await tick();
+      removeLane(3);
+      set("capacity", "1");
+      set("end", "15:00");
+      await settle();
+      expect($(".affected-title").textContent).toBe(
+        "1 booking is on a time this change removes, or in a lane you removed, or over the places you set for each lane:");
+    });
+
+    it("keeps the wording for times alone, as an event with one lane has always had it", async () => {
+      await laned({ preview: (c) => preview(c.body.end === "15:00" ? [inRing(REX, 1)] : []) });
+      await tick();
+      set("end", "15:00");
+      await settle();
+      expect($(".affected-title").textContent).toBe("1 booking is on slots this change removes:");
+      expect(affectedLines()).toEqual(["10:05 — Ring 1 — Rex — Sam Smith"]);
+    });
+
+    it("asks before saving a lane removal, with the reason and who must rebook, and removes only those bookings once confirmed", async () => {
+      const { calls } = await laned({
+        preview: strands([inRing(REX, 3), inRing(FLO, 3)]),
+        put: () => reply(200, { ...SAVED, removed: [inRing(REX, 3), inRing(FLO, 3)] }),
+      });
+      await tick();
+      removeLane(3);
+      await settle();
+      submit();
+      await tick();
+      expect(puts(calls)).toHaveLength(0);
+      expect($(".confirm h2").textContent).toBe("Saving will remove 2 bookings. Tell these people to rebook:");
+      expect($(".confirm .note").textContent).toBe("These bookings are in a lane you removed.");
+      expect(confirmLines()).toEqual(["10:05 — Ring 3 — Rex — Sam Smith", "10:25 — Ring 3 — Flo — Pat Jones"]);
+      buttonNamed("Remove 2 bookings and save").click();
+      await tick();
+      expect(puts(calls)).toHaveLength(1);
+      expect(puts(calls)[0].body.removeBookingIds).toEqual([11, 12]);
+      expect(puts(calls)[0].body.lanes).toEqual([{ id: 9001, name: "Ring 1" }, { id: 9002, name: "Ring 2" }]);
+      expect(input("rebook-text").value).toBe("Please rebook: 10:05 — Ring 3 — Rex — Sam Smith\nPlease rebook: 10:25 — Ring 3 — Flo — Pat Jones");
+    });
+
+    it("asks before saving lowered places, singular, and sends the capacity with the confirmed id", async () => {
+      const { calls } = await laned({ preview: strands([inRing(FLO, 2)]), put: () => reply(200, { ...SAVED, removed: [inRing(FLO, 2)] }) });
+      await tick();
+      set("capacity", "1");
+      await settle();
+      submit();
+      await tick();
+      expect($(".confirm h2").textContent).toBe("Saving will remove 1 booking. Tell this person to rebook:");
+      expect($(".confirm .note").textContent).toBe("This booking is over the places you set for each lane.");
+      buttonNamed("Remove 1 booking and save").click();
+      await tick();
+      expect(puts(calls)[0].body).toMatchObject({ capacity: 1, removeBookingIds: [12] });
+      expect(input("rebook-text").value).toBe("Please rebook: 10:25 — Ring 2 — Flo — Pat Jones");
+    });
+
+    it("shows the server's list, with lanes, when the save is refused because bookings appeared (no preview to go on)", async () => {
+      const { calls } = await laned({
+        preview: () => reply(500, null),
+        put: () => reply(409, { error: { code: "bookings_affected" }, affected: [inRing(REX, 3)] }),
+      });
+      await tick();
+      removeLane(3);
+      submit();
+      await tick();
+      expect(puts(calls)).toHaveLength(1);
+      expect(confirmLines()).toEqual(["10:05 — Ring 3 — Rex — Sam Smith"]);
+      expect($(".confirm .note").textContent).toBe("This booking is in a lane you removed.");
+    });
+
+    it("leaves a confirmed booking off the rebook list when it is still on the event in one of its lanes' places", async () => {
+      const present = {
+        ...LANED, slots: [{ start: EVENT.startUtc, end: EVENT.startUtc, booking: null, places: [{ laneId: 9001, laneName: "Ring 1", free: 1, bookings: [{ id: 11, dogName: "Rex", handlerName: "Sam Smith" }] }] }],
+      };
+      let gets = 0;
+      await laned({
+        preview: strands([inRing(REX, 3), inRing(FLO, 3)]), put: () => reply(200, { ...SAVED, removed: [inRing(FLO, 3)] }),
+        get: () => reply(200, ++gets === 1 ? LANED : present),
+      });
+      await tick();
+      removeLane(3);
+      await settle();
+      submit();
+      await tick();
+      buttonNamed("Remove 2 bookings and save").click();
+      await tick();
+      expect(input("rebook-text").value).toBe("Please rebook: 10:25 — Ring 3 — Flo — Pat Jones");
+    });
+
+    it("writes a booking in an unnamed lane exactly as before", async () => {
+      await laned({ preview: () => preview([{ ...REX, lane: { id: 1, name: "" } }]) });
+      await tick();
+      expect(affectedLines()).toEqual(["10:05 — Rex — Sam Smith"]);
+    });
+  });
+
+  describe("field errors", () => {
+    it("maps lane and places errors from a refused save onto their inputs", async () => {
+      await laned({
+        put: () => reply(400, { error: { code: "invalid_input" }, fields: { "lanes.2.name": "Two lanes can't have the same name.", capacity: "Enter a whole number of places from 1 to 50." } }),
+      });
+      await tick();
+      laneName(2, "Ring 1");
+      set("capacity", "2000");
+      submit();
+      await tick();
+      const third = laneInputs()[2];
+      expect(document.getElementById(`${third.id}-error`)!.textContent).toBe("Two lanes can't have the same name.");
+      expect(third.getAttribute("aria-invalid")).toBe("true");
+      expect(document.getElementById("capacity-error")!.textContent).toBe("Enter a whole number of places from 1 to 50.");
+      expect(input("capacity").getAttribute("aria-invalid")).toBe("true");
+      expect(document.activeElement).toBe(third);
+    });
+
+    it("shows the server's words when the lanes or places were edited elsewhere meanwhile, in the form error, not against a field", async () => {
+      const message = "The lanes or places of this event were edited while you were working. Reload the page.";
+      await laned({ put: () => reply(409, { error: { code: "event_changed", message } }) });
+      await tick();
+      set("capacity", "3");
+      submit();
+      await tick();
+      expect($(".form-error").textContent).toBe(message);
+      expect($$("[aria-invalid='true']")).toHaveLength(0);
+      expect((buttonNamed("Save changes") as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+});

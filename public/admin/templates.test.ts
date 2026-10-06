@@ -15,6 +15,7 @@ const URL_BASE = "/api/admin/templates";
 type Template = {
   id: number; name: string; isDefault: boolean; details: string; venuePostcode: string; costPence: number; start: string; end: string;
   sessionMinutes: number; gapMinutes: number; breaks: { start: string; end: string; label: string }[]; shareMessage: string;
+  lanes?: { name: string }[]; capacity?: number;
 };
 const SATURDAY: Template = {
   id: 1, name: "Saturday trial", isDefault: true, details: "Bring water", venuePostcode: "AB1 2CD", costPence: 1200,
@@ -166,7 +167,7 @@ describe("creating", () => {
     const labels = $$("label").map((l) => l.textContent);
     expect(labels).toEqual([
       "Template name", "Use as the default for new events", "Details (optional)", "Venue postcode", "Cost (£)", "Start time", "End time",
-      "Session length (minutes)", "Gap between sessions (minutes)", "Share message (optional)",
+      "Session length (minutes)", "Gap between sessions (minutes)", "Lane name (optional)", "Places per lane per time", "Share message (optional)",
     ]);
     for (const label of $$("label")) expect(document.getElementById(label.getAttribute("for")!), label.textContent!).not.toBeNull();
     expect(button("Create template")).toBeDefined();
@@ -724,5 +725,181 @@ describe("unknownPlaceholders", () => {
   it("returns each unknown word once, in order, and ignores known ones and braces without a word", () => {
     expect(unknownPlaceholders("{event} {foo} {bar} {foo} {link} {} { x } {{baz}}")).toEqual(["{foo}", "{bar}", "{baz}"]);
     expect(unknownPlaceholders("plain")).toEqual([]);
+  });
+});
+
+describe("lanes and places", () => {
+  const RINGS: Template = { ...EVENING, id: 3, name: "Rings", lanes: [{ name: "Ring 1" }, { name: "Ring 2" }, { name: "Ring 3" }], capacity: 2 };
+  const laneInputs = () => $$(".lane-row input") as HTMLInputElement[];
+  const laneName = (n: number, value: string) => {
+    laneInputs()[n].value = value;
+    laneInputs()[n].dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const removeButton = (n: number) => $(`button[aria-label='Remove lane ${n}']`) as HTMLButtonElement;
+  const edit = (name: string) => { cardButton(name, "Edit").click(); };
+
+  describe("the list", () => {
+    it("summarises a template that isn't one lane with one place, and says nothing for the default layout", async () => {
+      await start({ templates: [SATURDAY, RINGS, { ...EVENING, id: 4, name: "Wide", lanes: [{ name: "" }], capacity: 3 }, { ...EVENING, id: 5, name: "Long", lanes: [{ name: "A" }, { name: "B" }], capacity: 1 }, { ...EVENING, id: 6, name: "Plain", lanes: [{ name: "" }], capacity: 1 }] });
+      const line = (name: string) => cardOf(name).querySelector(".note")?.textContent ?? null;
+      expect(line("Saturday trial")).toBeNull();
+      expect(line("Plain")).toBeNull();
+      expect(line("Rings")).toBe("3 lanes × 2 places");
+      expect(line("Wide")).toBe("1 lane × 3 places");
+      expect(line("Long")).toBe("2 lanes × 1 place");
+    });
+
+    it("passes the lanes and places through when making a template the default", async () => {
+      const { calls } = await start({ templates: [SATURDAY, RINGS] });
+      cardButton("Rings", "Make default").click();
+      await flush();
+      expect(writes(calls)[0].body).toMatchObject({ lanes: [{ name: "Ring 1" }, { name: "Ring 2" }, { name: "Ring 3" }], capacity: 2, isDefault: true });
+    });
+  });
+
+  describe("the form", () => {
+    it("starts a new template with one lane, optional name, a hint, no Remove, and one place", async () => {
+      await start();
+      button("New template").click();
+      expect(laneInputs()).toHaveLength(1);
+      expect($(".lane-row label").textContent).toBe("Lane name (optional)");
+      expect(document.getElementById(`${laneInputs()[0].id}-hint`)!.hidden).toBe(false);
+      expect(removeButton(1).hidden).toBe(true);
+      expect(field("tpl-capacity").value).toBe("1");
+      expect($("label[for='tpl-capacity']").textContent).toBe("Places per lane per time");
+      expect(field("tpl-capacity").getAttribute("aria-describedby")).toBe("tpl-capacity-hint tpl-capacity-error");
+    });
+
+    it("adds and removes lanes like the event form does, and the last one can't be removed", async () => {
+      await start();
+      button("New template").click();
+      button("Add lane").click();
+      expect(document.activeElement).toBe(laneInputs()[1]);
+      expect($$(".lane-row label").map((l) => l.textContent)).toEqual(["Name", "Name"]);
+      expect($$(".lane-row legend").map((l) => l.textContent)).toEqual(["Lane 1", "Lane 2"]);
+      expect(laneInputs().map((i) => i.required)).toEqual([true, true]);
+      expect(removeButton(1).hidden).toBe(false);
+      removeButton(1).click();
+      expect(laneInputs()).toHaveLength(1);
+      expect($(".lane-row label").textContent).toBe("Lane name (optional)");
+      expect(removeButton(1).hidden).toBe(true);
+      expect(document.activeElement).toBe(button("Add lane"));
+      for (let i = 0; i < 9; i++) button("Add lane").click();
+      expect(button("Add lane").disabled).toBe(true);
+    });
+
+    it("loads a template's lanes and places for editing, and an old one as one unnamed lane with one place", async () => {
+      await start({ templates: [RINGS, SATURDAY] });
+      edit("Rings");
+      expect(laneInputs().map((i) => i.value)).toEqual(["Ring 1", "Ring 2", "Ring 3"]);
+      expect(field("tpl-capacity").value).toBe("2");
+      ($("a.back") as HTMLElement).click();
+      edit("Saturday trial");
+      expect(laneInputs().map((i) => i.value)).toEqual([""]);
+      expect(field("tpl-capacity").value).toBe("1");
+    });
+
+    it("creates with lanes (names only, trimmed, in order) and places", async () => {
+      const { calls, server } = await start();
+      button("New template").click();
+      fillMinimum();
+      button("Add lane").click();
+      button("Add lane").click();
+      laneName(0, " Ring 1 ");
+      laneName(1, "Ring 2");
+      laneName(2, "Ring 3");
+      set("tpl-capacity", "2");
+      submit();
+      await flush();
+      expect(writes(calls)[0].body).toMatchObject({ lanes: [{ name: "Ring 1" }, { name: "Ring 2" }, { name: "Ring 3" }], capacity: 2 });
+      expect(server.templates.at(-1)!.lanes).toEqual([{ name: "Ring 1" }, { name: "Ring 2" }, { name: "Ring 3" }]);
+      expect(status()).toBe("Created Weekday.");
+      expect(cardOf("Weekday").querySelector(".note")!.textContent).toBe("3 lanes × 2 places");
+    });
+
+    it("leaves lanes and places out when they are one unnamed lane and one place, and sends only what changed on an edit", async () => {
+      const { calls } = await start({ templates: [RINGS, SATURDAY] });
+      button("New template").click();
+      fillMinimum();
+      submit();
+      await flush();
+      expect(writes(calls)[0].body).not.toHaveProperty("lanes");
+      expect(writes(calls)[0].body).not.toHaveProperty("capacity");
+      edit("Rings");
+      set("tpl-name", "Rings, renamed");
+      submit();
+      await flush();
+      expect(writes(calls)[1].body).not.toHaveProperty("lanes");
+      expect(writes(calls)[1].body).not.toHaveProperty("capacity");
+      edit("Rings, renamed");
+      laneName(1, "Paddock");
+      set("tpl-capacity", "4");
+      submit();
+      await flush();
+      expect(writes(calls)[2].body).toMatchObject({ lanes: [{ name: "Ring 1" }, { name: "Paddock" }, { name: "Ring 3" }], capacity: 4 });
+    });
+
+    it("sends an unreadable number of places as null, so the server's message shows against that field", async () => {
+      const { calls } = await start({
+        override: (c) => (c.method === "POST" ? reply(400, { error: { code: "invalid_input" }, fields: { capacity: "Enter a whole number of places from 1 to 50." } }) : undefined),
+      });
+      button("New template").click();
+      fillMinimum();
+      set("tpl-capacity", "");
+      submit();
+      await flush();
+      expect(writes(calls)[0].body.capacity).toBeNull();
+      expect(errorOf("tpl-capacity")).toBe("Enter a whole number of places from 1 to 50.");
+      expect(field("tpl-capacity").getAttribute("aria-invalid")).toBe("true");
+      expect(document.activeElement).toBe(field("tpl-capacity"));
+      set("tpl-capacity", "2");
+      expect(errorOf("tpl-capacity")).toBe("");
+    });
+
+    it("maps lanes.N.name onto lane N, and the list-level messages under the lanes", async () => {
+      await start({
+        override: (c) => (c.method === "POST"
+          ? reply(400, { error: { code: "invalid_input" }, fields: { "lanes.1.name": "Two lanes can't have the same name.", "lanes.0.name": "Each lane needs a name." } })
+          : undefined),
+      });
+      button("New template").click();
+      fillMinimum();
+      button("Add lane").click();
+      laneName(1, "Same");
+      submit();
+      await flush();
+      const [first, second] = laneInputs();
+      expect(errorOf(first.id)).toBe("Each lane needs a name.");
+      expect(errorOf(second.id)).toBe("Two lanes can't have the same name.");
+      expect([first.getAttribute("aria-invalid"), second.getAttribute("aria-invalid")]).toEqual(["true", "true"]);
+      expect(document.activeElement).toBe(first);
+      laneName(0, "Other");
+      expect(errorOf(first.id)).toBe("");
+    });
+
+    it("shows a lanes list error under the lanes, and clears it when a lane is added", async () => {
+      await start({ override: (c) => (c.method === "POST" ? reply(400, { error: { code: "invalid_input" }, fields: { lanes: "You can have at most 10 lanes." } }) : undefined) });
+      button("New template").click();
+      fillMinimum();
+      submit();
+      await flush();
+      expect(errorOf("tpl-lanes")).toBe("You can have at most 10 lanes.");
+      expect($("#tpl-summary, .form-error").textContent).toBe("");
+      button("Add lane").click();
+      expect(errorOf("tpl-lanes")).toBe("");
+    });
+
+    it("fills {lanes} in the share preview from the lanes typed, and drops the line for one unnamed lane", async () => {
+      await start();
+      button("New template").click();
+      set("tpl-share", "{lanes}\n{link}");
+      expect(preview()).toBe("https://club.example/e/example");
+      button("Add lane").click();
+      laneName(0, "Ring 1");
+      laneName(1, "Ring 2");
+      expect(preview()).toBe("Ring 1, Ring 2\nhttps://club.example/e/example");
+      removeButton(2).click();
+      expect(preview()).toBe("Ring 1\nhttps://club.example/e/example");
+    });
   });
 });

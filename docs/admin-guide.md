@@ -179,6 +179,7 @@ You can edit the event afterwards, so a slip is easy to fix.
 - "Cost (£)". Type 12 or 12.50. Type 0 if it's free. People then see "Free".
 - "Venue postcode". 2 to 10 letters and numbers. People see it as a link to a map.
 - "Details (optional)". Up to 2000 characters. People see it on the booking page and after they book. A good place to say how to contact you to change a booking.
+- "Lane name (optional)" and "Places per lane per time". Most events leave these alone: one lane, one place. See [Lanes and places](#lanes-and-places).
 - "Share message (optional)". Up to 1000 characters. The wording used when you share this event, with placeholders such as {event} and {date}. Leave it blank to use your default template's message. See [Templates](#4-templates).
 - "Listed on the home page". Ticked by default. See below.
 
@@ -186,7 +187,7 @@ An event can have at most 500 slots.
 
 ### Schedule preview
 
-Once the date, times, session length and gap are filled in, a "Schedule preview" appears. It says how many slots there are and lists the start times. Check it before you save. Until then it says "Fill in the highlighted fields to see the schedule."
+Once the date, times, session length and gap are filled in, a "Schedule preview" appears. It says how many slots there are and lists the start times. With more than one lane or place per time, the "Lanes" card under the breaks also adds a line such as "12 times × 3 lanes × 2 places = 72 places". Check it before you save. Until then it says "Fill in the highlighted fields to see the schedule."
 
 ### Breaks
 
@@ -244,6 +245,7 @@ A template is a saved set of answers for the event form, so you don't type the s
 - "Details (optional)", "Venue postcode" and "Cost (£)", as in the event form.
 - "Start time", "End time", "Session length (minutes)" and "Gap between sessions (minutes)".
 - Breaks, each with a start, an end and an optional name.
+- Lanes (names only) and the places per lane per time, as in [Lanes and places](#lanes-and-places).
 - A share message (see below).
 
 It holds no event name and no date. You choose those for each event. You can have at most 20 templates.
@@ -257,7 +259,7 @@ It holds no event name and no date. You choose those for each event. You can hav
 
 A box that the server doesn't accept shows its message under it, and the page moves to the first one. For breaks, the message appears under the break it is about.
 
-The list shows each template's name, "Default" on the default one, and a line such as "09:00–16:00, 20 min sessions, £12.00". Each has "Edit" and "Delete", and every template except the default has "Make default".
+The list shows each template's name, "Default" on the default one, and a line such as "09:00–16:00, 20 min sessions, £12.00". A template with more than one lane or place per time has a second line such as "3 lanes × 2 places". Each has "Edit" and "Delete", and every template except the default has "Make default".
 
 ### The default template
 
@@ -270,8 +272,8 @@ The default is used in two ways: it fills in the create-event form, and its shar
 On the create-event page, a "Template" box at the top lists "No template" and each of your templates, with "(default)" after the default one.
 
 - When the page opens, your default template fills the form in by itself, but only if you haven't typed anything by then. If you had already started, nothing is replaced and the box stays on "No template".
-- Choosing a template fills in the details, postcode, cost, start and end times, session length, gap, breaks and share message. It replaces what is in those boxes now, including anything you typed there. It never changes the event name, the date or "Listed on the home page". The page says "Filled in from the template" and its name, and the schedule preview updates.
-- Choosing "No template" empties exactly those boxes and removes the breaks. It says "Cleared the template fields."
+- Choosing a template fills in the details, postcode, cost, start and end times, session length, gap, breaks, lane names, places per lane and share message. It replaces what is in those boxes now, including anything you typed there. It never changes the event name, the date or "Listed on the home page". The page says "Filled in from the template" and its name, and the schedule preview updates.
+- Choosing "No template" empties exactly those boxes, removes the breaks and goes back to one unnamed lane with one place. It says "Cleared the template fields."
 - You can still change anything afterwards.
 
 If the templates can't be loaded, the box is hidden and the page says so; the form still works by hand. If you have no templates yet, there is a link "Create a template to save time".
@@ -403,6 +405,8 @@ This part is for adding, moving, swapping and removing bookings yourself.
 
 Breaks show too, in time order.
 
+With one lane and one place per time, that is the whole page. If the lane has a name, the name is shown in each row. With more places or lanes, each time is a heading with how many places are free ("6 free", or "Full"). Under it there is a row for each booking, with the lane name when the lanes have names, the dog and handler, and "Move", "Swap" and "Clear". For each lane that still has room there is one row saying how many places are free, with "Add booking". Everything below works the same way: the buttons are just on the row you mean.
+
 After each action the page reloads the list so you see what is really saved. A line at the top says what happened.
 
 ### Add a booking for someone
@@ -420,13 +424,15 @@ After each action the page reloads the list so you see what is really saved. A l
 
 If nothing is free you see "There are no free slots to move it to."
 
+With more places or lanes the box says "New place" and lists every time and lane that has room, such as "10:30 · Ring 2 (1 left)". The booking's own place is not listed, but the same time in another lane is, so you can move someone to another ring without changing the time. If there is no room anywhere you see "There are no free places to move it to."
+
 ### Swap two bookings
 
 1. On one of the bookings, tap "Swap".
 2. Under "Swap with", pick the other booking.
 3. Tap "Swap bookings".
 
-Each person keeps their own booking. They just trade times.
+Each person keeps their own booking. They just trade times. With lanes the choices name the time and lane ("10:30 · Ring 2: Rex (Sam)"), and the two bookings trade lane, time and place.
 
 ### Remove a booking
 
@@ -434,12 +440,12 @@ Each person keeps their own booking. They just trade times.
 2. Read "Clear this booking?"
 3. Tap "Clear booking".
 
-The person is not told. The page says "They won't be told. You need to let them know."
+With lanes the question names the time and the lane. The person is not told. The page says "They won't be told. You need to let them know."
 
 ### Rules and clashes
 
 - You can add or move bookings after bookings have closed, and into slots that have already started. This is meant for sorting out the day itself.
-- A slot holds one booking, for an event with one lane and one place per time. If it is taken, you see "That slot is already taken by" the dog and handler. The list refreshes. Events with more lanes or places are described under [Lanes and places](#lanes-and-places).
+- A slot holds one booking, for an event with one lane and one place per time. If it is taken, you see "That slot is already taken by" the dog and handler. The list refreshes. With more lanes or places, a lane that is full says, for example, "Ring 1 at 10:30 is full." and the list refreshes. See [Lanes and places](#lanes-and-places).
 - A dog and handler can only have one booking per event. Capital letters, extra spaces and hidden characters do not make a name different. If they already have one, you are told which time.
 - If someone else changed things while you were working, you see "That changed while you were working. The schedule has been refreshed."
 - Names have the same rules as when people book. See [If something looks wrong](#10-if-something-looks-wrong).
@@ -466,7 +472,7 @@ Name, cost, venue postcode, details and "Listed on the home page" do not touch b
 
 Date, times, session length, gap and breaks change the slots. A booking is affected when its start time is no longer one of the event's slots. Removing a lane, or lowering the places per lane, can affect bookings too: see [Lanes and places](#lanes-and-places).
 
-The page warns you while you edit. Under "Schedule preview" you see a count, such as "1 booking is on slots this change removes:". Then you see each person, like "10:05 — Rex — Sam Smith". It adds "You'll be asked to confirm before anything is removed."
+The page warns you while you edit. Under "Schedule preview" you see a count, such as "1 booking is on slots this change removes:". Then you see each person, like "10:05 — Rex — Sam Smith" (with the lane after the time when it has a name: "10:05 — Ring 1 — Rex — Sam Smith"). When a lane you removed or lowered places is the reason, the count says so ("1 booking is in a lane you removed:", "1 booking is over the places you set for each lane:"). It adds "You'll be asked to confirm before anything is removed."
 
 When you tap "Save changes" with affected bookings, nothing is saved yet. You see a screen headed "Saving will remove" a number of bookings, "Tell these people to rebook:", with the list.
 
@@ -477,22 +483,33 @@ If a new booking appears while you are editing, you see "Another booking has app
 
 ### Lanes and places
 
-This section describes what the system does. The admin screens for it are not built yet, so for now it can only be used through the admin API (the event, template and booking requests).
+An event has one or more **lanes** (rings that run at the same time, up to 10) and a number of **places** per lane at each time (1 to 50). A new event has one unnamed lane with one place, which is how every event worked before. An event can have at most 2000 places in all: times, multiplied by lanes, multiplied by places per lane.
 
-An event has one or more **lanes** (rings that run at the same time, up to 10) and a number of **places** per lane at each time (1 to 50). A new event has one unnamed lane with one place, which is how every event worked before. With two or more lanes every lane needs a name, and no two may have the same name (capital letters don't make a name different). An event can have at most 2000 places in all: times, multiplied by lanes, multiplied by places per lane. A template holds lanes and places too, and an event made from it gets its own copy.
+**Setting them.** On the create and edit pages, the "Lanes" card sits under the breaks. It has one row for each lane.
 
-When you edit an event, a lane you keep is renamed or reordered without losing its bookings, a lane you leave out is removed, and a lane you add is new. Adding a booking needs a lane when the event has two or more, and goes to the lowest free place there. Moving a booking can change its lane as well as its time, and swapping two bookings makes them trade lane, time and place.
+- With one lane, "Lane name (optional)" can stay blank ("Leave blank if you only have one"). Give it a name if you like, such as "Main ring".
+- Tap "Add lane" for another. From two lanes up, every lane needs a name, and no two may have the same name (capital letters don't make a name different). Each lane has "Remove", except that the last lane can't be removed. You can have up to 10, and "Add lane" greys out there.
+- "Places per lane per time" is how many bookings one lane takes at the same time. It stays at 1 for one booking per time.
+- Under it you see a line such as "12 times × 3 lanes × 2 places = 72 places" once the schedule is complete. It is left out for one lane with one place. An event with more than 2000 places is refused, with a message under the lanes or the places.
 
-Saving an edit that would leave bookings with nowhere to go works as in "Changes that can remove bookings": nothing is saved until you confirm the list. A booking is on that list when its time is no longer a slot, when its lane is removed, or when there are more bookings in a lane at a time than the new number of places. In the last case the people who booked first keep their places and the latest bookings are listed. The bookings that stay are renumbered, so the places always count 1, 2, 3 and so on.
+A name or number the server doesn't accept shows its message under that lane (or under "Places per lane per time"), and the page moves to the first one.
 
-If someone else changed the lanes or the places while you were working, saving them from an older view is refused (the page asks you to reload) so their change is not overwritten.
+**Editing.** A lane you rename keeps its bookings: lanes are matched behind the scenes, not by name. A lane you remove is gone, and a lane you add is new. Adding a booking goes to the lowest free place in the lane you chose. If someone else changed the lanes or the places while you were working, saving from an older page is refused with a message to reload, so their change is not overwritten.
+
+**When bookings don't fit.** Saving an edit that would leave bookings with nowhere to go works as in "Changes that can remove bookings": nothing is saved until you confirm the list. A booking is on that list when its time is no longer a slot, when its lane is removed, or when there are more bookings in a lane at a time than the new number of places. The people who booked first keep their places and the latest bookings are listed. The list and the confirmation screen say why ("in a lane you removed", "over the places you set for each lane"), and each person's line names their lane when it has a name. The bookings that stay are renumbered, so the places always count 1, 2, 3 and so on. After saving, the "Removed bookings" message lists the same lines.
+
+**Templates.** A template has the same "Lanes" card (names only, since a template has no bookings) and "Places per lane per time". Choosing the template on the create page copies them into the form, and the event keeps its own copy.
+
+**The schedule page.** See [Fixing bookings](#6-fixing-bookings): each time lists its bookings by lane, with "Add booking" for each lane that has room, and Move, Swap and Clear name the lane.
+
+**The events list.** An event with more or fewer places than times shows "n of P places booked" instead of "n of m slots booked".
 
 What the outputs show for lanes and places:
 
 - **The lineup** has one line per place. An event with one unnamed lane reads as it always did ("10:00 — Rex — Sam", "10:00 — free"; with several places, the bookings first, then a "free" line for each free place). Otherwise each line names the lane after the time ("10:00 Ring 1 — Rex — Sam", "10:00 Ring 1 — free"), in time order, then lane order, then place. A single lane that has a name is named too.
 - **The CSV** gets a "Lane" column after "Time", but only when the event has a named lane. The rows are in time order, then lane order, then place.
 - **The calendar entry** (.ics) a booker adds says "Slot: 10:00–10:30, Ring 1" when the event has a named lane, and is otherwise unchanged. The entry's title, location and identity are unchanged.
-- **The share message** has a {lanes} placeholder: the lane names separated by commas. It is blank for an event with one unnamed lane, so a line holding only {lanes} is left out. Share from the schedule page or after creating an event fills it in; Share on the events list does not yet (the list doesn't carry the lane names).
+- **The share message** has a {lanes} placeholder: the lane names separated by commas. It is blank for an event with one unnamed lane, so a line holding only {lanes} is left out. Share fills it in from the events list, the schedule page and the "Event created" page.
 
 ### After saving
 
