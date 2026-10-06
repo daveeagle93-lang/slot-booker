@@ -100,9 +100,16 @@ export const orphanBookings = (bookings: StoredBooking[], event: Pick<EventRow, 
 };
 
 /**
- * The saved schedule with each slot's booking, and any booking whose slot is not in it (there should be none).
+ * The saved schedule with each slot's bookings, and any booking that is not where the event can hold it (`orphans`: its time is
+ * not a slot, its lane is gone, or its place is beyond the capacity; there should be none).
+ *
+ * Each slot has `places`: one entry per lane in lane order, with the lane's `bookings` (in place order) and how many places are
+ * `free`. `booking` is the v1.0 key: the slot's booking when the event has exactly one lane and one place per time, and null
+ * otherwise (an event with several lanes or places uses `places`).
+ *
  * `lineup` is the WhatsApp text for the schedule page's Copy button, built here so the page can copy it
- * synchronously from what it already loaded (a clipboard write has to happen inside the click).
+ * synchronously from what it already loaded (a clipboard write has to happen inside the click). It still shows one booking per
+ * time, the first by lane and place: the lineup for lanes and places is a separate piece of work.
  * `defaultShareMessage` is the default template's share message ("" if none), for events that have none of their own.
  */
 export async function eventDetail(db: D1Database, event: EventRow) {
@@ -112,19 +119,31 @@ export async function eventDetail(db: D1Database, event: EventRow) {
   const [bookings, { clubName }, defaultMessage] = await Promise.all([
     loadBookings(db, event.id), loadSettings(db), defaultShareMessageStatement(db).first<{ share_message: string }>(),
   ]);
-  // One booking per slot is shown: the first by lane and place (the schedule page is not lane-aware yet).
-  const bySlot = new Map<string, BookingRef>();
-  for (const b of bookings) if (!bySlot.has(b.slotStart)) bySlot.set(b.slotStart, b);
+  const orphans = orphanBookings(bookings, event, slots);
+  const orphanIds = new Set(orphans.map((b) => b.id));
+  const at = new Map<string, StoredBooking[]>(); // by slot and lane, in place order (loadBookings' order)
+  for (const b of bookings) if (!orphanIds.has(b.id)) at.set(`${b.slotStart}|${b.lane.id}`, [...(at.get(`${b.slotStart}|${b.lane.id}`) ?? []), b]);
+  const single = event.lanes.length === 1 && event.capacity === 1;
   const withBookings = slots.map((s) => {
-    const b = bySlot.get(s.start);
-    return { ...s, booking: b ? { id: b.id, dogName: b.dogName, handlerName: b.handlerName } : null };
+    const places = event.lanes.map((l) => {
+      const held = at.get(`${s.start}|${l.id}`) ?? [];
+      return {
+        laneId: l.id, laneName: l.name, free: Math.max(0, event.capacity - held.length),
+        bookings: held.map((b) => ({ id: b.id, dogName: b.dogName, handlerName: b.handlerName })),
+      };
+    });
+    const first = places.flatMap((p) => p.bookings)[0];
+    return { ...s, booking: single ? first ?? null : null, places, lineupBooking: first ?? null };
   });
   return {
     event: eventView(event),
-    slots: withBookings,
-    orphans: orphanBookings(bookings, event, slots).map(toRef),
+    slots: withBookings.map(({ lineupBooking: _unused, ...s }) => s),
+    orphans: orphans.map(toRef),
     defaultShareMessage: defaultMessage?.share_message ?? "",
-    lineup: buildLineup({ clubName, name: event.name, venuePostcode: event.venuePostcode, startUtc: event.startUtc, slots: withBookings, breaks: event.breaks }),
+    lineup: buildLineup({
+      clubName, name: event.name, venuePostcode: event.venuePostcode, startUtc: event.startUtc,
+      slots: withBookings.map((s) => ({ start: s.start, end: s.end, booking: s.lineupBooking })), breaks: event.breaks,
+    }),
   };
 }
 

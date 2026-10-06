@@ -64,10 +64,10 @@ const book = (slug: string, slot: string, dog: string, handler: string, o: { lan
   send(`/api/events/${slug}/bookings`, {
     method: "POST", body: { slot, dogName: dog, handlerName: handler, idempotencyKey: o.key ?? generateBookingToken(), ...(o.laneId === undefined ? {} : { laneId: o.laneId }) },
   });
-const adminAdd = (slug: string, slot: string, dog: string, handler: string) =>
-  send(`/api/admin/events/${slug}/bookings`, { method: "POST", admin: true, body: { slot, dogName: dog, handlerName: handler } });
-const adminMove = (slug: string, id: number, fromSlot: string, toSlot: string) =>
-  send(`/api/admin/events/${slug}/bookings/${id}/move`, { method: "POST", admin: true, body: { fromSlot, toSlot } });
+const adminAdd = (slug: string, slot: string, dog: string, handler: string, laneId?: number) =>
+  send(`/api/admin/events/${slug}/bookings`, { method: "POST", admin: true, body: { slot, dogName: dog, handlerName: handler, ...(laneId === undefined ? {} : { laneId }) } });
+const adminMove = (slug: string, id: number, fromSlot: string, toSlot: string, toLane?: number) =>
+  send(`/api/admin/events/${slug}/bookings/${id}/move`, { method: "POST", admin: true, body: { fromSlot, toSlot, ...(toLane === undefined ? {} : { toLane }) } });
 
 const tally = (answers: Answer[]) => {
   const out: Record<string, number> = {};
@@ -157,6 +157,70 @@ describe("booking places under concurrent requests", () => {
       expect(answers.filter((x) => x.status === 201), `round ${round}`).toHaveLength(1);
       expect(answers.filter((x) => x.status === 409 && x.code === "slot_taken"), `round ${round}`).toHaveLength(1);
       expect(await rows(e.id), `round ${round}`).toHaveLength(1);
+    }
+  }, 120_000);
+
+  it(`parallel admin moves from several lanes into the one free place of a lane: exactly one wins, the others get slot_taken (repeated)`, async () => {
+    for (let round = 0; round < ITERATIONS; round++) {
+      const e = await insertEvent(t.env.DB, { ...DAY, lanes: ["Ring 1", "Ring 2", "Ring 3"] });
+      const [l1, l2, l3] = e.laneIds;
+      const a = await insertBooking(t.env.DB, e.id, slotAt(0), "Rex", "Sam", { laneId: l1 });
+      const b = await insertBooking(t.env.DB, e.id, slotAt(1), "Fido", "Ann", { laneId: l2 });
+      const c = await insertBooking(t.env.DB, e.id, slotAt(2), "Bo", "Cy", { laneId: l3 });
+      const answers = await Promise.all([adminMove(e.slug, a, slotAt(0), slotAt(5), l3), adminMove(e.slug, b, slotAt(1), slotAt(5), l3), adminMove(e.slug, c, slotAt(2), slotAt(5))]);
+      expect(tally(answers), `round ${round}`).toEqual({ "200": 1, "409 slot_taken": 2 });
+      expect((await rows(e.id)).filter((r) => r.slot_start_utc === slotAt(5) && r.lane_id === l3), `round ${round}`).toHaveLength(1);
+    }
+  }, 120_000);
+
+  it(`parallel admin moves and adds into a capacity-3 lane with one place left, and a public booking: exactly one takes the place, places stay 1 to 3 (repeated)`, async () => {
+    for (let round = 0; round < ITERATIONS; round++) {
+      const e = await insertEvent(t.env.DB, { ...DAY, capacity: 3, lanes: ["Ring 1", "Ring 2"] });
+      const [l1, l2] = e.laneIds;
+      await insertBooking(t.env.DB, e.id, slotAt(5), "H1", "X", { laneId: l1 });
+      await insertBooking(t.env.DB, e.id, slotAt(5), "H2", "X", { laneId: l1 });
+      const m1 = await insertBooking(t.env.DB, e.id, slotAt(0), "Rex", "Sam", { laneId: l2 });
+      const m2 = await insertBooking(t.env.DB, e.id, slotAt(1), "Fido", "Ann", { laneId: l2 });
+      const answers = await Promise.all([
+        adminMove(e.slug, m1, slotAt(0), slotAt(5), l1), adminMove(e.slug, m2, slotAt(1), slotAt(5), l1),
+        adminAdd(e.slug, slotAt(5), "Added", "Admin", l1), book(e.slug, slotAt(5), "Pub", "Lic", { laneId: l1 }),
+      ]);
+      expect(answers.filter((x) => x.status === 200 || x.status === 201), `round ${round}`).toHaveLength(1);
+      expect((await rows(e.id)).filter((r) => r.slot_start_utc === slotAt(5) && r.lane_id === l1).map((r) => r.place), `round ${round}`).toEqual([1, 2, 3]);
+    }
+  }, 120_000);
+
+  it(`parallel admin adds into a capacity-2 lane: exactly 2 are created, the rest slot_taken, and they never share a place (repeated)`, async () => {
+    for (let round = 0; round < ITERATIONS; round++) {
+      const e = await insertEvent(t.env.DB, { ...DAY, capacity: 2, lanes: ["Ring 1", "Ring 2"] });
+      const answers = await Promise.all(Array.from({ length: 6 }, (_, i) => adminAdd(e.slug, slotAt(0), `D${i}`, `H${i}`, e.laneIds[1])));
+      expect(tally(answers), `round ${round}`).toEqual({ "201": 2, "409 slot_taken": 4 });
+      expect((await rows(e.id)).map((r) => [r.lane_id, r.place]), `round ${round}`).toEqual([[e.laneIds[1], 1], [e.laneIds[1], 2]]);
+    }
+  }, 120_000);
+
+  it(`an edit of the layout racing a burst of bookings: every booking is either in place before the edit or refused, never in a lane or place the edit removed (repeated)`, async () => {
+    for (let round = 0; round < ITERATIONS; round++) {
+      const e = await insertEvent(t.env.DB, { ...DAY, capacity: 2, lanes: ["Ring 1", "Ring 2"] });
+      const [l1] = e.laneIds;
+      const edit = send(`/api/admin/events/${e.slug}`, {
+        method: "PUT", admin: true,
+        body: {
+          name: "Edited", date: "2026-10-17", start: "09:00", end: "12:00", sessionMinutes: 15, gapMinutes: 0, costPence: 0, venuePostcode: "AB1 2CD", details: "",
+          breaks: [], lanes: [{ id: l1, name: "Ring 1" }], capacity: 1,
+        },
+      });
+      const bookings = Array.from({ length: 8 }, (_, i) => book(e.slug, slotAt(i % 2), `D${i}`, `H${i}`, { laneId: e.laneIds[i % 2] }));
+      const [saved] = await Promise.all([edit, ...bookings]);
+      // Either the edit saved (409 bookings_affected is fine too: the answer then lists what is in the way) and the database is consistent.
+      expect([200, 409], `round ${round}`).toContain(saved.status);
+      const stored = await rows(e.id);
+      const lanes = (await t.env.DB.prepare("SELECT id FROM event_lanes WHERE event_id = ?").bind(e.id).all<{ id: number }>()).results.map((l) => l.id);
+      const capacity = (await t.env.DB.prepare("SELECT capacity FROM event_layout WHERE event_id = ?").bind(e.id).first<{ capacity: number }>())!.capacity;
+      for (const r of stored) {
+        expect(lanes, `round ${round}`).toContain(r.lane_id);
+        expect(r.place, `round ${round}`).toBeLessThanOrEqual(capacity);
+      }
     }
   }, 120_000);
 });

@@ -169,12 +169,14 @@ describe("bookings of an event with several lanes and places", () => {
     expect((await loadBookings(t.env.DB, e.id)).map((b) => b.id)).toEqual([r1p1, r1p2, r2p1, late]);
   });
 
-  it("the schedule detail shows one booking per slot for now: the first by lane and place", async () => {
+  it("the schedule detail's `booking` is null for several lanes (the bookings are in `places`), and the lineup text still shows the first by lane and place", async () => {
     const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:30:00Z", capacity: 2, lanes: ["Ring 1", "Ring 2"] });
     await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Second", "H", { laneId: e.laneIds[1], place: 1 });
     await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "First", "H", { laneId: e.laneIds[0], place: 1 });
     const detail = await eventDetail(t.env.DB, (await loadEventBySlug(t.env.DB, e.slug))!);
-    expect(detail.slots.map((s) => s.booking?.dogName ?? null)).toEqual(["First", null]);
+    expect(detail.slots.map((s) => s.booking)).toEqual([null, null]);
+    expect(detail.slots[0].places.map((p) => p.bookings.map((b) => b.dogName))).toEqual([["First"], ["Second"]]);
+    expect(detail.lineup).toContain("First");
   });
 });
 
@@ -599,7 +601,7 @@ describe("an edit of the layout racing the booking tools", () => {
     const event = await load(e.slug);
     const moving = await insertBooking(t.env.DB, e.id, S[0], "Mover", "H", { laneId: e.laneIds[0] });
     expect((await renameLane(e)).kind).toBe("saved");
-    expect(await addBooking(t.env.DB, event, { slot: S[1], dogName: "Rex", handlerName: "Sam" })).toMatchObject({ code: "event_changed", status: 409 });
+    expect(await addBooking(t.env.DB, event, { slot: S[1], laneId: e.laneIds[0], dogName: "Rex", handlerName: "Sam" })).toMatchObject({ code: "event_changed", status: 409 });
     expect(await moveBooking(t.env.DB, event, moving, { fromSlot: S[0], toSlot: S[1] })).toMatchObject({ code: "event_changed", status: 409 });
     expect((await placesOf(e.id)).map((r) => r.slot_start_utc)).toEqual([S[0]]);
   });
@@ -616,7 +618,7 @@ describe("an edit of the layout racing the booking tools", () => {
   it("an edit racing an admin add: the add fails with event_changed and writes nothing", async () => {
     const e = await seedLanes();
     const event = await load(e.slug);
-    const result = await addBooking(t.env.DB, event, { slot: S[1], dogName: "Rex", handlerName: "Sam" }, { afterRead: async () => { await renameLane(e); } });
+    const result = await addBooking(t.env.DB, event, { slot: S[1], laneId: e.laneIds[0], dogName: "Rex", handlerName: "Sam" }, { afterRead: async () => { await renameLane(e); } });
     expect(result).toMatchObject({ code: "event_changed", status: 409 });
     expect(await placesOf(e.id)).toEqual([]);
   });

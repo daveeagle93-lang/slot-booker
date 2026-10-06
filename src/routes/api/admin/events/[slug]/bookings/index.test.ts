@@ -243,7 +243,7 @@ describe("POST /api/admin/events/[slug]/bookings/swap", () => {
     const res = await swap(e.slug, { a: { id: a, slot: S[0] }, b: { id: b, slot: S[4] } });
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await body(res)).toEqual({ a: { id: a, slotStart: S[4] }, b: { id: b, slotStart: S[0] } });
+    expect(await body(res)).toEqual({ a: { id: a, slotStart: S[4], lane: { id: e.laneId, name: "" } }, b: { id: b, slotStart: S[0], lane: { id: e.laneId, name: "" } } });
   });
 
   it("answers 409 changed for stale slots, 400 for the same booking twice, 404 for a foreign id, writing nothing", async () => {
@@ -277,3 +277,53 @@ describe("route shapes", () => {
   });
 });
 
+
+describe("the booking tools with lanes and places, over HTTP", () => {
+  it("add: the lane is a field (laneId), needed with two lanes; the booking comes back with its lane; a full lane is 409 slot_taken with the holders", async () => {
+    const e = await seed({ lanes: ["Ring 1", "Ring 2"], capacity: 1 });
+    const [l1, l2] = e.laneIds;
+    const missing = await add(e.slug, { slot: S[0], dogName: "Rex", handlerName: "Sam" });
+    expect(missing.status).toBe(400);
+    expect(await body(missing)).toMatchObject({ error: { code: "invalid_input" }, fields: { laneId: "Choose a lane." } });
+    const made = await add(e.slug, { slot: S[0], laneId: l2, dogName: "Rex", handlerName: "Sam" });
+    expect(made.status).toBe(201);
+    const booking = (await body(made)).booking;
+    expect(booking).toEqual({ id: expect.any(Number), slotStart: S[0], dogName: "Rex", handlerName: "Sam", lane: { id: l2, name: "Ring 2" } });
+    const full = await add(e.slug, { slot: S[0], laneId: l2, dogName: "Bella", handlerName: "Alex" });
+    expect(full.status).toBe(409);
+    const taken = await body(full);
+    expect(taken.error.code).toBe("slot_taken");
+    expect(taken.bookings).toEqual([booking]);
+    expect(taken.booking).toBeUndefined();
+    expect((await add(e.slug, { slot: S[0], laneId: l1, dogName: "Bella", handlerName: "Alex" })).status).toBe(201);
+  });
+
+  it("move: toLane changes the lane (also at the same time), the answer names it, and fromLane guards against a stale view", async () => {
+    const e = await seed({ lanes: ["Ring 1", "Ring 2"] });
+    const [l1, l2] = e.laneIds;
+    const a = await insertBooking(t.env.DB, e.id, S[0], "Rex", "Sam", { laneId: l1 });
+    expect((await body(await move(e.slug, a, { fromSlot: S[0], fromLane: l2, toSlot: S[0], toLane: l1 }))).error.code).toBe("changed");
+    expect((await body(await move(e.slug, a, { fromSlot: S[0], toSlot: S[0] }))).error.code).toBe("same_slot");
+    const res = await move(e.slug, a, { fromSlot: S[0], fromLane: l1, toSlot: S[0], toLane: l2 });
+    expect(res.status).toBe(200);
+    expect((await body(res)).booking).toMatchObject({ id: a, slotStart: S[0], lane: { id: l2, name: "Ring 2" } });
+    expect((await body(await move(e.slug, a, { fromSlot: S[0], toSlot: S[1], toLane: 999999 }))).fields.toLane).toBe("Choose a lane.");
+  });
+
+  it("swap: bookings in different lanes exchange lane, time and place, and the answer says where each is now", async () => {
+    const e = await seed({ lanes: ["Ring 1", "Ring 2"] });
+    const [l1, l2] = e.laneIds;
+    const a = await insertBooking(t.env.DB, e.id, S[0], "Rex", "Sam", { laneId: l1 });
+    const b = await insertBooking(t.env.DB, e.id, S[0], "Bella", "Alex", { laneId: l2 });
+    const res = await swap(e.slug, { a: { id: a, slot: S[0] }, b: { id: b, slot: S[0] } });
+    expect(res.status).toBe(200);
+    expect(await body(res)).toEqual({ a: { id: a, slotStart: S[0], lane: { id: l2, name: "Ring 2" } }, b: { id: b, slotStart: S[0], lane: { id: l1, name: "Ring 1" } } });
+  });
+
+  it("clear: the removed booking names its lane, and the place it held is free again", async () => {
+    const e = await seed({ lanes: ["Ring 1", "Ring 2"] });
+    const a = await insertBooking(t.env.DB, e.id, S[0], "Rex", "Sam", { laneId: e.laneIds[1] });
+    expect((await body(await clear(e.slug, a, { confirm: true }))).removed.lane).toEqual({ id: e.laneIds[1], name: "Ring 2" });
+    expect((await add(e.slug, { slot: S[0], laneId: e.laneIds[1], dogName: "Next", handlerName: "H" })).status).toBe(201);
+  });
+});

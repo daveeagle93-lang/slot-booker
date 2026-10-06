@@ -432,7 +432,7 @@ The person is not told. The page says "They won't be told. You need to let them 
 ### Rules and clashes
 
 - You can add or move bookings after bookings have closed, and into slots that have already started. This is meant for sorting out the day itself.
-- A slot holds one booking. If it is taken, you see "That slot is already taken by" the dog and handler. The list refreshes.
+- A slot holds one booking, for an event with one lane and one place per time. If it is taken, you see "That slot is already taken by" the dog and handler. The list refreshes. Events with more lanes or places are described under [Lanes and places](#lanes-and-places).
 - A dog and handler can only have one booking per event. Capital letters, extra spaces and hidden characters do not make a name different. If they already have one, you are told which time.
 - If someone else changed things while you were working, you see "That changed while you were working. The schedule has been refreshed."
 - Names have the same rules as when people book. See [If something looks wrong](#10-if-something-looks-wrong).
@@ -457,7 +457,7 @@ Name, cost, venue postcode, details and "Listed on the home page" do not touch b
 
 ### Changes that can remove bookings
 
-Date, times, session length, gap and breaks change the slots. A booking is affected when its start time is no longer one of the event's slots.
+Date, times, session length, gap and breaks change the slots. A booking is affected when its start time is no longer one of the event's slots. Removing a lane, or lowering the places per lane, can affect bookings too: see [Lanes and places](#lanes-and-places).
 
 The page warns you while you edit. Under "Schedule preview" you see a count, such as "1 booking is on slots this change removes:". Then you see each person, like "10:05 — Rex — Sam Smith". It adds "You'll be asked to confirm before anything is removed."
 
@@ -467,6 +467,18 @@ When you tap "Save changes" with affected bookings, nothing is saved yet. You se
 - Tap "Cancel" to go back. Nothing has changed.
 
 If a new booking appears while you are editing, you see "Another booking has appeared since you checked, so please check the list again."
+
+### Lanes and places
+
+This section describes what the system does. The admin screens for it are not built yet, so for now it can only be used through the admin API (the event, template and booking requests).
+
+An event has one or more **lanes** (rings that run at the same time, up to 10) and a number of **places** per lane at each time (1 to 50). A new event has one unnamed lane with one place, which is how every event worked before. With two or more lanes every lane needs a name, and no two may have the same name (capital letters don't make a name different). An event can have at most 2000 places in all: times, multiplied by lanes, multiplied by places per lane. A template holds lanes and places too, and an event made from it gets its own copy.
+
+When you edit an event, a lane you keep is renamed or reordered without losing its bookings, a lane you leave out is removed, and a lane you add is new. Adding a booking needs a lane when the event has two or more, and goes to the lowest free place there. Moving a booking can change its lane as well as its time, and swapping two bookings makes them trade lane, time and place.
+
+Saving an edit that would leave bookings with nowhere to go works as in "Changes that can remove bookings": nothing is saved until you confirm the list. A booking is on that list when its time is no longer a slot, when its lane is removed, or when there are more bookings in a lane at a time than the new number of places. In the last case the people who booked first keep their places and the latest bookings are listed. The bookings that stay are renumbered, so the places always count 1, 2, 3 and so on.
+
+If someone else changed the lanes or the places while you were working, saving them from an older view is refused (the page asks you to reload) so their change is not overwritten.
 
 ### After saving
 

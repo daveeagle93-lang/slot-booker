@@ -33,8 +33,11 @@ const get = (slug: string, ...data: unknown[]): Promise<Response> =>
 
 interface Detail {
   event: Record<string, unknown>;
-  slots: { start: string; end: string; booking: { id: number; dogName: string; handlerName: string } | null }[];
-  orphans: { id: number; slotStart: string; dogName: string; handlerName: string }[];
+  slots: {
+    start: string; end: string; booking: { id: number; dogName: string; handlerName: string } | null;
+    places: { laneId: number; laneName: string; free: number; bookings: { id: number; dogName: string; handlerName: string }[] }[];
+  }[];
+  orphans: { id: number; slotStart: string; dogName: string; handlerName: string; lane: { id: number; name: string } }[];
   lineup: string;
   defaultShareMessage: string;
 }
@@ -105,12 +108,53 @@ describe("GET /api/admin/events/[slug]", () => {
     const { id, slug } = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T09:00:00Z", sessionMinutes: 20 });
     const bookingId = await insertBooking(t.env.DB, id, "2026-10-24T08:20:00Z", "Rex", "Sam Smith");
     const { slots, orphans } = await detail(slug);
+    const laneId = (await t.env.DB.prepare("SELECT id FROM event_lanes WHERE event_id = ?").bind(id).first<{ id: number }>())!.id;
+    const free = [{ laneId, laneName: "", free: 1, bookings: [] }];
     expect(slots).toEqual([
-      { start: "2026-10-24T08:00:00Z", end: "2026-10-24T08:20:00Z", booking: null },
-      { start: "2026-10-24T08:20:00Z", end: "2026-10-24T08:40:00Z", booking: { id: bookingId, dogName: "Rex", handlerName: "Sam Smith" } },
-      { start: "2026-10-24T08:40:00Z", end: "2026-10-24T09:00:00Z", booking: null },
+      { start: "2026-10-24T08:00:00Z", end: "2026-10-24T08:20:00Z", booking: null, places: free },
+      {
+        start: "2026-10-24T08:20:00Z", end: "2026-10-24T08:40:00Z", booking: { id: bookingId, dogName: "Rex", handlerName: "Sam Smith" },
+        places: [{ laneId, laneName: "", free: 0, bookings: [{ id: bookingId, dogName: "Rex", handlerName: "Sam Smith" }] }],
+      },
+      { start: "2026-10-24T08:40:00Z", end: "2026-10-24T09:00:00Z", booking: null, places: free },
     ]);
     expect(orphans).toEqual([]);
+  });
+
+  it("lists, per slot, every lane with its bookings in place order and its free places; `booking` is null unless there is one lane and one place", async () => {
+    const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:40:00Z", sessionMinutes: 20, capacity: 2, lanes: ["Ring 1", "Ring 2"] });
+    const [l1, l2] = e.laneIds;
+    const second = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Second", "H", { laneId: l1, place: 2 });
+    const first = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "First", "H", { laneId: l1, place: 1 });
+    const other = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Other", "H", { laneId: l2 });
+    const { slots, orphans, event } = await detail(e.slug);
+    expect(event).toMatchObject({ lanes: [{ id: l1, name: "Ring 1" }, { id: l2, name: "Ring 2" }], capacity: 2 });
+    expect(slots.map((s) => s.booking)).toEqual([null, null]);
+    expect(slots[0].places).toEqual([
+      { laneId: l1, laneName: "Ring 1", free: 0, bookings: [{ id: first, dogName: "First", handlerName: "H" }, { id: second, dogName: "Second", handlerName: "H" }] },
+      { laneId: l2, laneName: "Ring 2", free: 1, bookings: [{ id: other, dogName: "Other", handlerName: "H" }] },
+    ]);
+    expect(slots[1].places).toEqual([{ laneId: l1, laneName: "Ring 1", free: 2, bookings: [] }, { laneId: l2, laneName: "Ring 2", free: 2, bookings: [] }]);
+    expect(orphans).toEqual([]);
+  });
+
+  it("keeps `booking` for one lane and capacity 1 even when the lane is named, and drops it for one lane with capacity 2", async () => {
+    const named = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:20:00Z", sessionMinutes: 20, lanes: ["Main"] });
+    const b = await insertBooking(t.env.DB, named.id, "2026-10-24T08:00:00Z", "Rex", "Sam");
+    expect((await detail(named.slug)).slots[0].booking).toEqual({ id: b, dogName: "Rex", handlerName: "Sam" });
+    const wide = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:20:00Z", sessionMinutes: 20, capacity: 2 });
+    await insertBooking(t.env.DB, wide.id, "2026-10-24T08:00:00Z", "Rex", "Sam");
+    expect((await detail(wide.slug)).slots[0].booking).toBeNull();
+  });
+
+  it("lists as orphans a booking at a time that is no slot, one at a place beyond the capacity, and keeps them out of `places`", async () => {
+    const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:20:00Z", sessionMinutes: 20, capacity: 2 });
+    const ok = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Fine", "H", { place: 1 });
+    const beyond = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Beyond", "H", { place: 3 });
+    const stray = await insertBooking(t.env.DB, e.id, "2026-10-24T07:00:00Z", "Stray", "H");
+    const { slots, orphans } = await detail(e.slug);
+    expect(orphans.map((o) => o.id).sort()).toEqual([beyond, stray].sort());
+    expect(slots[0].places[0]).toMatchObject({ free: 1, bookings: [{ id: ok }] });
   });
 
   it("surfaces bookings whose slot is not in the schedule as orphans instead of hiding them", async () => {

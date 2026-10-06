@@ -57,6 +57,11 @@ const ALLOWED_ADDITIONS: Allowed[] = [
   { files: /^admin-api\/bookings-clear\.json$/, path: "*.body.removed.lane", why: "a booking cleared by the admin names its lane" },
   { files: /^admin-api\/event-edit\.json$/, path: "*.body.affected[].lane", why: "a booking an edit would strand names its lane" },
   { files: /^admin-api\/event-edit\.json$/, path: "*.body.removed[].lane", why: "a booking an edit removed names its lane" },
+  { files: /^admin-api\/detail-/, path: "body.slots[].places", why: "every slot of the admin detail lists, per lane, the bookings there and how many places are free" },
+  { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.slots[].places", why: "every slot of the admin detail lists, per lane, the bookings there and how many places are free" },
+  { files: /^admin-api\/bookings-(add|move)\.json$/, path: "*.body.bookings", why: "a slot_taken answer lists everyone who holds a place in the lane at that time (the v1.0 `booking` key stays for one lane and one place)" },
+  { files: /^admin-api\/bookings-swap\.json$/, path: "*.body.a.lane", why: "a swapped booking says which lane it is in now (a swap can change the lane)" },
+  { files: /^admin-api\/bookings-swap\.json$/, path: "*.body.b.lane", why: "a swapped booking says which lane it is in now (a swap can change the lane)" },
 ];
 
 // ---------------------------------------------------------------------------------------------------------------------
