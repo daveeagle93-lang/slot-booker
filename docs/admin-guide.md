@@ -100,7 +100,7 @@ The header at the top may keep the old club name until you reload the page.
 
 ### Why the privacy contact matters
 
-People booking give their name and their dog's name. The booking form tells them who to contact about those details, and that is the privacy contact. The contact only counts once it has an email address.
+People booking give the details the booking form asks for (for example a dog's name and a handler's name). The booking form tells them who to contact about those details, and that is the privacy contact. The contact only counts once it has an email address.
 
 If no contact is set, you will see a warning at the top of the booking page when you are signed in. It starts "Admin notice (the people booking can't see this)". Other people do not see it. It has a link to "Settings".
 
@@ -383,7 +383,7 @@ I haven't seen this on a real phone. WhatsApp remembers the preview it made the 
 1. They open your link and see the event name, date, time, venue and cost.
 2. Under "Pick a time" they see the free slots. Slots already taken are hidden. Slots that have started show "Started".
 3. They tap a time.
-4. They fill in "Dog's name" and "Handler's name".
+4. They fill in the booking form: one box for each field of the event, titled with the field's label ("Dog" and "Handler" for an event made before the fields could be changed; see [The booking form](#the-booking-form)). A field that isn't required says "(optional)".
 5. They tap the confirm button, which says "Confirm booking for" and the time.
 
 With one lane and one place per time, that is all they see. With more places or lanes the page changes a little:
@@ -392,7 +392,7 @@ With one lane and one place per time, that is all they see. With more places or 
 - **One lane with a name:** the same grid, with the lane's name in the form heading ("Booking 10:00 · Main ring") and on the confirm button.
 - **Two or more lanes:** each time is a card with a button for every lane, showing the lane's name and "2 left", "1 left" or "Full". A full lane can't be tapped. A time with no free place in any lane is hidden, and a time that has started shows "Started". The person taps the lane they want, and the form heading and confirm button name the time and the lane ("Booking 10:00 · Ring 1"). If someone takes the last place in that lane first, they see "That slot's just gone." with the up-to-date list.
 
-They then see "You're booked in", with "Copy booking" and "Add to calendar". When the lane has a name, the confirmation also has a "Lane" row after the dog and handler, and the copied text has a "Lane:" line after the date and time. The page tells them to keep the details, because there is no way to look a booking up again.
+They then see "You're booked in", with "Copy booking" and "Add to calendar". When the lane has a name, the confirmation has a row for each value they gave (labelled with the field's label), then a "Lane" row, and the copied text has a line for each value, and has a "Lane:" line after the date and time. The page tells them to keep the details, because there is no way to look a booking up again.
 
 People can't change or cancel a booking online. The page tells them to contact the organiser. You do it for them, as in the next section.
 
@@ -446,7 +446,7 @@ With lanes the question names the time and the lane. The person is not told. The
 
 - You can add or move bookings after bookings have closed, and into slots that have already started. This is meant for sorting out the day itself.
 - A slot holds one booking, for an event with one lane and one place per time. If it is taken, you see "That slot is already taken by" the dog and handler. The list refreshes. With more lanes or places, a lane that is full says, for example, "Ring 1 at 10:30 is full." and the list refreshes. See [Lanes and places](#lanes-and-places).
-- A dog and handler can only have one booking per event. Capital letters, extra spaces and hidden characters do not make a name different. If they already have one, you are told which time.
+- One identity (the fields that identify a booking: the dog and handler together, for the Dog and Handler form) can only have as many bookings as the event's limit, which is 1 unless it has been raised. Capital letters, extra spaces and hidden characters do not make a value different. If they already have one, you are told which time.
 - If someone else changed things while you were working, you see "That changed while you were working. The schedule has been refreshed."
 - Names have the same rules as when people book. See [If something looks wrong](#10-if-something-looks-wrong).
 
@@ -511,6 +511,20 @@ What the outputs show for lanes and places:
 - **The calendar entry** (.ics) a booker adds says "Slot: 10:00–10:30, Ring 1" when the event has a named lane, and is otherwise unchanged. The entry's title, location and identity are unchanged.
 - **The share message** has a {lanes} placeholder: the lane names separated by commas. It is blank for an event with one unnamed lane, so a line holding only {lanes} is left out. Share fills it in from the events list, the schedule page and the "Event created" page.
 
+### The booking form
+
+What the booking form asks for is set per event: one to four **fields**. Each field has a label (up to 40 characters, no two the same ignoring capital letters; people see it as the title of the box), whether it is **required**, the **longest value** it takes (1 to 80 characters), and whether it **identifies a booking**. The first field is always required, and so is every field that identifies a booking. At least one field identifies a booking. How many bookings one identity (the values of the identifying fields together) may hold in the event is the **identity limit** (1 to 20, 1 by default).
+
+- An event or template that existed before the fields could be changed has two: "Dog" and "Handler", both required, 80 characters, both identifying the booking. Nothing about its bookings changes.
+- A new event made without saying (which is what the event form does until its screens can set the fields) has one required field, "Name", that identifies the booking, and an identity limit of 1. Templates are the same.
+- Bookers see each field's label as the box's title ("Dog"), and "(optional)" after the label of one that isn't required. A required field left empty says "Dog is required." The other messages use the same bare label ("Dog must be at most 80 characters.").
+- An optional field can be left empty. It is then left out of the confirmation, the calendar entry and the lineup, and its CSV cell is empty.
+- Two bookings are the same identity when the identifying fields match, ignoring capital letters, extra spaces and hidden characters. The other fields can differ.
+
+**Once an event has bookings,** the number of fields and which of them identify a booking can't be changed (the save is refused with "fields_locked"): the stored bookings and their calendar entries depend on them. Clear the bookings first if you really need to. You can still change the labels, which fields are required, the longest values and the identity limit. A booking made at the same moment as a change to what is required or the longest values is refused and tried again against the new form.
+
+I haven't built the screens for this yet. Until they exist, the fields and the identity limit can be set only through the admin API (`fields` and `identityLimit` in the body when creating or saving an event or a template).
+
 ### After saving
 
 You see "Saved." If bookings were removed, you also see "Removed bookings: tell these people to rebook". The people are not told for you.
@@ -535,7 +549,7 @@ The text looks like this:
 2. The event name.
 3. The date, then a dot, then the venue postcode.
 4. A blank line.
-5. One line per place, in time order. A booked place shows the time, the dog and the handler. A free place shows the time and "free". With a named lane (or two or more lanes) each line also names the lane after the time, and the lines at one time go by lane order, then place. See [Lanes and places](#lanes-and-places).
+5. One line per place, in time order. A booked place shows the time and the value of each field of the booking form, in the form's order (the dog and the handler, for the Dog and Handler form). A free place shows the time and "free". With a named lane (or two or more lanes) each line also names the lane after the time, and the lines at one time go by lane order, then place. See [Lanes and places](#lanes-and-places).
 6. Breaks show where they fall, with their start and end times and their name. An unnamed break shows as "Break".
 
 Paste it into a group chat such as WhatsApp. The booking form's usual privacy note tells people that the running order, with names, may be shared with other people taking part.
@@ -553,7 +567,7 @@ This part gives you a spreadsheet of one event's bookings.
 
 You get a file ending in -bookings.csv. Open it in Excel, Google Sheets or Numbers.
 
-It has four columns: "Time", "Dog", "Handler" and "Booked at", with a "Lane" column after "Time" when the event has a named lane. Times are London time. It lists the bookings only, in time order (then lane order, then place). It does not include free slots, the event settings or breaks.
+It has a "Time" column, one column for each field of the booking form headed by its label, and "Booked at": "Time", "Dog", "Handler" and "Booked at" for the Dog and Handler form. A "Lane" column comes after "Time" when the event has a named lane. Times are London time. It lists the bookings only, in time order (then lane order, then place). It does not include free slots, the event settings or breaks.
 
 Some names may start with a mark like an apostrophe. That happens when a name begins with a symbol such as =, +, - or @. It is on purpose. It stops a spreadsheet from treating the name as an instruction. The name itself is unchanged.
 
@@ -612,7 +626,7 @@ This part lists what you might see and what to do.
 - **The page sends you to the sign-in page.** You were signed out. Sign in again. See [Signing in](#1-signing-in).
 - **You see "Admin sign-in isn't set up."** The admin sign-in is missing a setting on the site. Contact whoever looks after the site's setup. On a brand new site, opening an admin page should take you to the setup page instead: see [Signing in](#1-signing-in).
 - **A booking looks wrong.** Open "Schedule" for the event. Use "Move", "Swap", "Clear" or "Add booking". See [Fixing bookings](#5-fixing-bookings).
-- **A name was refused.** Messages like "The dog's name can't contain invisible or direction-changing characters." mean the name has a hidden mark in it. This happens with text pasted from elsewhere. It also happens with some emoji that are joined together with an invisible joiner. Some names in certain scripts need a joiner and are refused too. Retype the name by hand. For an emoji, pick a single plain one. The same rule applies to event names, break names, details, the club name and the contact details. An event or settings text saved earlier that has such a character in it can still be saved unchanged, but if you change that text, type it again as plain text. A dog's or handler's name also needs at least one letter or number in it ("The dog's name must contain at least one letter or number."), so a name made only of an emoji or symbols is refused; add a letter, for example "Rex 🐶".
+- **A name was refused.** Messages like "Dog can't contain invisible or direction-changing characters." (the message starts with the field's label) mean the value has a hidden mark in it. This happens with text pasted from elsewhere. It also happens with some emoji that are joined together with an invisible joiner. Some names in certain scripts need a joiner and are refused too. Retype the name by hand. For an emoji, pick a single plain one. The same rule applies to event names, break names, details, the club name and the contact details. An event or settings text saved earlier that has such a character in it can still be saved unchanged, but if you change that text, type it again as plain text. Every booking value also needs at least one letter or number in it ("Dog must contain at least one letter or number."), so a value made only of an emoji or symbols is refused; add a letter, for example "Rex 🐶".
 - **The logo won't upload.** Use a PNG, JPEG or WebP picture under 20 MB. A message says if it is the wrong type, too big, or can't be read. Try a simpler picture.
 - **The icons didn't update.** Open the Settings page again and wait for "App icons updated."
 - **An event isn't on the home page.** Edit it and check that "Listed on the home page" is ticked. The home page also only shows events that have not started, and not archived ones.
