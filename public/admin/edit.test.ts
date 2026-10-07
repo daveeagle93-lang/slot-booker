@@ -533,6 +533,52 @@ describe("the result view", () => {
     expect($(".copy-status").textContent).toBe("Copied");
   });
 
+  describe("what the list says about each person: only what identifies a booking", () => {
+    const FORM = [
+      { label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true },
+      { label: "Phone", required: false, maxLength: 20, identity: false }, { label: "Notes", required: false, maxLength: 80, identity: false },
+    ];
+    const withPhone = (id: number, slotStart: string, dog: string, handler: string, phone: string, notes: string) =>
+      ({ id, slotStart, fields: [...dh(dog, handler), { label: "Phone", value: phone }, { label: "Notes", value: notes }] });
+    const REX_P = withPhone(11, REX.slotStart, "Rex", "Sam Smith", "07700 900123", "Allergic to nuts");
+    const FLO_P = withPhone(12, FLO.slotStart, "Flo", "Pat Jones", "07700 900456", "");
+    const form = (over: object = {}) => ({ get: () => reply(200, { ...DETAIL, event: { ...EVENT, fields: FORM, ...over } }) });
+
+    it("leaves a phone number and notes out of the pasted list, and keeps the identity fields in the form's order", async () => {
+      await start({ ...form(), preview: () => preview([REX_P, FLO_P]), put: () => reply(200, { ...SAVED, event: { ...EVENT, fields: FORM }, removed: [REX_P, FLO_P] }) });
+      await tick();
+      submit();
+      await tick();
+      buttonNamed("Remove 2 bookings and save").click();
+      await tick();
+      expect(input("rebook-text").value).toBe("Please rebook: 10:05 — Rex — Sam Smith\nPlease rebook: 10:25 — Flo — Pat Jones");
+      expect(input("rebook-text").value).not.toContain("0770");
+      expect(input("rebook-text").value).not.toContain("nuts");
+    });
+
+    it("applies to the list the admin confirmed when the server removed nothing, and to a field renamed in the same save", async () => {
+      const renamed = FORM.map((f) => (f.label === "Dog" ? { ...f, label: "Hound" } : f));
+      await start({ ...form(), preview: () => preview([REX_P]), put: () => reply(200, { ...SAVED, event: { ...EVENT, fields: renamed }, removed: [] }) });
+      await tick();
+      submit();
+      await tick();
+      buttonNamed("Remove 1 booking and save").click();
+      await tick();
+      expect(input("rebook-text").value).toBe("Please rebook: 10:05 — Rex — Sam Smith");
+    });
+
+    it("names a lane, then only the identity values", async () => {
+      const laned = { ...REX_P, lane: { id: 9, name: "Ring 1" } };
+      await start({ ...form(), preview: () => preview([laned]), put: () => reply(200, { ...SAVED, event: { ...EVENT, fields: FORM }, removed: [laned] }) });
+      await tick();
+      submit();
+      await tick();
+      buttonNamed("Remove 1 booking and save").click();
+      await tick();
+      expect(input("rebook-text").value).toBe("Please rebook: 10:05 — Ring 1 — Rex — Sam Smith");
+    });
+  });
+
   it("still shows the list the admin confirmed when the server removed nothing (a retry after a lost response)", async () => {
     await start({ preview: () => preview([REX, FLO]), put: () => reply(200, { ...SAVED, removed: [] }) });
     await tick();
@@ -1234,38 +1280,62 @@ describe("booking form", () => {
   describe("a fields_locked answer", () => {
     const FIELDS_LOCKED = { error: { code: "fields_locked", message: "This event has bookings, so fields can't be added or removed." } };
 
-    it("locks the card, shows the server's message at it, and puts the form back as it was loaded, keeping what was typed", async () => {
+    const DISCARDED = " Your changes to the booking form were discarded: it is back as it was when you opened the page.";
+    const rowsNow = () => cardRows().map((_, i) => [part(i, "label").value, part(i, "required").checked, part(i, "max").value, part(i, "identity").checked]);
+    const LOADED = FORM.map((f) => [f.label, f.required, String(f.maxLength), f.identity]);
+
+    it("locks the card, shows the server's message at it, and puts the card back as it was loaded, labels and limit too, saying so", async () => {
       await start({ ...withForm(), put: () => reply(409, FIELDS_LOCKED) });
       await tick();
       buttonNamed("Add field").click();
       typeInto(part(3, "label"), "Car reg");
       typeInto(part(0, "label"), "Hound");
+      typeInto(part(1, "max"), "50");
+      typeInto(limit(), "5");
       part(2, "identity").click();
       submit();
       await tick();
-      expect(cardRows()).toHaveLength(3);
-      expect(part(0, "label").value).toBe("Hound");
-      expect(part(2, "identity").checked).toBe(false);
+      expect(rowsNow()).toEqual(LOADED);
+      expect(limit().value).toBe("2");
       expect(document.getElementById("event-fields-locked")!.hidden).toBe(false);
       expect((buttonNamed("Add field") as HTMLButtonElement).disabled).toBe(true);
       expect(part(0, "identity").disabled).toBe(true);
-      expect(document.getElementById("event-fields-error")!.textContent).toBe(FIELDS_LOCKED.error.message);
+      expect(document.getElementById("event-fields-error")!.textContent).toBe(FIELDS_LOCKED.error.message + DISCARDED);
       expect(document.activeElement).toBe(document.getElementById("event-fields-error"));
       expect($(".form-error")!.textContent).toBe("");
     });
 
-    it("lets the next save through with the shape as loaded", async () => {
+    it("does not leave the new labels on the old rows: remove Dog, add Owner, bookings arrive, save, then the card shows Dog and Handler and the next save sends no fields", async () => {
+      let n = 0;
+      const { calls } = await start({ ...withForm(), put: () => (++n === 1 ? reply(409, FIELDS_LOCKED) : reply(200, SAVED)) });
+      await tick();
+      (cardRows()[0].querySelector("button.remove") as HTMLButtonElement).click(); // Dog goes: Handler, Phone left
+      buttonNamed("Add field").click();
+      typeInto(part(2, "label"), "Owner");
+      submit();
+      await tick();
+      expect(puts(calls)[0].body.fields.map((f: any) => f.label)).toEqual(["Handler", "Phone", "Owner"]);
+      expect(rowsNow()).toEqual(LOADED);
+      set("name", "Renamed");
+      submit();
+      await tick();
+      expect(puts(calls)).toHaveLength(2);
+      expect(puts(calls)[1].body).not.toHaveProperty("fields");
+      expect(puts(calls)[1].body).not.toHaveProperty("identityLimit");
+      expect($("h1").textContent).toBe("Saved.");
+    });
+
+    it("lets the next save carry a label change typed after the reset", async () => {
       let n = 0;
       const { calls } = await start({ ...withForm(), put: () => (++n === 1 ? reply(409, FIELDS_LOCKED) : reply(200, SAVED)) });
       await tick();
       buttonNamed("Add field").click();
       typeInto(part(3, "label"), "Car reg");
+      submit();
+      await tick();
       typeInto(part(0, "label"), "Hound");
       submit();
       await tick();
-      submit();
-      await tick();
-      expect(puts(calls)).toHaveLength(2);
       expect(puts(calls)[1].body.fields).toEqual([{ ...FORM[0], label: "Hound" }, FORM[1], FORM[2]]);
       expect($("h1").textContent).toBe("Saved.");
     });

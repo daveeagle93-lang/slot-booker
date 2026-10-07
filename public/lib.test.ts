@@ -89,9 +89,9 @@ describe("copyText", () => {
     );
   });
 
-  it("puts the lane after the date and time, when the lane has a name", () => {
+  it("puts the lane after the values, before the venue, when the lane has a name (as the confirmation shows it)", () => {
     expect(copyText(event, { ...booking, lane: { id: 7, name: "Ring 1" } })).toBe(
-      "Trial Day\nSaturday 13 June 2026, 09:20–09:35\nLane: Ring 1\nDog: Biscuit\nHandler: Ann Lee\nVenue: SW1A 1AA\nCost: £15.00\nBring water.\nBe kind.",
+      "Trial Day\nSaturday 13 June 2026, 09:20–09:35\nDog: Biscuit\nHandler: Ann Lee\nLane: Ring 1\nVenue: SW1A 1AA\nCost: £15.00\nBring water.\nBe kind.",
     );
   });
 

@@ -17,7 +17,7 @@ const KEY = /^fields\.(\d+)(?:\.(label|required|maxLength|identity))?$/;
 
 /**
  * `prefix` keeps the element ids apart from the rest of the page. `onChange()` is called when the person changes anything in the
- * card (not when the page sets it). Returns the card's element and its controls: `read()`, `set()`, `lock()`, `restoreShape()`,
+ * card (not when the page sets it). Returns the card's element and its controls: `read()`, `set()`, `lock()`,
  * `showErrors()`, `showMessage()` and `focusFirstError()`.
  */
 export function mountFieldsCard({ h, prefix, fields = DEFAULT_FIELDS, identityLimit = 1, locked = false, onChange = () => {} }) {
@@ -176,17 +176,6 @@ export function mountFieldsCard({ h, prefix, fields = DEFAULT_FIELDS, identityLi
     },
     lock(on) {
       locked = on;
-      refresh();
-    },
-    /** Back to the number of fields and the identity set of `shape` (the stored form), keeping what was typed in the fields that remain. */
-    restoreShape(shape) {
-      while (rows.length > shape.length) {
-        const r = rows.pop();
-        for (const what of ["label", "required", "maxLength", "identity"]) targets.delete(`fields.${r.key}.${what}`);
-        r.el.remove();
-      }
-      for (let i = rows.length; i < shape.length; i++) addRow(shape[i]);
-      shape.forEach((s, i) => { rows[i].identityBox.checked = s.identity; });
       refresh();
     },
     /** Shows the server's field errors (by key, rows numbered as in `read().keys`): each next to its control, else at the card. */

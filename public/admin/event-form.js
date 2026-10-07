@@ -11,6 +11,7 @@ const TEMPLATE_NOTE = "Choosing a template replaces the details, times, cost, br
 const REPLACE_CONFIRM = "Replace what you've typed in the details, times, cost, breaks, booking form, lanes, places and share message with this template?";
 const SHARE_NOTE = "Used when you share this event. Leave it blank to use your default template's message. Placeholders such as {event} and {date} are filled in when you share. ";
 const SAVED_EARLIER = "We'd already saved an event from this page, so we haven't changed it. Here it is as saved. Any changes you made since weren't applied.";
+const FIELDS_DISCARDED = " Your changes to the booking form were discarded: it is back as it was when you opened the page.";
 const AFFECTED_APPEARED = "Another booking has appeared since you checked, so please check the list again.";
 // The preview endpoint validates a whole draft but only the schedule fields matter to it.
 const PREVIEW_ONLY = { name: "Preview", costPence: 0, venuePostcode: "AB1 2CD", details: "" };
@@ -30,8 +31,13 @@ const plural = (n, one, many) => (n === 1 ? one : many);
 /** Whole pounds as "15", otherwise "12.50": what the cost field takes back through penceFromPounds. */
 export const poundsText = (pence) => (pence % 100 === 0 ? String(pence / 100) : `${Math.floor(pence / 100)}.${String(pence % 100).padStart(2, "0")}`);
 
-/** "10:05 — Rex — Sam Smith" (London time, then the booking's values in the form's order); "10:05 — Ring 1 — Rex — Sam Smith" when its lane has a name. */
-export const bookingLine = (b) => `${formatTime(b.slotStart)}${b.lane?.name ? ` — ${b.lane.name}` : ""} — ${b.fields.map((f) => f.value).join(" — ")}`;
+/**
+ * "10:05 — Rex — Sam Smith" (London time, then the booking's values in the form's order); "10:05 — Ring 1 — Rex — Sam Smith" when its lane has a name.
+ * `only`, a set of field labels, keeps just the values of those fields: for text that is pasted into a chat, which names who a booking is for
+ * and not their phone number or notes.
+ */
+export const bookingLine = (b, only = null) =>
+  `${formatTime(b.slotStart)}${b.lane?.name ? ` — ${b.lane.name}` : ""}${b.fields.filter((f) => !only || only.has(f.label)).map((f) => ` — ${f.value}`).join("")}`;
 
 /**
  * The event form shared by the create page (`mode: "create"`) and the edit page (`mode: "edit"`): fields,
@@ -623,11 +629,12 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
       return;
     }
     closeConfirmation();
-    // Bookings appeared since the page loaded, so the shape of the form is fixed now: lock the card, back to the form as it was loaded.
+    // Bookings appeared since the page loaded, so the shape of the form is fixed now. The card goes back to the form as it was loaded,
+    // all of it: keeping the new labels on the old rows would relabel what people already entered.
     if (editing && res?.status === 409 && res.data?.error?.code === "fields_locked") {
+      formCard.set(initialFields, initialLimit);
       formCard.lock(true);
-      formCard.restoreShape(initialFields);
-      formCard.showMessage(res.data.error.message);
+      formCard.showMessage(`${res.data.error.message}${FIELDS_DISCARDED}`);
       return focusFirstError();
     }
     if (res?.status === 400 && res.data?.fields) {

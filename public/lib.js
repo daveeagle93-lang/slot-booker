@@ -44,8 +44,8 @@ export function copyText(event, booking) {
   const lines = [
     event.name,
     `${formatDate(booking.slot.start)}, ${formatTimeRange(booking.slot.start, booking.slot.end)}`,
-    ...(booking.lane?.name ? [`Lane: ${booking.lane.name}`] : []),
     ...booking.fields.map((f) => `${f.label}: ${f.value}`),
+    ...(booking.lane?.name ? [`Lane: ${booking.lane.name}`] : []),
     `Venue: ${event.venuePostcode}`,
     `Cost: ${formatPounds(event.costPence)}`,
   ];

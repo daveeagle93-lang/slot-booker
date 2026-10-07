@@ -6,6 +6,7 @@ import {
 
 const GENERIC_ERROR = "Something went wrong. Please try again.";
 const CLOSED = "Bookings for this event are closed.";
+const EVENT_CHANGED = "The event was just changed. The times below are up to date; choose again.";
 const SAVED_EARLIER = "We'd already saved a booking from this page, so we haven't changed it. Here it is. To change it, contact the organiser.";
 
 /**
@@ -161,15 +162,13 @@ export function init({ document, fetch, location, clipboard, settings = null, se
     show(eventHeader(event), h("div", { class: "message", role: "status" }, h("h2", {}, "Bookings closed"), h("p", {}, CLOSED)));
   }
 
-  function showBooking() {
-    const notice = h("div", { id: "notice", class: "notice", role: "alert", tabindex: "-1", hidden: true });
-    const slotsLeft = h("p", { class: "slots-left" });
-    const grid = h("ul", { class: "slot-grid" });
-
+  /** The booking form for the event's fields as they are now (hidden until a time is chosen), with its parts. */
+  function buildForm() {
     // One input for each field of the event's booking form, in order. Ids and names come from the field's position, and the
     // keyboard's enter key says "next" until the last field, where it says "done".
     const fields = (event.fields ?? []).map((f, i, all) => ({
       position: f.position,
+      name: f.label,
       input: h("input", {
         id: `field-${f.position}`, name: `field${f.position}`, type: "text", required: f.required, maxlength: String(f.maxLength),
         autocapitalize: "words", autocomplete: "off", enterkeyhint: i === all.length - 1 ? "done" : "next",
@@ -194,15 +193,34 @@ export function init({ document, fetch, location, clipboard, settings = null, se
       ...(privacySection ? [privacySection] : []),
       submit,
       progress);
+    form.addEventListener("submit", onSubmit);
+    return { privacy: privacySection, form, heading, submit, progress, formError, fields };
+  }
 
-    view = { privacy: privacySection, notice, slotsLeft, grid, form, heading, submit, progress, formError, fields };
+  function showBooking() {
+    const notice = h("div", { id: "notice", class: "notice", role: "alert", tabindex: "-1", hidden: true });
+    const slotsLeft = h("p", { class: "slots-left" });
+    const grid = h("ul", { class: "slot-grid" });
+    const built = buildForm();
+    view = { ...built, notice, slotsLeft, grid };
     show(
       eventHeader(event),
       h("section", { class: "slots", "aria-labelledby": "slots-heading" },
         h("h2", { id: "slots-heading" }, "Pick a time"), slotsLeft, notice, grid),
-      form);
-    form.addEventListener("submit", onSubmit);
+      built.form);
     renderSlots();
+  }
+
+  /** What a booker sees of the form: the fields' positions, labels, required flags and longest values. */
+  const formKey = (ev) => JSON.stringify((ev.fields ?? []).map((f) => [f.position, f.label, f.required, f.maxLength]));
+
+  /** Swaps in a form for the event's fields as they are now, keeping what was typed in a field that is still the same (same place, same label). */
+  function rebuildForm() {
+    const typed = new Map(view.fields.map((f) => [`${f.position}|${f.name}`, f.input.value]));
+    const built = buildForm();
+    for (const f of built.fields) f.input.value = typed.get(`${f.position}|${f.name}`) ?? "";
+    view.form.replaceWith(built.form);
+    Object.assign(view, built);
   }
 
   function setNotice(text) {
@@ -240,7 +258,7 @@ export function init({ document, fetch, location, clipboard, settings = null, se
   // One card per time, with a button for each lane. A full lane stays in the card, disabled.
   function groupItem(s, lanes) {
     const time = formatTime(s.start);
-    if (s.status === "past") return h("li", { class: "slot-group past", role: "group", "aria-label": time }, pastButton(s, time));
+    if (s.status === "past") return h("li", { class: "slot-group past" }, h("div", { role: "group", "aria-label": time }, pastButton(s, time)));
     const buttons = lanes.map((lane) => {
       const left = freeIn(s, lane.id);
       const button = h("button", {
@@ -253,8 +271,9 @@ export function init({ document, fetch, location, clipboard, settings = null, se
       if (left > 0) button.addEventListener("click", () => select(s, lane));
       return button;
     });
-    return h("li", { class: "slot-group", role: "group", "aria-label": time },
-      h("h3", { class: "slot-group-time" }, time), h("div", { class: "lane-grid" }, ...buttons));
+    // The list item stays a list item; the labelled group is inside it.
+    return h("li", { class: "slot-group" },
+      h("div", { role: "group", "aria-label": time }, h("h3", { class: "slot-group-time" }, time), h("div", { class: "lane-grid" }, ...buttons)));
   }
 
   function select(slot, lane) {
@@ -333,14 +352,24 @@ export function init({ document, fetch, location, clipboard, settings = null, se
       view.formError.textContent = data.error.message;
     } else if (res.status === 400 && code === "invalid_input") {
       const f = data.fields ?? {};
+      // An error for a lane the page doesn't offer, or only for fields it has no input for (nothing could be highlighted), means the
+      // event changed under the booker.
+      const unplaced = Object.keys(f).some((k) => /^field\d+$/.test(k) && !view.fields.some((x) => `field${x.position}` === k));
+      if (f.laneId || (unplaced && !view.fields.some((x) => f[`field${x.position}`]))) {
+        deselect();
+        setNotice(EVENT_CHANGED);
+        await refresh();
+        view?.notice.focus();
+        return;
+      }
       let fieldErrors = 0;
       for (const { position, input, error } of view.fields) {
         if (!f[`field${position}`]) continue;
         fieldError(input, error, f[`field${position}`]);
         fieldErrors++;
       }
-      if (f.slot || f.laneId || fieldErrors === 0) {
-        view.formError.textContent = f.slot ?? f.laneId ?? f.idempotencyKey ?? data.error.message;
+      if (f.slot || fieldErrors === 0) {
+        view.formError.textContent = f.slot ?? f.idempotencyKey ?? data.error.message;
       }
     } else if (res.status === 400 && code === "invalid_slot") {
       deselect();
@@ -348,7 +377,7 @@ export function init({ document, fetch, location, clipboard, settings = null, se
       await refresh();
     } else if (res.status === 409 && code === "event_changed") {
       deselect();
-      setNotice("The event was just changed. The times below are up to date; choose again.");
+      setNotice(EVENT_CHANGED);
       await refresh();
       view?.notice.focus();
     } else if (res.status === 422 && code === "idempotency_key_reuse") {
@@ -362,13 +391,23 @@ export function init({ document, fetch, location, clipboard, settings = null, se
     }
   }
 
-  /** Re-reads the slot list, leaving any notice and typed names in place. */
+  /**
+   * Re-reads the event: the slot list and lanes, leaving any notice and typed values in place. If its booking form has other fields now, the
+   * form is rebuilt for them (keeping what was typed where the field is the same), nothing is selected, and the notice says the event changed.
+   */
   async function refresh() {
     const r = await fetchEvent();
     if (!r?.data) return;
+    const formChanged = formKey(r.data.event) !== formKey(event);
     event = r.data.event;
     if (isClosed(r.data)) return showClosed();
     slots = shown(r.data.slots);
+    if (view && formChanged) {
+      privacyText = r.data.privacyNotice ?? privacyText;
+      rebuildForm();
+      deselect();
+      setNotice(EVENT_CHANGED);
+    }
     if (view) renderSlots();
   }
 

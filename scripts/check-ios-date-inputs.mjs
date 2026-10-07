@@ -772,7 +772,7 @@ async function main() {
           if (flag("shots")) await page.screenshot({ path: join(shotsDir, `booking-${o.shot}-${width}-${scheme}.png`), fullPage: true });
         };
         const choose = (time, lane) => async () => {
-          await page.click(lane ? `.slot-group[aria-label="${time}"] button:has-text("${lane}")` : `.slot-grid button:has-text("${time}")`);
+          await page.click(lane ? `.slot-group [role=group][aria-label="${time}"] button:has-text("${lane}")` : `.slot-grid button:has-text("${time}")`);
           await page.waitForSelector("#booking-form:not([hidden])");
         };
         await runPublic("single lane, one place (v1.0)", "single", { shot: "single", lanes: 0 });

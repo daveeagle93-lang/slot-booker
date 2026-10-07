@@ -32,6 +32,10 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
   const slug = new URLSearchParams(location.search).get("slug") ?? "";
   if (!SLUG.test(slug)) return notFound();
 
+  // The labels of the fields that identify a booking, as the event had them when this page loaded it: the bookings the server lists
+  // carry the labels they had before the save, which may rename a field.
+  let identityLabels = null;
+
   async function load() {
     show(h("p", { class: "message", role: "status" }, "Loading the event…"));
     let res;
@@ -43,6 +47,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     if (res.status === 401) return;
     if (res.status === 404) return notFound();
     if (res.status !== 200 || !res.data?.event) return failure(load);
+    identityLabels = Array.isArray(res.data.event.fields) ? new Set(res.data.event.fields.filter((f) => f.identity).map((f) => f.label)) : null;
     mountEventForm({
       document, root, api, h, mode: "edit", slug, initial: res.data.event,
       done: ({ data, confirmed }) => showSaved(data, confirmed),
@@ -83,7 +88,8 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     if (bookings.length > 0) {
       const copyStatus = h("p", { class: "copy-status", "aria-live": "polite" });
       const block = h("textarea", { id: "rebook-text", readonly: true, rows: String(Math.min(bookings.length + 1, 12)) });
-      block.value = bookings.map((b) => `Please rebook: ${bookingLine(b)}`).join("\n");
+      // Pasted into a club chat: who each booking is for (the identity fields) and nothing else, not a phone number or notes.
+      block.value = bookings.map((b) => `Please rebook: ${bookingLine(b, identityLabels)}`).join("\n");
       const copy = h("button", { type: "button", class: "button" }, "Copy list");
       let timer;
       copy.addEventListener("click", async () => {

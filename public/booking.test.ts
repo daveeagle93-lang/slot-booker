@@ -417,6 +417,92 @@ describe("booking", () => {
     expect(($("#field-2") as HTMLInputElement).value).toBe("Ann Lee");
   });
 
+  describe("when the booking form's fields were changed meanwhile", () => {
+    const NEW_FIELDS = [
+      { position: 1, label: "Dog", required: true, maxLength: 80 }, { position: 2, label: "Owner", required: true, maxLength: 40 },
+      { position: 3, label: "Phone", required: false, maxLength: 20 },
+    ];
+    const NEW_EVENT = { ...EVENT, fields: NEW_FIELDS };
+    const NEW_PRIVACY = defaultPrivacyNotice(["Dog", "Owner", "Phone"]);
+    const CHANGED = "The event was just changed. The times below are up to date; choose again.";
+    const changedAfter = (answer: Handler) => {
+      let gets = 0;
+      return start(routes(answer, () => (gets++ === 0 ? getOk() : getOk(NEW_EVENT, SLOTS, { privacyNotice: NEW_PRIVACY }))));
+    };
+
+    it("rebuilds the form from the fresh fields on a refetch, keeping what was typed where the label is the same, and says the event changed", async () => {
+      await changedAfter(() => reply(409, { error: { code: "event_changed", message: "x" } }));
+      slotButton("09:20").click();
+      fill("Biscuit", "Ann Lee");
+      submit();
+      await vi.waitFor(() => expect(document.querySelectorAll("#booking-form .field")).toHaveLength(3));
+      expect([...document.querySelectorAll("#booking-form .field label")].map((l) => l.textContent)).toEqual(["Dog", "Owner", "Phone (optional)"]);
+      expect(($("#field-1") as HTMLInputElement).value).toBe("Biscuit"); // same label: kept
+      expect(($("#field-2") as HTMLInputElement).value).toBe(""); // Handler became Owner: not carried over
+      expect(($("#field-2") as HTMLInputElement).maxLength).toBe(40);
+      expect(($("#field-3") as HTMLInputElement).required).toBe(false);
+      expect($("#notice").textContent).toBe(CHANGED);
+      expect(form().hidden).toBe(true);
+      expect(document.activeElement).toBe($("#notice"));
+      expect($(".privacy").textContent).toContain("Owner");
+      // The rebuilt form is the live one: it posts all three.
+      slotButton("09:20").click();
+      expect(form().hidden).toBe(false);
+    });
+
+    it("posts the values of the rebuilt form", async () => {
+      let n = 0;
+      const { calls } = await changedAfter(() => (++n === 1 ? reply(409, { error: { code: "event_changed", message: "x" } }) : created()));
+      slotButton("09:20").click();
+      fill();
+      submit();
+      await vi.waitFor(() => expect(document.querySelectorAll("#booking-form .field")).toHaveLength(3));
+      slotButton("09:20").click();
+      type("#field-2", "Ann Lee");
+      type("#field-3", "07700 900123");
+      submit();
+      await vi.waitFor(() => expect($("h1").textContent).toBe("You're booked in"));
+      const posts = calls.filter((c) => c.init?.method === "POST");
+      expect(JSON.parse(String(posts[1].init!.body))).toMatchObject({ field1: "Biscuit", field2: "Ann Lee", field3: "07700 900123" });
+    });
+
+    it("treats an error for a field the page has no input for as a changed event, rather than showing nothing highlighted", async () => {
+      await changedAfter(() => reply(400, {
+        error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: { field3: "Phone is required." },
+      }));
+      slotButton("09:20").click();
+      fill();
+      submit();
+      await vi.waitFor(() => expect(document.querySelectorAll("#booking-form .field")).toHaveLength(3));
+      expect($("#notice").textContent).toBe(CHANGED);
+      expect($(".form-error").textContent).toBe("");
+      expect(form().hidden).toBe(true);
+      expect(document.activeElement).toBe($("#notice"));
+    });
+
+    it("still shows the errors it can place when another is for a field the page has no input for", async () => {
+      await changedAfter(() => reply(400, {
+        error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: { field1: "Dog is required.", field3: "Phone is required." },
+      }));
+      slotButton("09:20").click();
+      submit();
+      await vi.waitFor(() => expect($("#field-1-error").textContent).toBe("Dog is required."));
+      expect(document.querySelectorAll("#booking-form .field")).toHaveLength(2);
+      expect(form().hidden).toBe(false);
+    });
+
+    it("leaves the form and the typed values alone when the fields are the same", async () => {
+      let gets = 0;
+      await start(routes(() => reply(409, { error: { code: "event_changed", message: "x" } }), () => (gets++ === 0 ? getOk() : getOk(EVENT, [SLOTS[1]]))));
+      const before = form();
+      slotButton("09:20").click();
+      fill("Biscuit", "Ann Lee");
+      submit();
+      await vi.waitFor(() => expect(slotButtons()).toHaveLength(1));
+      expect(form()).toBe(before);
+    });
+  });
+
   it.each(["event_archived", "bookings_closed"])("switches to the closed state on 410 %s", async (code) => {
     await start(routes(() => reply(410, { error: { code, message: "closed" } })));
     slotButton("09:20").click();
@@ -913,7 +999,8 @@ describe("lanes and places", () => {
   // 09:20 started; 09:40 all open; 10:00 Ring 2 full, Ring 1 one left; 10:20 nothing free (taken, hidden)
   const LANE_SLOTS = [view(START.a, "past", 1, 1, 1), view(START.b, "free", 2, 2, 2), view(START.c, "free", 1, 0, 2), view(START.d, "taken", 0, 0, 0)];
   const lanesGet = (slots: unknown[] = LANE_SLOTS, ev: unknown = LANE_EVENT) => () => getOk(ev as typeof EVENT, slots);
-  const groups = () => [...document.querySelectorAll<HTMLElement>("li.slot-group")];
+  // A card is a list item holding a labelled group, so the list's items stay list items.
+  const groups = () => [...document.querySelectorAll<HTMLElement>("ul.slot-grid > li.slot-group > div[role=group]")];
   const laneButtons = (time: string) =>
     [...groups().find((g) => g.getAttribute("aria-label") === time)!.querySelectorAll<HTMLButtonElement>("button")];
   const laneButton = (time: string, lane: string) => laneButtons(time).find((b) => b.querySelector(".lane-name")!.textContent === lane)!;
@@ -927,6 +1014,8 @@ describe("lanes and places", () => {
     it("shows one group per time that has a free place, with the time as its name, and counts places", async () => {
       await start(routes(() => bookedIn(), lanesGet()));
       expect(groups().map((g) => g.getAttribute("aria-label"))).toEqual(["09:20", "09:40", "10:00"]);
+      expect(groups()).toHaveLength(document.querySelectorAll("ul.slot-grid > li").length);
+      for (const li of document.querySelectorAll("ul.slot-grid > li")) expect(li.hasAttribute("role")).toBe(false);
       for (const g of groups()) expect(g.getAttribute("role")).toBe("group");
       expect(groups()[1].querySelector("h3")!.textContent).toBe("09:40");
       expect(text()).toContain("9 places left"); // 09:40 has 6 and 10:00 has 3; the started 09:20 and the taken 10:20 are not counted
@@ -990,7 +1079,7 @@ describe("lanes and places", () => {
       expect(document.querySelectorAll("dd")[3].textContent).toBe("Ring 2");
       [...document.querySelectorAll("button")].find((b) => b.textContent === "Copy booking")!.click();
       await vi.waitFor(() => expect(clipboard.writeText).toHaveBeenCalled());
-      expect(clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("\nLane: Ring 2\nDog: Biscuit\n"));
+      expect(clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("\nDog: Biscuit\nHandler: Ann Lee\nLane: Ring 2\nVenue: "));
     });
 
     it("on slot_taken shows the live places from the answer, drops the selection and keeps focus on the notice", async () => {
@@ -1032,15 +1121,40 @@ describe("lanes and places", () => {
       expect(laneButtons("09:20")[0].disabled).toBe(true);
     });
 
-    it("shows 'Choose a lane.' as the form error for fields.laneId, beside field errors", async () => {
-      await start(routes(() => reply(400, {
-        error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: { laneId: "Choose a lane.", field1: "Too short." },
-      }), lanesGet()));
+    const CHANGED = "The event was just changed. The times below are up to date; choose again.";
+    const CHOOSE = () => reply(400, { error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: { laneId: "Choose a lane." } });
+
+    it("treats fields.laneId (the chosen lane was removed) as a changed event: deselects, says so, shows the fresh lanes and focuses the notice", async () => {
+      let gets = 0;
+      const { calls } = await start(routes(CHOOSE, () => (gets++ === 0 ? getOk(LANE_EVENT, LANE_SLOTS)
+        : getOk({ ...LANE_EVENT, lanes: LANES.slice(0, 2) } as typeof EVENT, [view(START.b, "free", 2, 2, 0)]))));
       laneButton("09:40", "Ring 1").click();
       fill();
       submit();
-      await vi.waitFor(() => expect($(".form-error").textContent).toBe("Choose a lane."));
-      expect($("#field-1-error").textContent).toBe("Too short.");
+      await vi.waitFor(() => expect(laneButtons("09:40")).toHaveLength(2));
+      expect($("#notice").textContent).toBe(CHANGED);
+      expect($(".form-error").textContent).toBe("");
+      expect(form().hidden).toBe(true);
+      expect(document.querySelectorAll(".slot-group button[aria-pressed='true']")).toHaveLength(0);
+      expect(document.activeElement).toBe($("#notice"));
+      expect(calls.filter((c) => c.init?.method !== "POST")).toHaveLength(2);
+      expect(($("#field-1") as HTMLInputElement).value).toBe("Biscuit");
+      // and the booker can go on: choosing a lane of the fresh list posts it
+      laneButton("09:40", "Ring 2").click();
+      expect(form().hidden).toBe(false);
+    });
+
+    it("treats fields.laneId on a page built for one lane (a lane was added meanwhile) the same way, and the page then asks for a lane", async () => {
+      let gets = 0;
+      await start(routes(CHOOSE, () => (gets++ === 0 ? getOk(EVENT, SLOTS) : getOk(LANE_EVENT, LANE_SLOTS))));
+      slotButton("09:20").click();
+      fill();
+      submit();
+      await vi.waitFor(() => expect(groups()).toHaveLength(3));
+      expect($("#notice").textContent).toBe(CHANGED);
+      expect(form().hidden).toBe(true);
+      expect(slotButtons().filter((b) => !b.classList.contains("lane") && !b.classList.contains("past"))).toHaveLength(0);
+      expect(document.activeElement).toBe($("#notice"));
     });
 
     it("refetches on event_changed and shows the new lanes", async () => {

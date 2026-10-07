@@ -394,7 +394,9 @@ With one lane and one place per time, that is all they see. With more places or 
 - **One lane with a name:** the same grid, with the lane's name in the form heading ("Booking 10:00 · Main ring") and on the confirm button.
 - **Two or more lanes:** each time is a card with a button for every lane, showing the lane's name and "2 left", "1 left" or "Full". A full lane can't be tapped. A time with no free place in any lane is hidden, and a time that has started shows "Started". The person taps the lane they want, and the form heading and confirm button name the time and the lane ("Booking 10:00 · Ring 1"). If someone takes the last place in that lane first, they see "That slot's just gone." with the up-to-date list.
 
-They then see "You're booked in", with "Copy booking" and "Add to calendar". When the lane has a name, the confirmation has a row for each value they gave (labelled with the field's label), then a "Lane" row, and the copied text has a line for each value, and has a "Lane:" line after the date and time. The page tells them to keep the details, because there is no way to look a booking up again.
+They then see "You're booked in", with "Copy booking" and "Add to calendar". When the lane has a name, the confirmation has a row for each value they gave (labelled with the field's label), then a "Lane" row, and the copied text has a line for each value, and has a "Lane:" line after the values (before the venue). The page tells them to keep the details, because there is no way to look a booking up again.
+
+If you change the event while someone is booking (a lane is removed or added, or a question on the form is added, removed or renamed), their next attempt shows "The event was just changed. The times below are up to date; choose again." The page picks nothing for them, shows the lanes and times as they are now, and, if the form changed, shows the new form with what they had typed kept in any question that is still the same.
 
 People can't change or cancel a booking online. The page tells them to contact the organiser. You do it for them, as in the next section.
 
@@ -435,7 +437,7 @@ With more places or lanes the box says "New place" and lists every time and lane
 2. Under "Swap with", pick the other booking.
 3. Tap "Swap bookings".
 
-Each person keeps their own booking. They just trade times. With lanes the choices name the time and lane ("10:30 · Ring 2: Rex (Sam)"), and the two bookings trade lane, time and place.
+Each person keeps their own booking. They just trade times. With lanes the choices name the time and lane ("10:30 · Ring 2: Rex (Sam)"), and the two bookings trade lane, time and place. The page sends the lane each booking was in when you opened the schedule, so if either has moved to another lane since, the swap is refused, nothing changes, and the schedule refreshes ("That changed while you were working.").
 
 ### Remove a booking
 
@@ -531,7 +533,7 @@ Tap "Add field" for another (up to four; the button greys out there) and "Remove
 
 **New events and templates.** A new event with no template asks for one required field, "Name", that identifies the booking, with a limit of 1. Choosing a template copies its fields and limit; "No template" goes back to "Name". Events and templates that existed before the fields could be changed have "Dog" and "Handler", both required, 80 characters, both identifying the booking, and their bookings are unchanged.
 
-**Once an event has bookings,** you can no longer add or remove fields or change which ones identify a booking, because the stored bookings and their calendar entries depend on that. On the edit page "Add field", "Remove" and the "Identifies a booking" boxes are greyed out, with the note "Bookings exist, so you can't add or remove fields or change which ones identify a booking. You can still rename them and change the other settings." You can still rename a field, change which fields are required (except the ones that must be), change a longest length, and change the identity limit. If a booking arrives while you are editing and you have already added or removed a field or changed an identifying box, the save is refused with a message saying so, and the card is put back as the page loaded it (with your other changes kept). To change the shape of the form of an event that has bookings, you would have to clear its bookings first. A booking made at the very moment you change what is required or a longest value is refused and tried again against the new form.
+**Once an event has bookings,** you can no longer add or remove fields or change which ones identify a booking, because the stored bookings and their calendar entries depend on that. On the edit page "Add field", "Remove" and the "Identifies a booking" boxes are greyed out, with the note "Bookings exist, so you can't add or remove fields or change which ones identify a booking. You can still rename them and change the other settings." You can still rename a field, change which fields are required (except the ones that must be), change a longest length, and change the identity limit. If a booking arrives while you are editing and you have already added or removed a field or changed an identifying box, the save is refused with a message saying so, and the whole "Booking form" card is put back as the page loaded it: its fields, labels, required boxes, longest values and the identity limit. The message says "Your changes to the booking form were discarded", and the card shows the server's reason. Your changes to the rest of the form are kept. Make the changes you still want, such as a new label, and save again. To change the shape of the form of an event that has bookings, you would have to clear its bookings first. A booking made at the very moment you change what is required or a longest value is refused and tried again against the new form.
 
 **What people see.** Each field's label is the title of its box, with "(optional)" after it when it isn't required. A required box left empty says "Dog is required." and the other messages start with the same bare label ("Dog must be at most 80 characters."). An optional field left empty is left out of the confirmation and the calendar entry, and its cell in the CSV is empty. The lineup shows only the fields that identify a booking, whether or not the others are filled in (see [The lineup](#8-the-lineup)). The privacy notice names the labels.
 
@@ -553,7 +555,7 @@ For the golf example one booking is a whole group: only Player 1 identifies it, 
 
 You see "Saved." If bookings were removed, you also see "Removed bookings: tell these people to rebook". The people are not told for you.
 
-1. Tap "Copy list". It copies lines like "Please rebook: 10:05 — Rex — Sam Smith".
+1. Tap "Copy list". It copies lines like "Please rebook: 10:05 — Rex — Sam Smith". Each line has the time (and the lane, when it has a name) and only the values of the fields that identify a booking, so a phone number or a note a person gave is not in the text you paste into the chat.
 2. Paste it into your chat.
 
 There are also "Back to events" and "Open the booking page" buttons.

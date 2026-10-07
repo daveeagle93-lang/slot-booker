@@ -271,15 +271,18 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
       });
     }
 
-    function swapPanel(b, key, fromSlot, when) {
+    function swapPanel(b, key, fromSlot, when, fromLane) {
       const others = plain
         ? bookedSlots.filter((s) => s.start !== fromSlot).map((s) => ({ value: s.start, slot: s.start, laneName: singleLane, booking: heldAt(s) }))
         : detail.slots.flatMap((s) => placesOf(s).flatMap((p) => p.bookings.filter((x) => x.id !== b.id)
-          .map((x) => ({ value: String(x.id), slot: s.start, laneName: p.laneName, booking: x }))));
+          .map((x) => ({ value: String(x.id), slot: s.start, lane: p.laneId, laneName: p.laneName, booking: x }))));
       return pickPanel({
         key, kind: "swap", title: "Swap bookings", label: "Swap with", submitLabel: "Swap bookings", empty: "There's no other booking to swap with.",
         choices: others.map((o) => ({ ...o, text: `${where(formatTime(o.slot), o.laneName)}: ${person(o.booking)}` })),
-        send: (o) => perform("POST", `${base}/bookings/swap`, { a: { id: b.id, slot: fromSlot }, b: { id: o.booking.id, slot: o.slot } }, {
+        // Each side says which lane the admin saw it in, so a booking that has moved lane meanwhile is refused (409 changed); the v1.0 page sends none.
+        send: (o) => perform("POST", `${base}/bookings/swap`, plain
+          ? { a: { id: b.id, slot: fromSlot }, b: { id: o.booking.id, slot: o.slot } }
+          : { a: { id: b.id, slot: fromSlot, lane: fromLane }, b: { id: o.booking.id, slot: o.slot, lane: o.lane } }, {
           done: () => ({ message: `Swapped ${first(b)} (${when}) with ${first(o.booking)} (${where(formatTime(o.slot), o.laneName)}).`, focus: { key: o.slot } }),
         }),
       });
@@ -371,7 +374,7 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
           const key = `b${x.id}`;
           const open = panel?.key === key
             ? [panel.kind === "clear" ? clearPanel(x, key, when, slot.start) : panel.kind === "move" ? movePanel(x, key, { slot: slot.start, laneId: p.laneId }, when)
-              : swapPanel(x, key, slot.start, when)]
+              : swapPanel(x, key, slot.start, when, p.laneId)]
             : [];
           return h("li", { class: "sched-place booked", "data-key": key, tabindex: "-1" },
             h("div", { class: "sched-line" }, ...laneSpan(p.laneName), h("span", { class: "sched-who" }, person(x))),

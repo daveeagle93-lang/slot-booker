@@ -884,7 +884,7 @@ describe("lanes and places: Swap", () => {
     expect(options($("select"))).toEqual(["09:15 · Ring 1: Flo (Pat Jones)", "10:15 · Ring 2: Cy (Dee)"]);
   });
 
-  it("sends both ids with the times the admin saw, as today, and announces with the lanes", async () => {
+  it("sends both ids with the time and lane the admin saw for each, and announces with the lanes", async () => {
     const { calls, setDetail } = await start({
       initial: threeByTwo(),
       respond: (c) => (c.method === "POST" ? reply(200, { a: { id: 11, slotStart: S[3], lane: RING[1] }, b: { id: 14, slotStart: S[1], lane: RING[0] } }) : undefined),
@@ -894,7 +894,7 @@ describe("lanes and places: Swap", () => {
     ($("select") as HTMLSelectElement).value = "14";
     submit($(".sched-panel"));
     await settle();
-    expect(writes(calls)).toEqual([{ url: `${BASE}/bookings/swap`, method: "POST", body: { a: { id: 11, slot: S[1] }, b: { id: 14, slot: S[3] } } }]);
+    expect(writes(calls)).toEqual([{ url: `${BASE}/bookings/swap`, method: "POST", body: { a: { id: 11, slot: S[1], lane: 1 }, b: { id: 14, slot: S[3], lane: 2 } } }]);
     expect(statusText()).toBe("Swapped Rex (09:15 · Ring 1) with Cy (10:15 · Ring 2).");
     expect(document.activeElement).toBe(group("10:15"));
   });
@@ -905,7 +905,7 @@ describe("lanes and places: Swap", () => {
     ($("select") as HTMLSelectElement).value = "12";
     submit($(".sched-panel"));
     await settle();
-    expect(writes(calls)[0].body).toEqual({ a: { id: 11, slot: S[1] }, b: { id: 12, slot: S[1] } });
+    expect(writes(calls)[0].body).toEqual({ a: { id: 11, slot: S[1], lane: 1 }, b: { id: 12, slot: S[1], lane: 1 } });
   });
 
   it("says so when there is nothing to swap with", async () => {
