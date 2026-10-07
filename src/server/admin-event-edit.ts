@@ -12,7 +12,7 @@ import { loadSettings } from "./settings";
 export type EditResult =
   | { kind: "saved"; event: EventRow; slotCount: number; removed: BookingRef[]; hasBookings: boolean }
   | { kind: "bookings_affected"; affected: BookingRef[] }
-  /** The lanes, capacity, identity limit or fields were edited by someone else after the event was read, and this request would have overwritten that. */
+  /** The lanes, capacity, identity limit or fields were edited by someone else after the page the request was made on was loaded (or after the event was read), and this request would have overwritten that. */
   | { kind: "layout_changed" }
   /** The request changes the number of fields or which of them identify a booking, and the event has bookings (or got one meanwhile): nothing was written. */
   | { kind: "fields_locked" }
@@ -61,6 +61,8 @@ export const eventView = (e: EventRow, hasBookings: boolean) => ({
   startUtc: e.startUtc, endUtc: e.endUtc,
   lanes: e.lanes.map((l) => ({ id: l.id, name: l.name })), capacity: e.capacity,
   fields: draftsOf(e.fields), identityLimit: e.identityLimit, hasBookings,
+  // What the page was loaded at: an edit of the lanes, places or form sends it back, and is refused if someone else's edit has raised it since.
+  configRev: e.configRev,
   breaks: [...e.breaks].sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0))
     .map((b) => ({ start: utcToLondon(b.start).time, end: utcToLondon(b.end).time, label: b.label, startUtc: b.start, endUtc: b.end })),
 });
@@ -191,7 +193,9 @@ export interface SaveHooks { afterRead?: () => Promise<void> }
  * or lanes can't hold it without being one of those (a booking made after the read: nothing is written and the fresh list is
  * returned), if a booking in the list has moved since (the read is repeated), or if the event was deleted after the read
  * (not_found, nothing written). A draft that lists the lanes or the capacity is written over the layout it was made from, so it
- * also fails (layout_changed) if the layout was edited after the event was read; every edit that changes the lanes or the
+ * is refused (layout_changed) if the layout was edited after that: the draft carries the `configRev` of the page it was made on
+ * (a request must; a draft without one is taken to have been made from the event as passed in), which is compared with the stored
+ * one before anything is read, and again inside the batch; every edit that changes the lanes or the
  * capacity increases event_layout.config_rev in the same batch, which is how a booking request that read the old layout fails
  * its own guard (db-guard.ts). The same holds for a draft that lists `fields` or `identityLimit`: written over the form it was made
  * from, and config_rev goes up when the identity limit, the number of fields, which of them identify a booking, a required flag or a
@@ -205,6 +209,9 @@ export async function saveEventEdit(
   const { slots } = previewSchedule(draft);
   const confirmed = new Set(confirmedIds);
   const touchesLayout = draft.lanes !== undefined || draft.capacity !== undefined || draft.fields !== undefined || draft.identityLimit !== undefined;
+  // The revision the page was loaded at; a draft without one (not made by a request) is taken to have been made from the event as read.
+  const expectedRev = draft.configRev ?? event.configRev;
+  if (touchesLayout && expectedRev !== event.configRev) return { kind: "layout_changed" };
   let current = event;
   for (let attempt = 0; ; attempt++) {
     const bookings = await loadBookings(db, current);
@@ -219,7 +226,7 @@ export async function saveEventEdit(
       if (!isGuardFailure(e)) throw e;
       const fresh = await loadEventBySlug(db, event.slug);
       if (!fresh) return { kind: "not_found" };
-      if (touchesLayout && fresh.configRev !== event.configRev) return { kind: "layout_changed" };
+      if (touchesLayout && fresh.configRev !== expectedRev) return { kind: "layout_changed" };
       current = fresh;
     }
   }
@@ -248,7 +255,7 @@ async function writeEdit(
   const batch: D1PreparedStatement[] = [
     guard(db, "EXISTS (SELECT 1 FROM events WHERE id = ?)", event.id),
     ...(lanes === undefined && draft.capacity === undefined && draft.fields === undefined && draft.identityLimit === undefined ? [] : [
-      guard(db, "COALESCE((SELECT config_rev FROM event_layout WHERE event_id = ?), 0) = ?", event.id, event.configRev),
+      guard(db, "COALESCE((SELECT config_rev FROM event_layout WHERE event_id = ?), 0) = ?", event.id, draft.configRev ?? event.configRev),
     ]),
     // A booking made since the read stops a change of the number of fields or the identity fields (the whole batch writes nothing).
     ...(fields?.shape ? [guard(db, "NOT EXISTS (SELECT 1 FROM bookings WHERE event_id = ?)", event.id)] : []),

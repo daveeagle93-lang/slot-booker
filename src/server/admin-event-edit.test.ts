@@ -205,14 +205,19 @@ async function seedLanes(o: { lanes?: string[]; capacity?: number } = {}) {
   return e;
 }
 
-/** A draft for the event: the same times (09:00-10:00 London), with the given lanes and capacity (omitted keys stay omitted). */
+/**
+ * A draft for the event: the same times (09:00-10:00 London), with the given lanes and capacity (omitted keys stay omitted). A
+ * request that sends the layout carries the `configRev` of its page (parseEventDraft needs one); these tests are about the engine
+ * and stand for a page loaded just now, so the draft keeps no revision (it is then checked against the event as read) unless `over`
+ * names one.
+ */
 function draftFor(event: { laneIds: number[] }, over: Record<string, unknown> = {}, capacity = 3): EventDraft {
   const r = parseEventDraft({
     name: "Edited", date: "2026-10-24", start: "09:00", end: "10:00", sessionMinutes: 15, gapMinutes: 0, costPence: 1250,
-    venuePostcode: "AB1 2CD", details: "Test details", breaks: [], ...over,
-  }, { now: NOW, requireFuture: false, layout: { laneIds: event.laneIds, capacity } });
+    venuePostcode: "AB1 2CD", details: "Test details", breaks: [], configRev: 0, ...over,
+  }, { now: NOW, requireFuture: false, layout: { laneIds: event.laneIds, capacity }, requireConfigRev: true });
   if (!("draft" in r)) throw new Error(JSON.stringify(r.fields));
-  return r.draft;
+  return "configRev" in over ? r.draft : { ...r.draft, configRev: undefined };
 }
 
 const layoutRows = async (id: number) => ({
@@ -822,5 +827,57 @@ describe("saveEventEdit: the booking form's fields and the identity limit", () =
     await insertBookingOf(t.env.DB, e.id, [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Phone" }], S[3], ["Ann", "Biscuit", "111"]);
     const r = await edit(e, { end: "09:30" });
     expect(r).toMatchObject({ kind: "bookings_affected", affected: [{ fields: [{ label: "Rider", value: "Ann" }, { label: "Pony", value: "Biscuit" }, { label: "Phone", value: "111" }] }] });
+  });
+});
+
+describe("saveEventEdit: the revision of the page the draft was made on", () => {
+  const F = (label: string, over: Record<string, unknown> = {}) => ({ label, required: true, maxLength: 80, identity: false, ...over });
+  const KINDS: Record<string, (e: { laneIds: number[] }) => Record<string, unknown>> = {
+    lanes: (e) => ({ lanes: [{ id: e.laneIds[0], name: "Mine" }, { id: e.laneIds[1], name: "Ring 2" }] }),
+    capacity: () => ({ capacity: 2 }),
+    fields: () => ({ fields: [F("Horse", { identity: true, maxLength: 40 }), F("Rider", { identity: true })] }),
+    identityLimit: () => ({ identityLimit: 3 }),
+  };
+  const everything = async (id: number) => JSON.stringify([
+    await snapshot(id), await layoutRows(id),
+    (await t.env.DB.prepare("SELECT * FROM event_fields WHERE event_id = ? ORDER BY position").bind(id).all()).results,
+    (await t.env.DB.prepare("SELECT identity_limit FROM event_layout WHERE event_id = ?").bind(id).first()),
+  ]);
+
+  it.each(Object.keys(KINDS))("refuses a draft with %s made on an older revision (layout_changed) before reading or writing anything", async (key) => {
+    const e = await seedLanes();
+    await t.env.DB.prepare("UPDATE event_layout SET config_rev = 1 WHERE event_id = ?").bind(e.id).run(); // someone else's edit
+    const before = await everything(e.id);
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { ...KINDS[key](e), configRev: 0 }), []);
+    expect(result.kind).toBe("layout_changed");
+    expect(await everything(e.id)).toBe(before);
+  });
+
+  it.each(Object.keys(KINDS))("saves a draft with %s made on the current revision, and raises it", async (key) => {
+    const e = await seedLanes();
+    await t.env.DB.prepare("UPDATE event_layout SET config_rev = 4 WHERE event_id = ?").bind(e.id).run();
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { ...KINDS[key](e), configRev: 4 }), []);
+    expect(result.kind).toBe("saved");
+    expect(result.kind === "saved" && result.event.configRev).toBe(5);
+    expect((await layoutRows(e.id)).layout!.config_rev).toBe(5);
+  });
+
+  it("compares the revision the draft carries inside the batch: an edit that lands after the read refuses it, writing nothing", async () => {
+    const e = await seedLanes();
+    const before = await everything(e.id);
+    const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { capacity: 2, configRev: 0 }), [], {
+      afterRead: async () => { await t.env.DB.prepare("UPDATE event_layout SET config_rev = config_rev + 1 WHERE event_id = ?").bind(e.id).run(); },
+    });
+    expect(result.kind).toBe("layout_changed");
+    expect(await t.env.DB.prepare("SELECT capacity, config_rev FROM event_layout WHERE event_id = ?").bind(e.id).first()).toEqual({ capacity: 3, config_rev: 1 });
+    expect((await everything(e.id)).replace(/"config_rev":\d/g, "")).toBe(before.replace(/"config_rev":\d/g, ""));
+  });
+
+  it("does not look at the revision for a draft that sends none of the layout: last write wins, as before", async () => {
+    const e = await seedLanes();
+    await t.env.DB.prepare("UPDATE event_layout SET config_rev = 9 WHERE event_id = ?").bind(e.id).run();
+    const draft = { ...draftFor(e, {}), configRev: 0 };
+    expect((await saveEventEdit(t.env.DB, await load(e.slug), draft, [])).kind).toBe("saved");
+    expect((await layoutRows(e.id)).layout!.config_rev).toBe(9);
   });
 });

@@ -17,7 +17,10 @@ export const onRequestPost: RouteHandler<"slug"> = async ({ request, env, data, 
   try {
     const event = await loadEventBySlug(env.DB, String(params.slug));
     if (!event) return eventNotFound();
-    const draft = await readEventDraft(request, false, { laneIds: event.lanes.map((l) => l.id), capacity: event.capacity });
+    const draft = await readEventDraft(
+      request, false, { laneIds: event.lanes.map((l) => l.id), capacity: event.capacity },
+      { laneNames: event.lanes.map((l) => l.name), fieldLabels: event.fields.map((f) => f.label) },
+    );
     if (draft instanceof Response) return draft;
     const preview = previewSchedule(draft);
     const affected = strandedBookings(await loadBookings(env.DB, event), planOf(event, draft, preview.slots)).map(toRef);

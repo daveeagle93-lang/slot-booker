@@ -34,10 +34,14 @@ export interface TemplateDraft extends Omit<Template, "id" | "isDefault" | "shar
  * A template is checked as an event on a day with no clock change, so the one event code path decides everything the two
  * have in common: the times, the breaks, the slot count, the postcode, the details, the cost and the share message, under
  * the same field keys (`breaks.N.start` and so on); that includes `lanes` (names only, a lane `id` is refused), `capacity`, `fields`
- * and `identityLimit`, and the limit on places is checked against the template's slot count. The name has its own rule (60 characters, as
+ * and `identityLimit`, and the limit on places is checked against the template's slot count, with the stored template's lanes or
+ * capacity (`stored`, on an update) standing in for whichever the request leaves out; the stored lane names and field labels may be kept as
+ * they are even where today's rules would refuse them. The name has its own rule (60 characters, as
  * "template name"), and the date and `listed` don't apply. Unknown fields are ignored.
  */
-export function parseTemplateDraft(raw: Record<string, unknown>): { draft: TemplateDraft } | { fields: Fields } {
+export function parseTemplateDraft(
+  raw: Record<string, unknown>, stored?: Pick<Template, "lanes" | "capacity" | "fields">,
+): { draft: TemplateDraft } | { fields: Fields } {
   const fields: Fields = {};
   const name = checkName(raw.name, undefined, "template name", MAX_NAME_CODE_POINTS);
   if ("message" in name) fields.name = name.message;
@@ -46,7 +50,10 @@ export function parseTemplateDraft(raw: Record<string, unknown>): { draft: Templ
     name: "Template", date: PROBE_DATE, start: raw.start, end: raw.end, sessionMinutes: raw.sessionMinutes, gapMinutes: raw.gapMinutes,
     costPence: raw.costPence, venuePostcode: raw.venuePostcode, details: raw.details, shareMessage: raw.shareMessage, breaks: raw.breaks,
     lanes: raw.lanes, capacity: raw.capacity, fields: raw.fields, identityLimit: raw.identityLimit,
-  }, { now: new Date(), requireFuture: false });
+  }, {
+    now: new Date(), requireFuture: false, kept: stored && { laneCount: stored.lanes.length, capacity: stored.capacity },
+    keep: stored && { laneNames: stored.lanes.map((l) => l.name), fieldLabels: stored.fields.map((f) => f.label) },
+  });
   if ("fields" in parsed) Object.assign(fields, parsed.fields);
   if (Object.keys(fields).length > 0 || !("draft" in parsed)) return { fields };
   const d = parsed.draft;

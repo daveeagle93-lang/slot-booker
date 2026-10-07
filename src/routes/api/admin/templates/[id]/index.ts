@@ -33,9 +33,11 @@ export const onRequestPut: RouteHandler<"id"> = async ({ request, env, data, par
   if (id === null) return templateNotFound();
   const body = await readEventBody(request);
   if (body instanceof Response) return body;
-  const parsed = parseTemplateDraft(body);
-  if ("fields" in parsed) return invalidInput(parsed.fields);
   try {
+    // The stored template, so a request that sends only the lanes (or only the capacity) is checked against the other as it is stored.
+    const [stored] = await loadTemplates(env.DB, id);
+    const parsed = parseTemplateDraft(body, stored);
+    if ("fields" in parsed) return invalidInput(parsed.fields);
     const result = await updateTemplate(env.DB, id, parsed.draft);
     switch (result.kind) {
       case "saved":

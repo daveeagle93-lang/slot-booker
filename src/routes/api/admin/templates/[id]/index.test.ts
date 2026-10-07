@@ -437,6 +437,49 @@ describe("templates: lanes and capacity on update and in a round trip to an even
     expect(await stored(tpl.id)).toEqual({ lanes: ["Z", "Y", "X"], layout: { capacity: 5 } });
   });
 
+  it("lets an update keep a lane name and a field label the template already has that today's rules would refuse, and refuses a new one like it", async () => {
+    const tpl = await made({ lanes: [{ name: "Ring 1" }, { name: "Ring 2" }], fields: [{ label: "Dog", required: true, maxLength: 80, identity: true }] });
+    await t.env.DB.prepare("UPDATE event_template_lanes SET name = ? WHERE template_id = ? AND position = 1").bind("Ring 1\uFE0F", tpl.id).run();
+    await t.env.DB.prepare("UPDATE event_template_fields SET label = ? WHERE template_id = ?").bind("Dog\uFE0F", tpl.id).run();
+    const fields = [{ label: "Dog\uFE0F", required: true, maxLength: 80, identity: true }];
+    expect((await put(tpl.id, body({ lanes: [{ name: "Ring 1\uFE0F" }, { name: "Ring 2" }], fields }))).status).toBe(200);
+    const res = await put(tpl.id, body({ lanes: [{ name: "Ring 1\uFE0F" }, { name: "Ring 3\uFE0F" }], fields: [{ ...fields[0], label: "Hors\uFE0F" }] }));
+    expect(Object.keys(await fieldsOf(res)).sort()).toEqual(["fields.0.label", "lanes.1.name"]);
+  });
+
+  describe("the 2000 places rule uses what an update leaves alone (the template's stored lanes or capacity)", () => {
+    const names = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `Ring ${i + 1}` }));
+    // The test template has 10 slots (09:00 to 12:00, quarter hours, a break at 10:00 to 10:30).
+    it("refuses new lanes alone that, with the stored capacity, make more than 2000 places, and changes nothing", async () => {
+      const tpl = await made({ lanes: names(4), capacity: 50 }); // 10 x 4 x 50 = 2000
+      const before = await stored(tpl.id);
+      const res = await put(tpl.id, body({ lanes: names(5) })); // 10 x 5 x 50 = 2500
+      expect(await fieldsOf(res)).toEqual({ lanes: expect.stringContaining("2500 places") });
+      expect(await stored(tpl.id)).toEqual(before);
+      expect((await put(tpl.id, body({ lanes: names(4) }))).status).toBe(200);
+    });
+
+    it("refuses a capacity alone that, with the stored lanes, makes more than 2000 places, and changes nothing", async () => {
+      const tpl = await made({ lanes: names(10), capacity: 1 });
+      const before = await stored(tpl.id);
+      const res = await put(tpl.id, body({ capacity: 21 })); // 10 x 10 x 21 = 2100
+      expect(await fieldsOf(res)).toEqual({ capacity: expect.stringContaining("2100 places") });
+      expect(await stored(tpl.id)).toEqual(before);
+      expect((await put(tpl.id, body({ capacity: 20 }))).status).toBe(200);
+    });
+
+    it("counts one lane for a template that has no lane rows", async () => {
+      const { id } = await insertTemplate(t.env.DB);
+      await t.env.DB.prepare("DELETE FROM event_template_lanes WHERE template_id = ?").bind(id).run();
+      expect((await put(id, body({ capacity: 50 }))).status).toBe(200); // 10 x 1 x 50
+      expect(await fieldsOf(await put(id, body({ lanes: names(5) })))).toEqual({ lanes: expect.stringContaining("2500 places") });
+    });
+
+    it("answers 404, not a places error, for a template that does not exist", async () => {
+      expect((await put(999_999, body({ capacity: 50 }))).status).toBe(404);
+    });
+  });
+
   it("refuses bad lanes on update with field errors and changes nothing", async () => {
     const tpl = await made();
     const res = await put(tpl.id, body({ name: "Changed", lanes: [{ name: "A" }, { name: "" }], capacity: 51 }));

@@ -1,3 +1,4 @@
+import { identityKey } from "../core/identity";
 import { londonToUtc, LondonTimeError, utcToLondon } from "../core/london";
 import { DEFAULT_NEAR_MISS_MINUTES, generateSchedule, type TimeRange } from "../core/schedule";
 import { generateSlug } from "../core/slug";
@@ -47,6 +48,12 @@ export interface EventDraft {
   fields?: FieldDraft[];
   /** How many bookings one identity may hold; undefined when the request didn't say (create: 1; edit: unchanged). */
   identityLimit?: number;
+  /**
+   * The `config_rev` of the page the edit was made on: an edit that sends `lanes`, `capacity`, `fields` or `identityLimit` must carry
+   * it (parseEventDraft refuses it otherwise) and is refused if the stored one has moved on. Undefined for a create, a template, or an
+   * edit that sends none of those.
+   */
+  configRev?: number;
 }
 
 export interface LaneDraft { id?: number; name: string }
@@ -92,6 +99,29 @@ export function checkName(
   if ([...name].length > max) return { message: `The ${what} must be at most ${max} characters.` };
   if (/\p{Cc}/u.test(name)) return { message: `The ${what} can't contain control characters.` };
   return { name };
+}
+
+/** Lane names and field labels already stored, which an edit may keep as they are even where today's rules would refuse them (rows written before those rules). */
+export interface KeptNames { laneNames: readonly string[]; fieldLabels: readonly string[] }
+
+/**
+ * A lane's name or a field's label: the rules of an event's name (checkName) and then those of a booking's values, so a name can't
+ * look like another or like nothing. Default-ignorable characters (variation selectors, Hangul fillers and the like: they draw as
+ * nothing, so "Ring 1" and "Ring 1" + U+FE0F would look the same) are refused outright with the invisible-character message; so are
+ * private-use characters and the braille blank (U+2800); and there must be a letter or a number. `kept` are the names the event already
+ * has: a value equal to one of them is only held to checkName's rules and may keep what the later ones would refuse.
+ */
+export function checkTitle(
+  value: unknown, kept: readonly string[], what: string, max: number,
+): { name: string } | { message: string } {
+  const keep = typeof value === "string" && kept.includes(value);
+  const checked = checkName(value, keep ? value : undefined, what, max);
+  if ("message" in checked || keep) return checked;
+  const { name } = checked;
+  if (/\p{Default_Ignorable_Code_Point}/u.test(name)) return { message: invisibleMessage(what) };
+  if (!/[\p{L}\p{N}]/u.test(name)) return { message: `The ${what} must contain at least one letter or number.` };
+  if (/[\p{Co}\u2800]/u.test(name)) return { message: `The ${what} can't contain private-use or blank-looking characters. Try plain text.` };
+  return checked;
 }
 
 /** A break's optional name: missing, undefined or null means unnamed (""). */
@@ -162,10 +192,10 @@ function checkLaneId(value: unknown, stored: StoredLayout | undefined, seen: Set
 
 /**
  * The lanes of a create, an edit or a template. One lane may be unnamed (the name is ""); with two or more every lane needs a
- * name, and names must differ ignoring case (the database's index only ignores ASCII case, so this is the stricter rule).
+ * name (checkTitle), and names must have different identity keys (the database's index only ignores ASCII case, so this is the stricter rule).
  * Errors are keyed `lanes` (the list), `lanes.N` (an item) and `lanes.N.name` or `lanes.N.id`.
  */
-function parseLanes(value: unknown, stored: StoredLayout | undefined, fields: Fields): LaneDraft[] | undefined {
+function parseLanes(value: unknown, stored: StoredLayout | undefined, kept: readonly string[], fields: Fields): LaneDraft[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) fields.lanes = "Lanes must be a list.";
   else if (value.length === 0) fields.lanes = "An event needs at least one lane.";
@@ -173,7 +203,7 @@ function parseLanes(value: unknown, stored: StoredLayout | undefined, fields: Fi
   else {
     const lanes: LaneDraft[] = [];
     const seenIds = new Set<number>();
-    const seenNames = new Set<string>();
+    const seenNames = new Map<string, boolean>(); // by identity key: whether every lane with it so far was already stored as it is
     let ok = true;
     value.forEach((item, i) => {
       const lane = asRecord(item);
@@ -188,17 +218,20 @@ function parseLanes(value: unknown, stored: StoredLayout | undefined, fields: Fi
         ok = false;
       }
       const unnamed = value.length === 1 && (lane.name === undefined || lane.name === null || (typeof lane.name === "string" && lane.name.trim() === ""));
-      const name = unnamed ? { name: "" } : checkName(lane.name, undefined, "lane name", MAX_LANE_NAME_CODE_POINTS);
+      const name = unnamed ? { name: "" } : checkTitle(lane.name, kept, "lane name", MAX_LANE_NAME_CODE_POINTS);
       if ("message" in name) {
         fields[`lanes.${i}.name`] = name.message;
         ok = false;
       } else if (name.name !== "") {
-        const same = name.name.normalize("NFC").toLowerCase();
-        if (seenNames.has(same)) {
+        // The same name by identity key (compatibility forms, spacing, case and ignorable characters don't make another), unless both are
+        // names the event already has, which an edit may keep as they are.
+        const same = identityKey(name.name);
+        const stored = typeof lane.name === "string" && kept.includes(lane.name);
+        if (seenNames.has(same) && !(stored && seenNames.get(same))) {
           fields[`lanes.${i}.name`] = "Two lanes can't have the same name.";
           ok = false;
         }
-        seenNames.add(same);
+        seenNames.set(same, stored && (seenNames.get(same) ?? true));
       }
       if (ok) lanes.push({ ...("id" in id ? { id: id.id } : {}), name: (name as { name: string }).name });
     });
@@ -209,19 +242,19 @@ function parseLanes(value: unknown, stored: StoredLayout | undefined, fields: Fi
 
 /**
  * The booking form's fields of a create, an edit or a template: one to four, each `{ label, required, maxLength, identity }`.
- * The label is text like an event name (at most 40 characters, no invisible, control or line-separating characters) and
- * differs from every other label ignoring case (NFC and Unicode lower case). The first field is required, a field that
+ * The label is text like an event name (at most 40 characters, no invisible, control or line-separating characters) with a letter or
+ * a number in it (checkTitle) and has a different identity key from every other label (compatibility forms, spacing and case ignored). The first field is required, a field that
  * identifies a booking is required, and at least one field identifies a booking. Errors are keyed `fields` (the list),
  * `fields.N` (an item) and `fields.N.label`, `fields.N.required`, `fields.N.maxLength` or `fields.N.identity`, N counting from 0.
  */
-function parseFields(value: unknown, fields: Fields): FieldDraft[] | undefined {
+function parseFields(value: unknown, kept: readonly string[], fields: Fields): FieldDraft[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) fields.fields = "Fields must be a list.";
   else if (value.length === 0) fields.fields = "A booking form needs at least one field.";
   else if (value.length > MAX_FIELDS) fields.fields = `You can have at most ${MAX_FIELDS} fields.`;
   else {
     const drafts: FieldDraft[] = [];
-    const seen = new Set<string>();
+    const seen = new Map<string, boolean>(); // as in parseLanes
     let ok = true;
     value.forEach((item, i) => {
       const f = asRecord(item);
@@ -230,17 +263,18 @@ function parseFields(value: unknown, fields: Fields): FieldDraft[] | undefined {
         ok = false;
         return;
       }
-      const label = checkName(f.label, undefined, "field label", MAX_FIELD_LABEL_CODE_POINTS);
+      const label = checkTitle(f.label, kept, "field label", MAX_FIELD_LABEL_CODE_POINTS);
       if ("message" in label) {
         fields[`fields.${i}.label`] = label.message;
         ok = false;
       } else {
-        const same = label.name.normalize("NFC").toLowerCase();
-        if (seen.has(same)) {
+        const same = identityKey(label.name);
+        const stored = typeof f.label === "string" && kept.includes(f.label);
+        if (seen.has(same) && !(stored && seen.get(same))) {
           fields[`fields.${i}.label`] = "Two fields can't have the same label.";
           ok = false;
         }
-        seen.add(same);
+        seen.set(same, stored && (seen.get(same) ?? true));
       }
       const maxLength = checkInteger(f.maxLength, 1, MAX_FIELD_LENGTH);
       if (maxLength === null) {
@@ -273,7 +307,14 @@ function parseFields(value: unknown, fields: Fields): FieldDraft[] | undefined {
 export const placeCountOf = (slotCount: number, laneCount: number, capacity: number): number => slotCount * laneCount * capacity;
 
 export function parseEventDraft(
-  raw: Record<string, unknown>, opts: { now: Date; requireFuture: boolean; stored?: StoredText; layout?: StoredLayout },
+  raw: Record<string, unknown>,
+  opts: {
+    now: Date; requireFuture: boolean; stored?: StoredText; layout?: StoredLayout; requireConfigRev?: boolean;
+    /** For a template update: the number of lanes and the capacity an omitted `lanes` or `capacity` keeps (templates' lanes have no ids, so there is no `layout`). */
+    kept?: { laneCount: number; capacity: number };
+    /** The lane names and field labels the event or template already has: an edit may keep them as they are even where today's rules would refuse them. */
+    keep?: KeptNames;
+  },
 ): { draft: EventDraft } | { fields: Fields } {
   const fields: Fields = {};
 
@@ -316,19 +357,27 @@ export function parseEventDraft(
     else shareMessage = message.text;
   }
   if (raw.listed !== undefined && typeof raw.listed !== "boolean") fields.listed = "Listed must be true or false.";
-  const lanes = parseLanes(raw.lanes, opts.layout, fields);
+  const lanes = parseLanes(raw.lanes, opts.layout, opts.keep?.laneNames ?? [], fields);
   let capacity: number | undefined;
   if (raw.capacity !== undefined) {
     const c = checkInteger(raw.capacity, 1, MAX_CAPACITY);
     if (c === null) fields.capacity = `Enter a whole number of places from 1 to ${MAX_CAPACITY}.`;
     else capacity = c;
   }
-  const bookingFields = parseFields(raw.fields, fields);
+  const bookingFields = parseFields(raw.fields, opts.keep?.fieldLabels ?? [], fields);
   let identityLimit: number | undefined;
   if (raw.identityLimit !== undefined) {
     const l = checkInteger(raw.identityLimit, 1, MAX_IDENTITY_LIMIT);
     if (l === null) fields.identityLimit = `Enter a whole number of bookings from 1 to ${MAX_IDENTITY_LIMIT}.`;
     else identityLimit = l;
+  }
+  // A save of an edit (`requireConfigRev`: not a preview, which writes nothing) that sends any of the layout's keys must say which
+  // revision of it the page showed.
+  let configRev: number | undefined;
+  if (opts.requireConfigRev && [raw.lanes, raw.capacity, raw.fields, raw.identityLimit].some((v) => v !== undefined)) {
+    const r = raw.configRev;
+    if (typeof r === "number" && Number.isSafeInteger(r) && r >= 0) configRev = r;
+    else fields.configRev = "Reload the page and try again.";
   }
 
   const breaks: EventDraft["breaks"] = [];
@@ -361,13 +410,15 @@ export function parseEventDraft(
     sessionMinutes: sessionMinutes!, gapMinutes: gapMinutes!, costPence: costPence!,
     venuePostcode: (postcode as { postcode: string }).postcode, details: (details as { details: string }).details,
     shareMessage, listed: raw.listed as boolean | undefined, startUtc: startUtc!, endUtc: endUtc!, breaks, lanes, capacity,
-    fields: bookingFields, identityLimit,
+    fields: bookingFields, identityLimit, configRev,
   };
   const slotCount = previewSchedule(draft).slots.length;
   if (slotCount === 0) return { fields: { end: "No sessions fit between the start and end." } };
   if (slotCount > MAX_SLOTS) return { fields: { sessionMinutes: `That would make more than ${MAX_SLOTS} slots.` } };
   // The places are checked with the slots, using what an omitted lanes or capacity keeps (one lane and one place for a new event).
-  const places = placeCountOf(slotCount, lanes?.length ?? opts.layout?.laneIds.length ?? 1, capacity ?? opts.layout?.capacity ?? 1);
+  const places = placeCountOf(
+    slotCount, lanes?.length ?? opts.layout?.laneIds.length ?? opts.kept?.laneCount ?? 1, capacity ?? opts.layout?.capacity ?? opts.kept?.capacity ?? 1,
+  );
   if (places > MAX_PLACES) {
     const key = capacity !== undefined ? "capacity" : lanes ? "lanes" : "sessionMinutes";
     return { fields: { [key]: `That would make ${places} places (time slots times lanes times places per lane). An event can have at most ${MAX_PLACES}; use fewer lanes or places, or longer sessions.` } };
@@ -381,11 +432,11 @@ export const readEventBody = (request: Request): Promise<Record<string, unknown>
 export const invalidInput = (fields: Fields): Response =>
   errorResponse(400, "invalid_input", "Check the highlighted fields.", { fields }, noStore);
 
-/** Reads and validates a draft from the request body, or returns the error response to send. `layout` is the stored one when the draft is for an existing event. */
-export async function readEventDraft(request: Request, requireFuture: boolean, layout?: StoredLayout): Promise<EventDraft | Response> {
+/** Reads and validates a draft from the request body, or returns the error response to send. `layout` is the stored one (and `keep` the names it already has) when the draft is for an existing event. */
+export async function readEventDraft(request: Request, requireFuture: boolean, layout?: StoredLayout, keep?: KeptNames): Promise<EventDraft | Response> {
   const body = await readEventBody(request);
   if (body instanceof Response) return body;
-  const parsed = parseEventDraft(body, { now: new Date(), requireFuture, layout });
+  const parsed = parseEventDraft(body, { now: new Date(), requireFuture, layout, keep });
   if ("fields" in parsed) return invalidInput(parsed.fields);
   return parsed.draft;
 }
@@ -445,6 +496,8 @@ export interface SavedEvent {
   capacity: number;
   fields: FieldDraft[];
   identityLimit: number;
+  /** The layout's revision (0 for a new event), which the edit page sends back when it saves the lanes, places or form. */
+  configRev: number;
 }
 
 export interface CreateEventResult { kind: "created" | "replayed" | "idempotency_key_reuse"; saved: SavedEvent }
@@ -454,7 +507,7 @@ export const createdBody = (e: SavedEvent) => ({
   event: {
     slug: e.slug, name: e.name, startUtc: e.startUtc, endUtc: e.endUtc, sessionMinutes: e.sessionMinutes,
     gapMinutes: e.gapMinutes, costPence: e.costPence, venuePostcode: e.venuePostcode, details: e.details,
-    shareMessage: e.shareMessage, lanes: e.lanes, capacity: e.capacity, fields: e.fields, identityLimit: e.identityLimit,
+    shareMessage: e.shareMessage, lanes: e.lanes, capacity: e.capacity, fields: e.fields, identityLimit: e.identityLimit, configRev: e.configRev,
   },
   path: `/e/${e.slug}`,
   slotCount: generateSchedule({
@@ -501,7 +554,7 @@ export async function findEventByKey(
     db.prepare(`SELECT start_utc, end_utc, label FROM breaks WHERE event_id = ${idOf} ORDER BY start_utc, end_utc, label`).bind(key),
     db.prepare(`SELECT id, name FROM event_lanes WHERE event_id = ${idOf} ORDER BY position`).bind(key),
     db.prepare(`SELECT position, label, required, max_length, in_identity FROM event_fields WHERE event_id = ${idOf} ORDER BY position`).bind(key),
-    db.prepare(`SELECT capacity, identity_limit FROM event_layout WHERE event_id = ${idOf}`).bind(key),
+    db.prepare(`SELECT capacity, identity_limit, config_rev FROM event_layout WHERE event_id = ${idOf}`).bind(key),
   ]);
   const e = (events.results as {
     slug: string; name: string; start_utc: string; end_utc: string; session_minutes: number; gap_minutes: number;
@@ -518,6 +571,7 @@ export async function findEventByKey(
     capacity: (layout.results as { capacity: number }[])[0]?.capacity ?? 1,
     fields: draftsOf((fieldRows.results as unknown as RawField[]).map(fieldOf)),
     identityLimit: (layout.results as { identity_limit: number }[])[0]?.identity_limit ?? 1,
+    configRev: (layout.results as { config_rev: number }[])[0]?.config_rev ?? 0,
   };
   return { kind: sameEvent(saved, d) ? "replayed" : "idempotency_key_reuse", saved };
 }
@@ -544,7 +598,7 @@ export async function createEvent(db: D1Database, d: EventDraft, key: string): P
   const lanes = lanesOf(d).map((l, i) => ({ id: laneIds[i], name: l.name }));
   return {
     kind: "created",
-    saved: { ...d, shareMessage: d.shareMessage ?? "", listed: d.listed ?? true, slug, lanes, capacity: d.capacity ?? 1, fields: fieldsOf(d), identityLimit: d.identityLimit ?? 1 },
+    saved: { ...d, shareMessage: d.shareMessage ?? "", listed: d.listed ?? true, slug, lanes, capacity: d.capacity ?? 1, fields: fieldsOf(d), identityLimit: d.identityLimit ?? 1, configRev: 0 },
   };
 }
 

@@ -94,6 +94,10 @@ const ALLOWED_ADDITIONS: Allowed[] = [
   // to know whether the event has bookings, because then the number of fields and the identity fields can't change (decision 3).
   { files: /^admin-api\/detail-/, path: "body.event.hasBookings", why: "the admin event view says whether the event has any booking, so the edit form can lock the booking form's shape" },
   { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.event.hasBookings", why: "the admin event view (detail or saved edit) says whether the event has any booking, so the edit form can lock the booking form's shape" },
+  // ONE more additive key, written twice for the same reason (review fix): the edit page sends back the revision of the lanes, places and form it
+  // loaded, and a save of them is refused if someone else changed them since. (A created event answers with it too; no golden file captures a create.)
+  { files: /^admin-api\/detail-/, path: "body.event.configRev", why: "the admin event view says which revision of the lanes, places and form it shows, which the edit page sends back so another admin's change is not overwritten" },
+  { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.event.configRev", why: "the admin event view (detail or saved edit) says which revision of the lanes, places and form it shows, which the edit page sends back so another admin's change is not overwritten" },
   { files: /^admin-api\/templates-list\.json$/, path: "body.templates[].fields", why: "a template lists its booking form fields" },
   { files: /^admin-api\/templates-list\.json$/, path: "body.templates[].identityLimit", why: "a template gives how many bookings one identity may hold" },
   { files: /^admin-api\/template-\d+\.json$/, path: "body.template.fields", why: "a template lists its booking form fields" },

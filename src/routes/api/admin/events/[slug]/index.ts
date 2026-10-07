@@ -23,8 +23,9 @@ export const onRequestGet: RouteHandler<"slug"> = async ({ env, data, params }) 
  * Saves the event as the form describes it. Removing bookings needs their ids in `removeBookingIds`: the
  * server works out which bookings the new schedule, lanes or capacity would strand itself and refuses (409) unless every one
  * is listed, so the confirmation is enforced here, not only in the page. `lanes`, `capacity`, `fields` and `identityLimit` are optional
- * (left out, they stay as they are); a draft that sends them is refused with 409 `event_changed` if they were edited since the event
- * was read. Once the event has bookings, a draft that changes the number of fields or which of them identify a booking is refused with
+ * (left out, they stay as they are); a body that sends any of them must also send `configRev`, the revision of the layout the page was
+ * loaded with (400 `invalid_input` on `configRev` if it is missing or not a whole number), and is refused with 409 `event_changed`, writing
+ * nothing, if someone else has saved the lanes, places or form since (the stored revision differs from the page's). Once the event has bookings, a draft that changes the number of fields or which of them identify a booking is refused with
  * 409 `fields_locked`. A retry of a save that already
  * went through finds nothing left to remove and answers 200 with `removed: []`.
  * Two admins saving at once: the last write wins on the event's fields (there is no version column); the
@@ -42,18 +43,20 @@ export const onRequestPut: RouteHandler<"slug"> = async ({ request, env, data, p
     const now = new Date();
     const stored = { name: event.name, details: event.details, shareMessage: event.shareMessage, breakLabels: event.breaks.map((b) => b.label) };
     const layout = { laneIds: event.lanes.map((l) => l.id), capacity: event.capacity };
-    const parsed = parseEventDraft(body, { now, requireFuture: false, stored, layout });
+    // Lane names and field labels the event already has may be kept as they are, whatever today's rules say of them.
+    const keep = { laneNames: event.lanes.map((l) => l.name), fieldLabels: event.fields.map((f) => f.label) };
+    const parsed = parseEventDraft(body, { now, requireFuture: false, stored, layout, keep, requireConfigRev: true });
     if ("fields" in parsed) return invalidInput({ ...parsed.fields, ...("message" in remove ? { removeBookingIds: remove.message } : {}) });
     if ("message" in remove) return invalidInput({ removeBookingIds: remove.message });
     // Only a start that changes has to be in the future: a running or finished event can still be corrected.
     if (parsed.draft.startUtc !== event.startUtc) {
-      const strict = parseEventDraft(body, { now, requireFuture: true, stored, layout });
+      const strict = parseEventDraft(body, { now, requireFuture: true, stored, layout, keep, requireConfigRev: true });
       if ("fields" in strict) return invalidInput(strict.fields);
     }
     const result = await saveEventEdit(env.DB, event, parsed.draft, remove.ids);
     if (result.kind === "not_found") return eventNotFound();
     if (result.kind === "layout_changed") {
-      return errorResponse(409, "event_changed", "The lanes, places or booking form of this event were edited while you were working. Reload the page.", {}, noStore);
+      return errorResponse(409, "event_changed", "The lanes, places or booking form of this event were changed by someone else. Reload the page to see them, then make your change again.", {}, noStore);
     }
     if (result.kind === "fields_locked") {
       const message = "This event has bookings, so fields can't be added or removed and the fields that identify a booking can't be changed. You can still change labels, which fields are required, how long each can be and how many bookings one identity may hold.";

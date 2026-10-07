@@ -83,7 +83,7 @@ describe("POST /api/admin/events", () => {
         startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z", sessionMinutes: 15, gapMinutes: 0,
         costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water", shareMessage: "",
         lanes: [{ id: expect.any(Number), name: "" }], capacity: 1,
-        fields: [{ label: "Name", required: true, maxLength: 80, identity: true }], identityLimit: 1,
+        fields: [{ label: "Name", required: true, maxLength: 80, identity: true }], identityLimit: 1, configRev: 0,
       },
       path: `/e/${body.event.slug}`,
       slotCount: 9, // 09:00 09:15 09:30 09:45, then 10:30 10:45, then 11:10 11:25 11:40
@@ -850,6 +850,15 @@ describe("POST /api/admin/events: lanes and capacity", () => {
     const pub = (await publicEvent(body.event.slug)) as unknown as { event: { capacity: number; lanes: { name: string }[] } };
     expect(pub.event.capacity).toBe(3);
     expect(pub.event.lanes.map((l) => l.name)).toEqual(["Ring 2", "Ring 1"]);
+  });
+
+  it("answers with the event's configRev (0 for a new event), on a replay too, as the edit page needs it to save the layout", async () => {
+    const key = generateBookingToken();
+    const first = await post(draft({ idempotencyKey: key, capacity: 2 }));
+    expect(((await first.json()) as { event: { configRev: number } }).event.configRev).toBe(0);
+    const replay = await post(draft({ idempotencyKey: key, capacity: 2 }));
+    expect(replay.headers.get("idempotent-replayed")).toBe("true");
+    expect(((await replay.json()) as { event: { configRev: number } }).event.configRev).toBe(0);
   });
 
   it("creates one unnamed lane and capacity 1 when the body says nothing", async () => {

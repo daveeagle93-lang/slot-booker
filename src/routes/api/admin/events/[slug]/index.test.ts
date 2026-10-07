@@ -68,7 +68,7 @@ describe("GET /api/admin/events/[slug]", () => {
       breaks: [{ start: "10:00", end: "10:30", label: "Lunch", startUtc: "2026-10-24T09:00:00Z", endUtc: "2026-10-24T09:30:00Z" }],
       lanes: [{ id: expect.any(Number), name: "" }], capacity: 1,
       fields: [{ label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }], identityLimit: 1,
-      hasBookings: false,
+      hasBookings: false, configRev: 0,
     });
     expect(body.orphans).toEqual([]);
   });
@@ -263,14 +263,28 @@ describe("GET /api/admin/events/[slug]", () => {
 
 // ---- PUT ----
 
-interface PutOptions { contentType?: string | null; raw?: string; data?: unknown[]; env?: unknown }
+interface PutOptions { contentType?: string | null; raw?: string; data?: unknown[]; env?: unknown; noRev?: boolean }
 
-const put = (slug: string, body: unknown, o: PutOptions = {}): Promise<Response> => {
+const LAYOUT_KEYS = ["lanes", "capacity", "fields", "identityLimit"];
+
+/**
+ * A body that changes the lanes, capacity, fields or identity limit must carry the `configRev` of the page it was made on. These tests
+ * stand for a page loaded just now, so unless the body names a `configRev` itself (or `noRev` is set) the event's current one is added.
+ */
+async function withPageRev(slug: string, body: unknown, noRev?: boolean): Promise<unknown> {
+  const b = body as Record<string, unknown> | null;
+  if (noRev || typeof b !== "object" || b === null || "configRev" in b || !LAYOUT_KEYS.some((k) => k in b)) return body;
+  const row = await t.env.DB.prepare("SELECT config_rev FROM event_layout WHERE event_id = (SELECT id FROM events WHERE slug = ?)").bind(slug).first<{ config_rev: number }>();
+  return { ...b, configRev: row?.config_rev ?? 0 };
+}
+
+const put = async (slug: string, body: unknown, o: PutOptions = {}): Promise<Response> => {
   const headers: Record<string, string> = {};
   if (o.contentType !== null) headers["Content-Type"] = o.contentType ?? "application/json";
+  const sent = o.raw ?? JSON.stringify(await withPageRev(slug, body, o.noRev));
   return Promise.resolve(
     onRequestPut({
-      request: new Request(`http://localhost/api/admin/events/${slug}`, { method: "PUT", headers, body: o.raw ?? JSON.stringify(body) }),
+      request: new Request(`http://localhost/api/admin/events/${slug}`, { method: "PUT", headers, body: sent }),
       env: (o.env ?? t.env) as AppEnv, params: { slug }, data: o.data ? o.data[0] : ADMIN,
     } as unknown as Parameters<typeof onRequestPut>[0]),
   );
@@ -332,7 +346,7 @@ describe("PUT /api/admin/events/[slug]: saving without bookings in the way", () 
       breaks: [{ start: "11:00", end: "11:15", label: "Tea", startUtc: "2026-10-31T11:00:00Z", endUtc: "2026-10-31T11:15:00Z" }],
       lanes: [{ id: expect.any(Number), name: "" }], capacity: 1,
       fields: [{ label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }], identityLimit: 1,
-      hasBookings: false,
+      hasBookings: false, configRev: 0,
     });
     expect(body.removed).toEqual([]);
     expect(body.slotCount).toBe(6); // 10:00 10:25 | 11:15 11:40 12:05 12:30 (10:50 would overrun the break, 12:55 the end)
@@ -1101,11 +1115,128 @@ describe("PUT /api/admin/events/[slug]: lanes and capacity", () => {
     expect(await lanesOf(e.id)).toEqual([{ id: e.laneIds[0], name: "Ring 1" }]);
   });
 
+  it("lets a save keep a lane name and a field label the event already has that today's rules would refuse, and refuses a new one like it", async () => {
+    const e = await seed({ lanes: ["Ring 1\uFE0F", "!!!"], fields: [{ label: "Dog\uFE0F", identity: true }] });
+    const keepLanes = [{ id: e.laneIds[0], name: "Ring 1\uFE0F" }, { id: e.laneIds[1], name: "!!!" }];
+    const keepFields = [{ label: "Dog\uFE0F", required: true, maxLength: 80, identity: true }];
+    expect((await put(e.slug, draft({ name: "Saved anyway", lanes: keepLanes, fields: keepFields }))).status).toBe(200);
+    expect((await lanesOf(e.id)).map((l) => l.name)).toEqual(["Ring 1\uFE0F", "!!!"]);
+    const refused = await put(e.slug, draft({ lanes: [...keepLanes, { name: "Ring 3\uFE0F" }], fields: [{ ...keepFields[0], label: "Hors\uFE0F" }] }));
+    expect(refused.status).toBe(400);
+    expect(Object.keys(((await refused.json()) as { fields: Record<string, string> }).fields).sort()).toEqual(["fields.0.label", "lanes.2.name"]);
+  });
+
   it("keeps the lanes and capacity when the body doesn't send them", async () => {
     const e = await seed({ lanes: ["Ring 1", "Ring 2"], capacity: 4 });
     expect((await put(e.slug, draft({ name: "Only the name" }))).status).toBe(200);
     expect(await lanesOf(e.id)).toEqual([{ id: e.laneIds[0], name: "Ring 1" }, { id: e.laneIds[1], name: "Ring 2" }]);
     expect(await capacityOf(e.id)).toEqual({ capacity: 4, config_rev: 0 });
+  });
+});
+
+describe("PUT /api/admin/events/[slug]: the revision of the page the edit was made on (configRev)", () => {
+  const F = (label: string, over: Record<string, unknown> = {}) => ({ label, required: true, maxLength: 80, identity: false, ...over });
+  const KINDS: [string, (e: Awaited<ReturnType<typeof seed>>) => Record<string, unknown>][] = [
+    ["lanes", (e) => ({ lanes: [{ id: e.laneIds[0], name: "Mine" }, { name: "Extra" }] })],
+    ["capacity", () => ({ capacity: 4 })],
+    ["fields", () => ({ fields: [F("Horse", { identity: true }), F("Rider", { identity: true })] })],
+    ["identityLimit", () => ({ identityLimit: 3 })],
+  ];
+  /** Everything an edit of the layout could write, ids included. */
+  const layoutSnapshot = async (id: number) => JSON.stringify([
+    await snapshot(id),
+    (await t.env.DB.prepare("SELECT * FROM event_lanes WHERE event_id = ? ORDER BY id").bind(id).all()).results,
+    (await t.env.DB.prepare("SELECT * FROM event_layout WHERE event_id = ?").bind(id).all()).results,
+    (await t.env.DB.prepare("SELECT * FROM event_fields WHERE event_id = ? ORDER BY position").bind(id).all()).results,
+  ]);
+  const rev = async (id: number) => (await t.env.DB.prepare("SELECT config_rev FROM event_layout WHERE event_id = ?").bind(id).first<{ config_rev: number }>())!.config_rev;
+  const bodyOf = async (res: Response) => (await res.json()) as { error: { code: string; message: string }; fields?: Record<string, string>; event: { configRev: number } };
+
+  it("is in the detail (GET) as an integer, and in the saved event (PUT), where an edit of the layout raises it by one", async () => {
+    const e = await seed();
+    expect((await detail(e.slug)).event.configRev).toBe(0);
+    const saved = await bodyOf(await put(e.slug, draft({ capacity: 2 })));
+    expect(saved.event.configRev).toBe(1);
+    expect((await detail(e.slug)).event.configRev).toBe(1);
+    expect(await rev(e.id)).toBe(1);
+    // A save that sends the layout unchanged (and so changes nothing of it) leaves the revision where it is.
+    expect((await bodyOf(await put(e.slug, draft({ capacity: 2, name: "Renamed" })))).event.configRev).toBe(1);
+  });
+
+  it.each(LAYOUT_KEYS)("is required when the body sends %s: 400 fields.configRev, nothing written", async (key) => {
+    const e = await seed();
+    const kind = KINDS.find(([k]) => k === key)![1];
+    const before = await layoutSnapshot(e.id);
+    const res = await put(e.slug, draft({ name: "Not saved", ...kind(e) }), { noRev: true });
+    expect(res.status).toBe(400);
+    expect(await bodyOf(res)).toMatchObject({ error: { code: "invalid_input" }, fields: { configRev: "Reload the page and try again." } });
+    expect(await layoutSnapshot(e.id)).toBe(before);
+  });
+
+  it.each([1.5, "0", -1, null, true, [0], 2 ** 60])("is refused as a field error when it is %j", async (bad) => {
+    const e = await seed();
+    const before = await layoutSnapshot(e.id);
+    const res = await put(e.slug, draft({ capacity: 2, configRev: bad }));
+    expect(res.status).toBe(400);
+    expect((await bodyOf(res)).fields).toEqual({ configRev: "Reload the page and try again." });
+    expect(await layoutSnapshot(e.id)).toBe(before);
+  });
+
+  it("is not needed, and ignored, when the body sends none of lanes, capacity, fields and identityLimit: those saves stay last-write-wins", async () => {
+    const e = await seed({ capacity: 3 });
+    await t.env.DB.prepare("UPDATE event_layout SET config_rev = 5 WHERE event_id = ?").bind(e.id).run();
+    expect((await put(e.slug, draft({ name: "No revision" }))).status).toBe(200);
+    expect((await put(e.slug, draft({ name: "Stale revision", configRev: 0 }))).status).toBe(200);
+    expect((await put(e.slug, draft({ name: "Nonsense revision", configRev: "x" }))).status).toBe(200);
+    expect(await t.env.DB.prepare("SELECT name FROM events WHERE id = ?").bind(e.id).first()).toEqual({ name: "Nonsense revision" });
+    expect(await t.env.DB.prepare("SELECT capacity, config_rev FROM event_layout WHERE event_id = ?").bind(e.id).first()).toEqual({ capacity: 3, config_rev: 5 });
+  });
+
+  it.each(LAYOUT_KEYS)("refuses a stale revision with 409 event_changed when the body sends %s, and writes nothing", async (key) => {
+    const e = await seed({ lanes: ["Ring 1"] });
+    const kind = KINDS.find(([k]) => k === key)![1];
+    // Another admin saved the layout after this page was loaded (at revision 0).
+    expect((await put(e.slug, draft({ identityLimit: 2 }))).status).toBe(200);
+    expect(await rev(e.id)).toBe(1);
+    const before = await layoutSnapshot(e.id);
+    const res = await put(e.slug, draft({ name: "Not saved", ...kind(e), configRev: 0 }));
+    expect(res.status).toBe(409);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect((await bodyOf(res)).error).toEqual({
+      code: "event_changed",
+      message: "The lanes, places or booking form of this event were changed by someone else. Reload the page to see them, then make your change again.",
+    });
+    expect(await layoutSnapshot(e.id)).toBe(before);
+  });
+
+  it("refuses a revision from the future, too, and writes nothing", async () => {
+    const e = await seed();
+    const before = await layoutSnapshot(e.id);
+    expect((await put(e.slug, draft({ capacity: 2, configRev: 7 }))).status).toBe(409);
+    expect(await layoutSnapshot(e.id)).toBe(before);
+  });
+
+  it("takes the matching revision, applies the edit and raises the revision; the same page cannot save the layout twice", async () => {
+    const e = await seed({ lanes: ["Ring 1"] });
+    const first = await put(e.slug, draft({ capacity: 2, configRev: 0 }));
+    expect(first.status).toBe(200);
+    const { event } = await bodyOf(first);
+    expect(event.configRev).toBe(1);
+    expect((await put(e.slug, draft({ capacity: 3, configRev: event.configRev }))).status).toBe(200);
+    expect(await rev(e.id)).toBe(2);
+    expect((await put(e.slug, draft({ capacity: 4, configRev: event.configRev }))).status).toBe(409);
+    expect(await t.env.DB.prepare("SELECT capacity FROM event_layout WHERE event_id = ?").bind(e.id).first()).toEqual({ capacity: 3 });
+  });
+
+  it("two admins on the same page: the second to save the layout is told to reload, reloads, and then saves", async () => {
+    const e = await seed({ lanes: ["Ring 1"] });
+    const pageA = (await detail(e.slug)).event.configRev as number;
+    const pageB = (await detail(e.slug)).event.configRev as number;
+    expect((await put(e.slug, draft({ capacity: 2, configRev: pageA }))).status).toBe(200);
+    expect((await put(e.slug, draft({ lanes: [{ id: e.laneIds[0], name: "B's lane" }], configRev: pageB }))).status).toBe(409);
+    const reloaded = (await detail(e.slug)).event.configRev as number;
+    expect((await put(e.slug, draft({ lanes: [{ id: e.laneIds[0], name: "B's lane" }], capacity: 2, configRev: reloaded }))).status).toBe(200);
+    expect(await t.env.DB.prepare("SELECT name FROM event_lanes WHERE event_id = ?").bind(e.id).first()).toEqual({ name: "B's lane" });
   });
 });
 

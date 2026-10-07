@@ -245,7 +245,7 @@ describe("booking places under concurrent requests", () => {
         method: "PUT", admin: true,
         body: {
           name: "Edited", date: "2026-10-17", start: "09:00", end: "12:00", sessionMinutes: 15, gapMinutes: 0, costPence: 0, venuePostcode: "AB1 2CD", details: "",
-          breaks: [], lanes: [{ id: l1, name: "Ring 1" }], capacity: 1,
+          breaks: [], lanes: [{ id: l1, name: "Ring 1" }], capacity: 1, configRev: 0,
         },
       });
       const bookings = Array.from({ length: 8 }, (_, i) => book(e.slug, slotAt(i % 2), `D${i}`, `H${i}`, { laneId: e.laneIds[i % 2] }));

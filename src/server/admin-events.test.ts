@@ -491,7 +491,7 @@ describe("parseEventDraft: lanes and capacity", () => {
 
   it("allows 40 characters and refuses 41, counted in code points", () => {
     expect(ok({ lanes: named("a".repeat(40)) })).toBe(true);
-    expect(ok({ lanes: named("\u{1F415}".repeat(40)) })).toBe(true);
+    expect(ok({ lanes: named(`a${"\u{1F415}".repeat(39)}`) })).toBe(true); // an emoji is one code point; the name needs a letter or a number too
     expect(fieldsOf({ lanes: named("a".repeat(41)) })).toEqual({ "lanes.0.name": "The lane name must be at most 40 characters." });
   });
 
@@ -551,6 +551,99 @@ describe("parseEventDraft: lanes and capacity", () => {
 
   it("placeCountOf is slots times lanes times capacity", () => {
     expect(placeCountOf(12, 3, 2)).toBe(72);
+  });
+});
+
+describe("parseEventDraft: lane names and field labels get the hygiene of a booking's values", () => {
+  const named = (...names: string[]) => names.map((name) => ({ name }));
+  const F = (label: string, over: Record<string, unknown> = {}) => ({ label, required: true, maxLength: 80, identity: true, ...over });
+  /** A lane name and a field label in turn, so every rule is held to both. */
+  const KINDS = [
+    { kind: "lane name", key: "lanes.0.name", send: (v: string) => ({ lanes: named(v) }), at: (i: number) => `lanes.${i}.name` },
+    { kind: "field label", key: "fields.0.label", send: (v: string) => ({ fields: [F(v)] }), at: (i: number) => `fields.${i}.label` },
+  ];
+
+  describe.each(KINDS)("$kind", ({ kind, key, send }) => {
+    it.each([
+      ["a variation selector after a letter (U+FE0F)", "Ring 1\uFE0F"],
+      ["a Hangul filler (U+3164)", "Ring\u3164"],
+      ["a combining grapheme joiner (U+034F)", "Ri\u034Fng"],
+      ["a Mongolian free variation selector (U+180B)", "Ring\u180B"],
+      ["a variation selector supplement (U+E0100)", "Ring\u{E0100}"],
+      ["a half-width Hangul filler (U+FFA0)", "Ring\uFFA0"],
+    ])("refuses %s, as invisible", (_n, value) => {
+      expect(fieldsOf(send(value))[key]).toBe(`The ${kind} can't contain invisible or direction-changing characters. Some emoji and flags contain invisible joiners and are not accepted; try plain text.`);
+    });
+
+    it("refuses a name that is only an invisible character, a symbol or punctuation: there must be a letter or a number", () => {
+      for (const value of ["\uFE0F", "\u3164", "!!!", "\u{1F415}", "- -", "\u2603"]) {
+        expect(fieldsOf(send(value))[key], JSON.stringify(value)).toMatch(/invisible|must contain at least one letter or number/);
+      }
+      expect(fieldsOf(send("!!!"))[key]).toBe(`The ${kind} must contain at least one letter or number.`);
+      expect(fieldsOf(send("\u{1F415}"))[key]).toBe(`The ${kind} must contain at least one letter or number.`);
+    });
+
+    it("refuses private-use characters and the braille blank (U+2800), beside a letter too", () => {
+      for (const value of ["Ring\uE000", "\uE000Ring", "Ring\u2800", "\u{F0000}Ring"]) {
+        expect(fieldsOf(send(value))[key], JSON.stringify(value)).toBe(`The ${kind} can't contain private-use or blank-looking characters. Try plain text.`);
+      }
+    });
+
+    it("still takes ordinary names, accents, other scripts, numbers alone and an emoji beside a letter", () => {
+      for (const value of ["Ring 1", "Zo\u00EB", "\u3053\u3093\u306B\u3061\u306F", "7", "\u0645\u0631\u062D\u0628\u0627", "Ring \u{1F415}", "A-B_C"]) {
+        expect("draft" in parse(send(value)), JSON.stringify(value)).toBe(true);
+      }
+    });
+  });
+
+  it("compares lane names by identity key: compatibility forms, spacing and case are the same name", () => {
+    // "Ring 1" and "Ring 1" + U+FE0F are caught by the invisible-character rule; these are the same name by the key alone.
+    for (const [a, b] of [["Ring 1", "RING 1"], ["Ring 1", "Ring  1"], ["Ring 1", "\uFF32ing 1"], ["Ring 1", "Ring \u2460"], ["Ring \u2460", "ring 1"]]) {
+      expect(fieldsOf({ lanes: named(a, b) }), JSON.stringify([a, b])).toEqual({ "lanes.1.name": "Two lanes can't have the same name." });
+    }
+    expect("draft" in parse({ lanes: named("Ring 1", "Ring 2") })).toBe(true);
+  });
+
+  it("compares field labels by identity key too", () => {
+    for (const [a, b] of [["Dog", "DOG "], ["Dog", "D\uFF4Fg"], ["Car 1", "Car  1"], ["Car 1", "Car \u2460"]]) {
+      expect(fieldsOf({ fields: [F(a), F(b, { identity: false })] }), JSON.stringify([a, b])).toEqual({ "fields.1.label": "Two fields can't have the same label." });
+    }
+    expect("draft" in parse({ fields: [F("Dog"), F("Handler", { identity: false })] })).toBe(true);
+  });
+
+  it("keeps the empty name of a single lane valid, and still needs every lane of several named", () => {
+    expect(draftOf({ lanes: named("") }).lanes).toEqual([{ name: "" }]);
+    expect(draftOf({ lanes: [{}] }).lanes).toEqual([{ name: "" }]);
+    expect(fieldsOf({ lanes: named("", "Ring 2") })).toEqual({ "lanes.0.name": "Enter the lane name." });
+  });
+
+  describe("an edit that leaves a stored name or label as it is", () => {
+    const WEAK = ["Ring 1\uFE0F", "!!!", "Ring\uE000"];
+    const layout = { laneIds: [7, 8, 9], capacity: 1 };
+    const edit = (over: Record<string, unknown>, keep: { laneNames?: string[]; fieldLabels?: string[] }) =>
+      parseEventDraft(valid(over), { now: NOW, requireFuture: false, layout, keep: { laneNames: [], fieldLabels: [], ...keep } });
+
+    it("is not refused for a lane name the event already has (the new rules apply to what is typed afresh)", () => {
+      const lanes = [{ id: 7, name: WEAK[0] }, { id: 8, name: WEAK[1] }, { id: 9, name: WEAK[2] }];
+      expect(edit({ lanes }, { laneNames: WEAK })).toMatchObject({ draft: { lanes } });
+      // Changing one to another weak name, or adding a weak new one, is refused.
+      expect(edit({ lanes: [{ id: 7, name: "Ring 2\uFE0F" }, { id: 8, name: "Ring 3" }] }, { laneNames: WEAK })).toEqual({ fields: { "lanes.0.name": expect.stringContaining("invisible") } });
+      expect(edit({ lanes: [{ id: 7, name: WEAK[0] }, { name: "???" }] }, { laneNames: WEAK })).toEqual({ fields: { "lanes.1.name": expect.stringContaining("letter or number") } });
+    });
+
+    it("is not refused for a field label the event already has", () => {
+      const fields = [F("Do\uFE0Fg"), F("!!!", { identity: false })];
+      expect(edit({ fields }, { fieldLabels: ["Do\uFE0Fg", "!!!"] })).toMatchObject({ draft: { fields } });
+      expect(edit({ fields }, { fieldLabels: ["Do\uFE0Fg"] })).toEqual({ fields: { "fields.1.label": expect.stringContaining("letter or number") } });
+    });
+
+    it("still refuses two stored names that are one name, unless both are stored as they are; one new look-alike is refused", () => {
+      const both = [{ id: 7, name: "Ring 1" }, { id: 8, name: "Ring 1\uFE0F" }];
+      expect(edit({ lanes: both }, { laneNames: ["Ring 1", "Ring 1\uFE0F"] })).toMatchObject({ draft: { lanes: both } });
+      expect(edit({ lanes: both }, { laneNames: ["Ring 1"] })).toEqual({ fields: { "lanes.1.name": expect.stringContaining("invisible") } });
+      // A look-alike that is new is refused as a duplicate of the stored name.
+      expect(edit({ lanes: [{ id: 7, name: "Ring 1" }, { id: 8, name: "RING 1" }] }, { laneNames: ["Ring 1"] })).toEqual({ fields: { "lanes.1.name": "Two lanes can't have the same name." } });
+    });
   });
 });
 
