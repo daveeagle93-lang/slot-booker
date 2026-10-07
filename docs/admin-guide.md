@@ -451,7 +451,7 @@ With lanes the question names the time and the lane. The person is not told. The
 - A slot holds one booking, for an event with one lane and one place per time. If it is taken, you see "That slot is already taken by" and whoever holds it. The list refreshes. With more lanes or places, a lane that is full says, for example, "Ring 1 at 10:30 is full." and the list refreshes. See [Lanes and places](#lanes-and-places).
 - One identity (the fields that identify a booking: the dog and handler together, for the Dog and Handler form) can only have as many bookings as the event's limit, which is 1 unless it has been raised. Capital letters, extra spaces and hidden characters do not make a value different. If they already have one, you are told which time.
 - If someone else changed things while you were working, you see "That changed while you were working. The schedule has been refreshed."
-- Names have the same rules as when people book. See [If something looks wrong](#10-if-something-looks-wrong).
+- Names have the same rules as when people book. See [If something looks wrong](#11-if-something-looks-wrong).
 
 ### Bookings with no slot
 
@@ -649,10 +649,10 @@ This part lists what you might see and what to do.
 
 - **The page sends you to the sign-in page.** You were signed out. Sign in again. See [Signing in](#1-signing-in).
 - **You see "Admin sign-in isn't set up."** The admin sign-in is missing a setting on the site. Contact whoever looks after the site's setup. On a brand new site, opening an admin page should take you to the setup page instead: see [Signing in](#1-signing-in).
-- **A booking looks wrong.** Open "Schedule" for the event. Use "Move", "Swap", "Clear" or "Add booking". See [Fixing bookings](#5-fixing-bookings).
+- **A booking looks wrong.** Open "Schedule" for the event. Use "Move", "Swap", "Clear" or "Add booking". See [Fixing bookings](#6-fixing-bookings).
 - **A name was refused.** Messages like "Dog can't contain invisible or direction-changing characters." (the message starts with the field's label) mean the value has a hidden mark in it. This happens with text pasted from elsewhere. It also happens with some emoji that are joined together with an invisible joiner. Some names in certain scripts need a joiner and are refused too. Retype the name by hand. For an emoji, pick a single plain one. The same rule applies to event names, break names, details, the club name and the contact details. An event or settings text saved earlier that has such a character in it can still be saved unchanged, but if you change that text, type it again as plain text. Every booking value also needs at least one letter or number in it ("Dog must contain at least one letter or number."), so a value made only of an emoji or symbols is refused; add a letter, for example "Rex 🐶".
 - **The logo won't upload.** Use a PNG, JPEG or WebP picture under 20 MB. A message says if it is the wrong type, too big, or can't be read. Try a simpler picture.
 - **The icons didn't update.** Open the Settings page again and wait for "App icons updated."
 - **An event isn't on the home page.** Edit it and check that "Listed on the home page" is ticked. The home page also only shows events that have not started, and not archived ones.
-- **The booking page says "Bookings for this event are closed."** Bookings close when the event starts, unless the people who set up the site chose another closing time. They can set it earlier or later. An archived event is closed too. A session that has started shows "Started" and can't be picked. You can still add the booking yourself under "Schedule". See [Fixing bookings](#5-fixing-bookings). If it is archived, tap "Unarchive".
+- **The booking page says "Bookings for this event are closed."** Bookings close when the event starts, unless the people who set up the site chose another closing time. They can set it earlier or later. An archived event is closed too. A session that has started shows "Started" and can't be picked. You can still add the booking yourself under "Schedule". See [Fixing bookings](#6-fixing-bookings). If it is archived, tap "Unarchive".
 - **Anything else, or the site won't load.** Contact whoever looks after the site's setup. The steps they follow are in [handover.md](handover.md).

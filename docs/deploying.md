@@ -38,7 +38,7 @@ Decide on a `SETUP_CODE` first: a private phrase of **at least 12 characters**, 
    - The **Worker name** becomes part of your address: `https://<worker-name>.<your-workers-subdomain>.workers.dev`.
    - The **database** (`DB`) is made for you. The description shown is the one in `package.json`: "Your club's booking database. Cloudflare creates it for you, so the suggested name is fine."
    - **`SETUP_CODE`**: type your phrase. The description shown is the one in `package.json`. A code under 12 characters is accepted by the form but then `/setup` refuses it (see Troubleshooting).
-   - The form also shows toggles for "Enable Preview builds" and "Protect with Cloudflare Access", and an Advanced settings section. This guide does not use them.
+   - The form also shows toggles for "Enable Preview builds" and "Protect with Cloudflare Access", and an Advanced settings section. Leave both toggles off and the Advanced settings alone; the reasons are in the [README](../README.md#what-the-form-asks-for).
 5. **Deploy.** Cloudflare creates the database and replaces the placeholder database id in your copy of `wrangler.jsonc`, then builds the copy with Workers Builds. That runs `npm run deploy`, which applies all 18 migrations to the database through its `DB` binding and publishes the Worker. Wait for it to finish. Both scripts pass `--env=""`, which targets the top-level environment explicitly: without it Wrangler warned that several environments are defined and none was chosen (`env.preview` exists). A dry run of the current scripts shows no such warning.
 6. **Find your address.** In the Cloudflare dashboard, open **Workers & Pages**, then the Worker (`slot-booker` by default). Its page shows its `workers.dev` address. These labels are **unverified**. A new account may have to pick a `workers.dev` subdomain first: also unverified.
 7. **Make your admin secret.** Open `https://<worker-name>.<your-workers-subdomain>.workers.dev/setup` and:
@@ -256,7 +256,7 @@ The admin sign-in allows 5 attempts per client per 15 minutes. Wait, or use the 
 
 ### Visitors get a 429 error
 
-The Free plan's daily request limit for the Worker (100,000 a day) has been passed. Booking pages and the API answer 429 until the day resets (00:00 UTC), while static files keep working. See the numbers in the README. A club with a few dozen bookers should not reach it; an event link shared widely, or a bot, might.
+The Free plan's daily request limit for the Worker (100,000 a day) has been passed. Booking pages and the API answer 429 until the day resets (00:00 UTC), while static files keep working. See the numbers in [costs.md](costs.md). A club with a few dozen bookers should not reach it; an event link shared widely, or a bot, might.
 
 ### The button's build failed
 

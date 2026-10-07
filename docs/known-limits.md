@@ -1,0 +1,10 @@
+# Known limits
+
+Things the app does not do, or does less well than you might expect. Admin sign-in has its own list in [admin-auth.md](admin-auth.md#known-limits), and the settings page has one in [branding.md](branding.md#known-limits).
+
+- **The admin event list builds each upcoming event's schedule in the Worker.** Measured in Node on a dev machine (not in workerd), a 500-slot event costs about 0.45 ms, so a list with around 20 events of that size could exceed the Free plan's 10 ms CPU limit. Typical events (about 30 slots) cost well under 1 ms each. Storing the slot count would remove the cost if it ever matters.
+- **Booked counts and the Full badge count every booking row.** Bookings on slots that are no longer in the schedule (orphans) should no longer be creatable now that edits, swaps and public bookings are guarded, but legacy data could contain them, and they would be counted.
+- **Archived events are not included in the Past bulk clear-out.** They can be deleted one at a time, and nothing reminds anyone to, so organisers should delete archived events they no longer need.
+- **Names and club text refuse every Unicode format character** (category Cf), which includes the invisible joiners that emoji sequences and some scripts use. Plain emoji and accented names are fine. A value in the booking form must also contain at least one letter or number (so a value of only an emoji is refused; "Rex 🐶" is fine), and invisible characters such as variation selectors and Hangul fillers are ignored when deciding whether two bookings have the same identity (the same values in the fields that identify a booking).
+- **There are no per-version preview URLs** (`preview_urls` is off in `wrangler.jsonc`): they would serve the whole app, admin included, on extra hostnames, and use the production database by default.
+- **The booking API has no rate limiting or bot protection.** Only the admin sign-in and `/setup` count attempts. Add something like Cloudflare Turnstile before posting a link publicly.
