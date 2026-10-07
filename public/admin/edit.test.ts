@@ -15,7 +15,7 @@ const EVENT = {
   startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T15:00:00Z",
   breaks: [{ start: "12:00", end: "12:20", label: "Lunch", startUtc: "2026-06-13T11:00:00Z", endUtc: "2026-06-13T11:20:00Z" }],
   fields: [{ label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }],
-  identityLimit: 1, hasBookings: false,
+  identityLimit: 1, hasBookings: false, configRev: 4,
 };
 const DETAIL = { event: EVENT, slots: [], orphans: [] };
 /** The values of a booking of the Dog and Handler form, as the admin API lists them. */
@@ -1012,10 +1012,110 @@ describe("lanes and places", () => {
       set("capacity", "3");
       submit();
       await tick();
-      expect($(".form-error").textContent).toBe(message);
+      expect($(".form-error span").textContent).toBe(message);
+      expect(buttonNamed("Reload")).toBeDefined();
       expect($$("[aria-invalid='true']")).toHaveLength(0);
       expect((buttonNamed("Save changes") as HTMLButtonElement).disabled).toBe(false);
     });
+  });
+});
+
+describe("the layout revision (configRev)", () => {
+  const CHANGED = "The lanes, places or booking form of this event were changed by someone else. Reload the page to see them, then make your change again.";
+  const changed = () => reply(409, { error: { code: "event_changed", message: CHANGED } });
+  const detail = (over: object) => reply(200, { ...DETAIL, event: { ...EVENT, ...over } });
+
+  it("sends nothing about it with a save that touches no lanes, places or booking form", async () => {
+    const { calls } = await start();
+    await tick();
+    set("name", "Renamed");
+    submit();
+    await tick();
+    expect(puts(calls)[0].body).not.toHaveProperty("configRev");
+  });
+
+  it.each([
+    ["renamed lane", () => set("lane-1-name", "Ring"), { lanes: [{ id: 1, name: "Ring" }] }],
+    ["places", () => set("capacity", "3"), { capacity: 3 }],
+    ["a field label", () => set("event-field-1-label", "Hound"), { fields: [{ label: "Hound", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }] }],
+    ["the identity limit", () => set("event-identity-limit", "2"), { identityLimit: 2 }],
+  ])("sends the loaded configRev, and the changed key, with a save that changes %s", async (_, change, keys) => {
+    const { calls } = await start({ get: () => detail({ lanes: [{ id: 1, name: "" }], capacity: 1 }) });
+    await tick();
+    change();
+    submit();
+    await tick();
+    expect(puts(calls)[0].body).toMatchObject({ ...keys, configRev: 4 });
+  });
+
+  it("shows the server's message with a Reload button when the layout was changed elsewhere, and writes nothing more", async () => {
+    const { calls } = await start({ put: changed });
+    await tick();
+    set("capacity", "3");
+    submit();
+    await tick();
+    expect($(".form-error span").textContent).toBe(CHANGED);
+    expect($(".form-error").getAttribute("role")).toBe("alert");
+    expect(buttonNamed("Reload")).toBeDefined();
+    expect(document.activeElement).toBe(buttonNamed("Reload"));
+    expect(puts(calls)).toHaveLength(1);
+    expect($("h1").textContent).toBe("Edit event");
+  });
+
+  it("Reload fetches the event again and rebuilds the form from it, not from what was typed", async () => {
+    let gets = 0;
+    const { calls } = await start({
+      put: changed,
+      get: () => (++gets === 1 ? reply(200, DETAIL) : detail({ name: "Renamed elsewhere", capacity: 5, configRev: 7 })),
+    });
+    await tick();
+    set("name", "My own edit");
+    set("capacity", "3");
+    submit();
+    await tick();
+    buttonNamed("Reload").click();
+    await tick();
+    expect(calls.filter((c) => c.url === EVENT_URL && (c.init?.method ?? "GET") === "GET")).toHaveLength(2);
+    expect(input("name").value).toBe("Renamed elsewhere");
+    expect(input("capacity").value).toBe("5");
+    expect($$(".form-error")[0].textContent).toBe("");
+    set("capacity", "6");
+    submit();
+    await tick();
+    expect(puts(calls)[1].body).toMatchObject({ capacity: 6, configRev: 7 });
+  });
+
+  it("two admins on the same event: the second's layout save is refused, and goes through after a reload", async () => {
+    // A server that behaves as the real one does: the revision rises with every layout save, and a stale one is refused.
+    let rev = 4;
+    let capacity = 1;
+    const server = {
+      get: () => reply(200, { ...DETAIL, event: { ...EVENT, capacity, configRev: rev } }),
+      put: (c: Call) => {
+        if (c.body.configRev !== rev) return changed();
+        if (c.body.capacity !== undefined) { capacity = c.body.capacity; rev++; }
+        return reply(200, { ...SAVED, event: { ...EVENT, capacity, configRev: rev } });
+      },
+    };
+    const second = await start(server); // admin B opens the page at revision 4
+    await tick();
+    // Admin A saves a new capacity meanwhile (the stub is the whole server, so this is the same request A's page would send).
+    expect(server.put({ url: EVENT_URL, body: { capacity: 2, configRev: 4 } } as Call).status).toBe(200);
+    set("capacity", "3");
+    submit();
+    await tick();
+    expect(puts(second.calls)[0].body).toMatchObject({ capacity: 3, configRev: 4 });
+    expect($(".form-error span").textContent).toBe(CHANGED);
+    expect(capacity).toBe(2);
+    buttonNamed("Reload").click();
+    await tick();
+    expect(input("capacity").value).toBe("2");
+    set("capacity", "3");
+    submit();
+    await tick();
+    expect(puts(second.calls)[1].body).toMatchObject({ capacity: 3, configRev: 5 });
+    expect(capacity).toBe(3);
+    expect($("h1").textContent).toBe("Saved.");
   });
 });
 

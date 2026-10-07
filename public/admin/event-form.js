@@ -43,10 +43,14 @@ export const bookingLine = (b) => `${formatTime(b.slotStart)}${b.lane?.name ? ` 
  * is called once the event is saved (the form is then dead: the page shows its own result); `confirmed` is
  * the list of bookings the admin agreed to remove.
  *
+ * An edit that sends lanes, places, fields or the identity limit also sends `configRev`, the revision of that layout the page has (from
+ * `initial`; a saved form is dead, and the next edit starts from a fresh load); the server refuses it (409 `event_changed`) if someone else has saved the layout since, and the form
+ * then offers a Reload button, which calls `reload()` (the page fetches the event again and mounts a fresh form).
+ *
  * Create also has a template picker: `templates` is the (optional) promise of the GET /api/admin/templates response, else
  * the form asks itself. The default template fills the form when it arrives, if nothing has been typed yet.
  */
-export function mountEventForm({ document, root, api, h, mode, slug, initial, done, templates }) {
+export function mountEventForm({ document, root, api, h, mode, slug, initial, done, templates, reload }) {
   const editing = mode === "edit";
 
   // One key per page load, sent with every Save so a retry can't create the event twice, even after edits to
@@ -71,6 +75,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
   let edited = false; // create: the user has changed something, so a template arriving late must not overwrite it
   let templateEdited = false; // create: a template-held field changed since the last template apply (or since load)
   let previewCurrent = false; // edit: whether `affected` answers the form as it is now
+  const configRev = editing ? initial.configRev : undefined; // edit: the revision of the lanes, places and booking form this page was loaded with
 
   // ---- form ----
   function field(key, id, labelText, input) {
@@ -552,6 +557,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     if ("error" in cost) return null;
     const used = rows.filter(isUsed);
     const card = formCard.read();
+    const layoutKeys = { ...layoutPayload({ forPreview: false }), ...bookingFormPayload(card) };
     return {
       rowIds: used.map((r) => r.id),
       laneKeys: laneRows.map((r) => r.key),
@@ -562,8 +568,9 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
         costPence: cost.pence, venuePostcode: value("venuePostcode"), details: value("details"), shareMessage: value("shareMessage"),
         listed: listed.checked,
         breaks: used.map((r) => ({ start: r.startInput.value, end: r.endInput.value, label: r.labelInput.value })),
-        ...layoutPayload({ forPreview: false }),
-        ...bookingFormPayload(card),
+        ...layoutKeys,
+        // The server wants the revision with any of these keys, and only then.
+        ...(editing && Object.keys(layoutKeys).length > 0 ? { configRev } : {}),
       },
     };
   }
@@ -640,9 +647,15 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
       }
       return focusFirstError();
     }
-    // The lanes or places were edited elsewhere after this page loaded: the server says so, and to reload.
-    const changed = editing && res?.status === 409 && res.data?.error?.code === "event_changed" ? res.data.error.message : null;
-    formError.textContent = changed ?? (editing && res?.status === 404 ? "This event no longer exists." : SAVE_FAILED);
+    // The lanes, places or booking form were saved elsewhere after this page loaded and nothing was written: the server's message says to
+    // reload, and the button does it (the page fetches the event again, so what was typed here is not kept).
+    if (editing && res?.status === 409 && res.data?.error?.code === "event_changed") {
+      const reloadButton = h("button", { type: "button", class: "button" }, "Reload");
+      reloadButton.addEventListener("click", () => reload?.());
+      formError.replaceChildren(h("span", {}, res.data.error.message), " ", reloadButton);
+      return reloadButton.focus();
+    }
+    formError.textContent = editing && res?.status === 404 ? "This event no longer exists." : SAVE_FAILED;
   }
 
   function setSaving(busy) {

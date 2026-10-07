@@ -46,6 +46,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
     mountEventForm({
       document, root, api, h, mode: "edit", slug, initial: res.data.event,
       done: ({ data, confirmed }) => showSaved(data, confirmed),
+      reload: load,
     });
   }
 
