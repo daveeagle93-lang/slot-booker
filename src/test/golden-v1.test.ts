@@ -22,7 +22,7 @@
 //     `bookings` -> the v1.0 `booking`. The pages' own request bodies in the logged calls (legacyCall).
 //   - DOM normalisers (legacyDom, legacyAdminDom): the booking page's ids, names, `for` and `aria-describedby` that are derived from
 //     the position (field-1 and so on), and the admin schedule's Add panel's (add-field-1 and so on, plus the maxlength and required
-//     attributes its inputs have now), listed one by one, applied to the pages' innerHTML only. textContent is never normalised.
+//     attributes its inputs have now, and the form's novalidate), listed one by one, applied to the pages' innerHTML only. textContent is never normalised.
 //   - WORDING table (WORDING): the only text that may differ: the decision-1 changes (form titles are the bare label, "{Label} is
 //     required.") and the same bare label in the other validation messages, and the default privacy notice (decision 5).
 import { readdirSync, readFileSync } from "node:fs";
@@ -105,6 +105,132 @@ const ALLOWED_ADDITIONS: Allowed[] = [
 ];
 
 // ---------------------------------------------------------------------------------------------------------------------
+// PINS: what the keys the current code ADDS must contain. ALLOWED_ADDITIONS only says a key may appear; diffJson does not look inside an
+// added key, so a wrong value there (a second lane, an identity flag on a public field, a place count that is not 1) would pass. Each pin
+// below is keyed like an allowance (the files, and the path of the JSON it looks at, with `*` for one key and `[]` for an array item),
+// states the values that hold for the MIGRATED v1.0 events (one unnamed lane, one place per time, the fields Dog and Handler, both in the
+// identity, identity limit 1, revision 0), and is used by at least one output or the last test fails. `check` returns the problems, or null if
+// the pin does not apply to that value (a pin on `*.body` only judges the answers that are an event detail).
+// ---------------------------------------------------------------------------------------------------------------------
+interface Pin { files: RegExp; path: string; what: string; why: string; check: (value: any, at: { root: any; path: string }) => string[] | null }
+const PUBLIC_FIELDS = [{ position: 1, label: "Dog", required: true, maxLength: 80 }, { position: 2, label: "Handler", required: true, maxLength: 80 }];
+const ADMIN_FIELDS = [{ label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }];
+const isLane = (v: any) => !!v && typeof v === "object" && Object.keys(v).sort().join() === "id,name" && Number.isInteger(v.id) && v.id > 0 && v.name === "";
+/** Equal as JSON, whatever the order of the keys. */
+const same = (a: unknown, b: unknown) => JSON.stringify(sortKeys(a)) === JSON.stringify(sortKeys(b));
+/** The messages of the conditions that do not hold. */
+const unless = (...conds: [boolean, string][]) => conds.filter(([ok]) => !ok).map(([, message]) => message);
+/** The answer a `*.body...` path is in (a grouped file keys its cases by name). */
+const caseOf = (at: { root: any; path: string }) => at.root[at.path.slice(0, at.path.indexOf(".body"))];
+const PUBLIC_EVENT = /^public-api\/event-(?!not-found)/;
+const PUBLIC_POST = /^public-api\/post-(bookings|slot-started)\.json$/;
+const ADMIN_DETAIL = /^admin-api\/detail-/;
+const ADMIN_GROUPED = /^admin-api\/(orphan-actions|event-edit)\.json$/;
+const pinEvent = (event: any, kind: "public" | "admin") => unless(
+  [Array.isArray(event.lanes) && event.lanes.length === 1 && isLane(event.lanes[0]), `lanes is not one unnamed lane {id, name: ""}: ${JSON.stringify(event.lanes)}`],
+  [event.capacity === 1, `capacity is ${JSON.stringify(event.capacity)}, not 1`],
+  [same(event.fields, kind === "public" ? PUBLIC_FIELDS : ADMIN_FIELDS), `fields are ${JSON.stringify(event.fields)}`],
+  ...(kind === "admin" ? [
+    [event.identityLimit === 1, `identityLimit is ${JSON.stringify(event.identityLimit)}, not 1`],
+    [event.configRev === 0, `configRev is ${JSON.stringify(event.configRev)}, not 0 (an event nobody has saved the layout of)`],
+    [typeof event.hasBookings === "boolean", "hasBookings is not a boolean"],
+  ] as [boolean, string][] : []),
+);
+/** A slot of the admin detail, and the whole detail: one place per lane, holding 0 or 1 booking, as the v1.0 `booking` says. */
+const pinDetail = (d: any) => {
+  if (!d || !Array.isArray(d.slots) || !d.event) return null;
+  const laneId = d.event.lanes?.[0]?.id;
+  const out: string[] = [];
+  let booked = 0;
+  for (const slot of d.slots) {
+    const places = slot.places;
+    if (!(Array.isArray(places) && places.length === 1)) { out.push(`slot ${slot.start}: places is not one entry`); continue; }
+    const [place] = places;
+    const held = place.bookings;
+    booked += slot.booking ? 1 : 0;
+    out.push(...unless(
+      [place.laneId === laneId && place.laneName === "", `slot ${slot.start}: place is in lane ${place.laneId} "${place.laneName}", not the event's unnamed lane ${laneId}`],
+      [Array.isArray(held) && held.length === (slot.booking ? 1 : 0), `slot ${slot.start}: ${held?.length} bookings held, but booking says ${slot.booking ? 1 : 0}`],
+      [!(Array.isArray(held) && 1 in held), `slot ${slot.start}: a second booking in a place with one place`],
+      [place.free === 1 - (held?.length ?? 0), `slot ${slot.start}: free is ${place.free} with ${held?.length} held`],
+      [!slot.booking || same(Object.keys(held?.[0] ?? {}).sort(), ["dogName", "handlerName", "id"]) && same(held?.[0], slot.booking), `slot ${slot.start}: the held booking is not the v1.0 booking`],
+    ));
+  }
+  out.push(...unless([d.event.hasBookings === (booked + (d.orphans?.length ?? 0) > 0), `hasBookings is ${d.event.hasBookings} with ${booked} booked slots and ${d.orphans?.length} orphans`]));
+  return out;
+};
+const PINS: Pin[] = [];
+const pin = (files: RegExp, paths: string[], what: string, why: string, check: Pin["check"]) => { for (const path of paths) PINS.push({ files, path, what, why, check }); };
+
+// Public answers
+pin(PUBLIC_EVENT, ["body.event"], "the public event has one unnamed lane, capacity 1 and exactly the Dog and Handler definitions", "an added key's value is not looked at by the diff", (e) => pinEvent(e, "public"));
+pin(PUBLIC_EVENT, ["body.slots[]"], "every public slot has one place, in the event's lane, free for a free slot and taken for a taken one",
+  "places and laneId are added keys; free must agree with the status the v1.0 answer already carries", (slot, at) => unless(
+    [Array.isArray(slot.places) && slot.places.length === 1 && same(Object.keys(slot.places[0]).sort(), ["free", "laneId"]), `slot ${slot.start}: places is ${JSON.stringify(slot.places)}`],
+    [slot.places?.[0]?.laneId === at.root.body.event.lanes[0].id, `slot ${slot.start}: laneId is not the event's lane`],
+    // A slot that has started keeps its places as they are: a started slot nobody booked has its place free, so "past" can be 0 or 1.
+    [slot.status === "free" ? slot.places?.[0]?.free === 1 : slot.status === "taken" ? slot.places?.[0]?.free === 0 : [0, 1].includes(slot.places?.[0]?.free), `slot ${slot.start}: free is ${slot.places?.[0]?.free} for status ${slot.status}`]));
+pin(PUBLIC_POST, ["*.body.event"], "the event in a booking answer is the same migrated event", "added keys of the event summary", (e) => pinEvent(e, "public"));
+pin(PUBLIC_POST, ["*.body.booking"], "the booking's lane is the event's lane", "booking.lane is an added key", (b, at) => unless(
+  [isLane(b.lane) && same(b.lane, caseOf(at).body.event?.lanes?.[0]), `lane ${JSON.stringify(b.lane)} is not the event's ${JSON.stringify(caseOf(at).body.event?.lanes?.[0])}`]));
+pin(PUBLIC_POST, ["*.body.freeSlots[]"], "a free slot of a slot_taken answer has one free place", "places is an added key", (slot) => unless(
+  [Array.isArray(slot.places) && slot.places.length === 1 && slot.places[0].free === 1 && Number.isInteger(slot.places[0].laneId) && slot.places[0].laneId > 0, `places is ${JSON.stringify(slot.places)}`]));
+pin(/^public-api\//, [""], "no public answer carries an identity flag or limit", "which fields identify a booking is for the organisers; a public key about it would tell anyone how to guess a duplicate", (json) => {
+  const found: string[] = [];
+  const look = (v: any, path: string) => {
+    if (Array.isArray(v)) v.forEach((x, i) => look(x, `${path}[${i}]`));
+    else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) { if (/^(in_?)?identity(_?(limit|key|seq))?$/i.test(k)) found.push(`${path}.${k}`); look(x, `${path}.${k}`); }
+  };
+  look(json, "");
+  return found.map((f) => `key ${f}`);
+});
+
+// Admin answers
+pin(ADMIN_DETAIL, ["body.event"], "the admin event has one unnamed lane, capacity 1, the Dog and Handler definitions with identity, limit 1 and revision 0", "added keys of the event view", (e) => pinEvent(e, "admin"));
+pin(ADMIN_GROUPED, ["*.body.event"], "an event in an edit or orphan answer is the same migrated event", "added keys of the event view", (e) => pinEvent(e, "admin"));
+pin(ADMIN_DETAIL, ["body"], "every slot of the detail holds the v1.0 booking in its one place, and hasBookings agrees with the bookings", "places, bookings and hasBookings are added keys", pinDetail);
+pin(ADMIN_GROUPED, ["*.body"], "the same for a detail inside a grouped answer", "places, bookings and hasBookings are added keys", pinDetail);
+pin(/^admin-api\/events-list\.json$/, ["body.events[]"], "an upcoming event in the list has one unnamed lane, capacity 1, as many places as slots, the Dog and Handler definitions and limit 1",
+  "laneCount, lanes, capacity, placeCount, fields and identityLimit are added keys", (e) => unless(
+    [e.laneCount === 1, `laneCount is ${e.laneCount}`],
+    [same(e.lanes, [{ name: "" }]), `lanes is ${JSON.stringify(e.lanes)}`],
+    [e.capacity === 1, `capacity is ${e.capacity}`],
+    [Number.isInteger(e.slotCount) && e.placeCount === e.slotCount, `placeCount ${e.placeCount} is not slotCount ${e.slotCount}`],
+    [same(e.fields, ADMIN_FIELDS), `fields are ${JSON.stringify(e.fields)}`],
+    [e.identityLimit === 1, `identityLimit is ${e.identityLimit}`]));
+pin(/^admin-api\/bookings-(add|move)\.json$/, ["*.body"], "a slot_taken answer names exactly one holder, with the data the v1.0 `booking` has, in the one lane",
+  "bookings is an added key (the v1.0 booking is derived from it)", (b) => {
+    if (b.error?.code !== "slot_taken") return null;
+    const [h] = b.bookings ?? [];
+    return unless(
+      [Array.isArray(b.bookings) && b.bookings.length === 1, `${b.bookings?.length} holders`],
+      [!!h && typeof h.dogName === "string" && h.dogName !== "" && typeof h.handlerName === "string" && h.handlerName !== "" && Number.isInteger(h.id) && typeof h.slotStart === "string", `the holder is ${JSON.stringify(h)}`],
+      [!!h && isLane(h.lane), `the holder's lane is ${JSON.stringify(h?.lane)}`],
+      [!!h && same({ id: h.id, dogName: h.dogName, handlerName: h.handlerName }, b.booking), "booking is not the holder"]);
+  });
+const laneOf = (what: string, files: RegExp, paths: string[]) =>
+  pin(files, paths, `${what} names the event's one unnamed lane`, "lane is an added key", (b) => unless([isLane(b.lane), `lane is ${JSON.stringify(b.lane)}`]));
+pin(/^admin-api\/bookings-(add|move)\.json$/, ["*.body.booking"], "a booking the admin added or moved names the event's one unnamed lane", "lane is an added key (a slot_taken answer's `booking` is the v1.0 one, derived from its holder, which carries the lane)",
+  (b, at) => (caseOf(at).body.error?.code === "slot_taken" ? null : unless([isLane(b.lane), `lane is ${JSON.stringify(b.lane)}`])));
+laneOf("a booking the admin cleared", /^admin-api\/bookings-clear\.json$/, ["*.body.removed"]);
+laneOf("a booking an edit would strand", /^admin-api\/event-edit\.json$/, ["*.body.affected[]"]);
+laneOf("a booking an edit removed", /^admin-api\/event-edit\.json$/, ["*.body.removed[]"]);
+laneOf("an orphan booking", ADMIN_GROUPED, ["*.body.orphans[]"]);
+laneOf("an orphan booking", ADMIN_DETAIL, ["body.orphans[]"]);
+laneOf("a booking added to the orphan event", /^admin-api\/orphan-actions\.json$/, ["*.body.booking"]);
+laneOf("each side of a swap", /^admin-api\/bookings-swap\.json$/, ["*.body.a", "*.body.b"]);
+const pinHits = new Map<Pin, Set<string>>(PINS.map((p) => [p, new Set<string>()]));
+
+/** Every value at `pattern` in `value` (paths written as in ALLOWED_ADDITIONS; "" is the whole output). */
+function collect(value: unknown, pattern: string, path: string[] = []): { path: string; value: any }[] {
+  const here = path.join(".").replace(/\.\[\]/g, "[]");
+  const out = matchesPattern(pattern, here) ? [{ path: here, value }] : [];
+  if (Array.isArray(value)) value.forEach((v) => out.push(...collect(v, pattern, [...path, "[]"])));
+  else if (value && typeof value === "object") for (const [k, v] of Object.entries(value)) out.push(...collect(v, pattern, [...path, k]));
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // WORDING: the only text that may differ from v1.0. Each row says: in the files matching `files`, the golden text `old` is now
 // `now`. The golden file is never rewritten: the row is applied to what was read from it before the comparison, so a file whose
 // text differs in any other way, or where the old text is still there, fails. A row that matches nothing fails too.
@@ -168,7 +294,7 @@ const ADAPTERS = [
   "admin dom: <label for=add-field-1>", "admin dom: <label for=add-field-2>", "admin dom: input id add-field-1", "admin dom: input id add-field-2",
   "admin dom: input aria-describedby add-field-1-error", "admin dom: input aria-describedby add-field-2-error",
   "admin dom: error id add-field-1-error", "admin dom: error id add-field-2-error",
-  "admin dom: add input maxlength=80 dropped", "admin dom: add input required dropped",
+  "admin dom: add input maxlength=80 dropped", "admin dom: add input required dropped", "admin dom: add form novalidate dropped",
 ];
 
 /** REQUEST adapter: a v1.0 booking body (dogName, handlerName; the public POST's or the admin add's) as the current API takes it (field1, field2). Anything else is left alone. */
@@ -244,11 +370,18 @@ function legacyAdmin(value: unknown): unknown {
   }
   if (o.event && Array.isArray(o.slots) && o.slots.every((s: any) => s && Array.isArray(s.places))) {
     if (!(o.event.lanes?.length === 1 && o.event.capacity === 1)) throw new Error("the v1.0 `slots[].booking` only exists for one lane and one place per time");
+    // Checked for every slot before anything is written: the collapse below would otherwise hide a second place or booking, or overwrite a `booking` the answer has.
+    for (const s of o.slots) {
+      if (s.places.length !== 1) throw new Error(`the v1.0 \`slots[].booking\` needs one place per slot, got ${s.places.length}`);
+      if (!Array.isArray(s.places[0].bookings) || s.places[0].bookings.length > 1) throw new Error("the v1.0 `slots[].booking` needs at most one booking in the place");
+      if ("booking" in s) throw new Error("the answer already has a `booking` key on a slot: normalising would overwrite it");
+    }
     used("admin response: slots[].places (one lane, one place) -> slots[].booking");
     o.slots = o.slots.map((s: any) => ({ ...s, booking: s.places[0].bookings[0] ?? null }));
   }
   if (o.error?.code === "slot_taken" && Array.isArray(o.bookings)) {
     if (o.bookings.length !== 1) throw new Error("the v1.0 `booking` of a slot_taken answer is one holder");
+    if ("booking" in o) throw new Error("the slot_taken answer already has a `booking` key: normalising would overwrite it");
     used("admin response: slot_taken bookings (one holder) -> booking");
     o.booking = { id: o.bookings[0].id, dogName: o.bookings[0].dogName, handlerName: o.bookings[0].handlerName };
   }
@@ -294,8 +427,8 @@ function legacyDom(html: string): string {
 
 /**
  * DOM normaliser for the admin schedule's innerHTML: the Add panel's ids, `for` and `aria-describedby`, derived from the field's position now
- * (add-field-1 and so on), and the maxlength and required attributes its inputs have now (for the longest value of 80 and a required
- * field: any other value is left alone, so it fails). Only the first two fields' attributes are rewritten (a third would fail).
+ * (add-field-1 and so on), the maxlength and required attributes its inputs have now (for the longest value of 80 and a required
+ * field: any other value is left alone, so it fails) and the form's `novalidate`. Only the first two fields' attributes are rewritten (a third would fail).
  */
 function legacyAdminDom(html: string): string {
   let out = html;
@@ -304,6 +437,8 @@ function legacyAdminDom(html: string): string {
   };
   drop("admin dom: add input maxlength=80 dropped", 'maxlength="80"');
   drop("admin dom: add input required dropped", 'required=""');
+  // The Add form has novalidate now, so the browser's own checks (the inputs are required) can't stop an empty submit before the server's message shows.
+  out = out.replace(/(<form class="sched-panel"[^>]*?) novalidate=""/g, (_m, head) => { used("admin dom: add form novalidate dropped"); return head; });
   const swap = (name: string, from: string, to: string) => { out = out.replaceAll(from, () => { used(name); return to; }); };
   swap("admin dom: <label for=add-field-1>", 'for="add-field-1"', 'for="add-dog"');
   swap("admin dom: <label for=add-field-2>", 'for="add-field-2"', 'for="add-handler"');
@@ -351,13 +486,23 @@ function save(rel: string, content: string, _description?: string) {
     return;
   }
   const out = { added: [] as string[], other: [] as string[] };
-  diffJson(JSON.parse(golden), JSON.parse(content), [], out);
+  const actual = JSON.parse(content);
+  diffJson(JSON.parse(golden), actual, [], out);
   for (const path of out.added) {
     const entry = ALLOWED_ADDITIONS.find((a) => a.files.test(rel) && matchesPattern(a.path, path));
     if (entry) hits.get(entry)!.add(rel);
     else out.other.push(`${path}: key added and not allowed`);
   }
   for (const problem of out.other) failures.push(`${rel}: ${problem}`);
+  for (const pin of PINS) {
+    if (!pin.files.test(rel)) continue;
+    for (const { path, value } of collect(actual, pin.path)) {
+      const problems = pin.check(value, { root: actual, path });
+      if (problems === null) continue;
+      pinHits.get(pin)!.add(rel);
+      for (const problem of problems) failures.push(`${rel}: pin "${pin.what}" at ${path || "(the whole output)"}: ${problem}`);
+    }
+  }
 }
 const sortKeys = (v: unknown): unknown =>
   Array.isArray(v) ? v.map(sortKeys)
@@ -1045,6 +1190,27 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
   });
 
   // -------------------------------------------------------------------------------------------------------------------
+  // The normaliser and the pins must not be able to hide what they are there to catch. These inputs are all refused before the normaliser
+  // records a use, so they cannot make an adapter look used.
+  it("6b. legacyAdmin refuses to collapse or overwrite what it would hide, and a pin rejects a wrong value", () => {
+    const detail = (slot: object, event: object = { lanes: [{ id: 1, name: "" }], capacity: 1 }) => ({ event, slots: [slot], orphans: [] });
+    const one = { laneId: 1, laneName: "", free: 0, bookings: [{ id: 1 }] };
+    expect(() => legacyAdmin(detail({ start: "x", places: [one, one] }))).toThrow(/one place per slot/);
+    expect(() => legacyAdmin(detail({ start: "x", places: [{ ...one, bookings: [{ id: 1 }, { id: 2 }] }] }))).toThrow(/at most one booking/);
+    expect(() => legacyAdmin(detail({ start: "x", places: [one], booking: { id: 9 } }))).toThrow(/already has a `booking`/);
+    expect(() => legacyAdmin(detail({ start: "x", places: [one] }, { lanes: [{ id: 1, name: "" }], capacity: 2 }))).toThrow(/one lane and one place/);
+    const taken = { error: { code: "slot_taken" }, bookings: [{ id: 1 }] };
+    expect(() => legacyAdmin({ ...taken, booking: { id: 9 } })).toThrow(/already has a `booking`/);
+    expect(() => legacyAdmin({ ...taken, bookings: [{ id: 1 }, { id: 2 }] })).toThrow(/one holder/);
+    const publicEvent = PINS.find((p) => p.what.startsWith("the public event has one unnamed lane"))!;
+    const good = { lanes: [{ id: 3, name: "" }], capacity: 1, fields: PUBLIC_FIELDS };
+    expect(publicEvent.check(good, { root: {}, path: "body.event" })).toEqual([]);
+    expect(publicEvent.check({ ...good, fields: PUBLIC_FIELDS.map((f) => ({ ...f, identity: true })) }, { root: {}, path: "body.event" })).not.toEqual([]);
+    expect(publicEvent.check({ ...good, lanes: [{ id: 3, name: "" }, { id: 4, name: "B" }] }, { root: {}, path: "body.event" })).not.toEqual([]);
+    expect(publicEvent.check({ ...good, capacity: 2 }, { root: {}, path: "body.event" })).not.toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------------------------------------------------
   it("7. every golden output was compared and none differs, and every allowed addition was used", () => {
     // The manifest lists every output the capture wrote (seed.sql, the input, is not one of the replayed outputs).
     const manifest = Object.keys(JSON.parse(readFileSync(join(FIXTURES, "manifest.json"), "utf8"))).filter((f) => f !== "seed.sql");
@@ -1056,6 +1222,7 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
     expect(failures).toEqual([]);
     const unused = ALLOWED_ADDITIONS.filter((a) => hits.get(a)!.size === 0).map((a) => `${a.files} ${a.path}`);
     expect(unused, "allowed additions that no output contains any more").toEqual([]);
+    expect(PINS.filter((p) => pinHits.get(p)!.size === 0).map((p) => `${p.files} ${p.path}: ${p.what}`), "value pins that no output was checked against").toEqual([]);
     expect(WORDING.filter((w) => wordingHits.get(w)!.size === 0).map((w) => w.old), "wording rows that match no golden text").toEqual([]);
     expect(ADAPTERS.filter((name) => !adapterHits.get(name)), "adapters the replay never used").toEqual([]);
     expect([...adapterHits.keys()].filter((name) => !ADAPTERS.includes(name)), "adapters that are not listed").toEqual([]);

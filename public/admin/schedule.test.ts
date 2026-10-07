@@ -398,6 +398,30 @@ describe("Add booking", () => {
     expect($$<HTMLButtonElement>("button").every((b) => !b.disabled)).toBe(true);
   });
 
+  it("lets an empty submit reach the server, so its '{Label} is required.' shows: a real submit is not stopped by the browser's own checks", async () => {
+    const { calls } = await start({
+      respond: (c) => (c.method === "POST"
+        ? reply(400, { error: { code: "invalid_input" }, fields: { field1: "Dog is required.", field2: "Handler is required." } })
+        : undefined),
+    });
+    button(row("09:00"), "Add booking").click();
+    const form = $(".sched-panel") as HTMLFormElement;
+    expect(form.noValidate).toBe(true);
+    // The inputs still say what is required and how long, for assistive technology and for typing.
+    expect(($("#add-field-1") as HTMLInputElement).required).toBe(true);
+    expect(($("#add-field-1") as HTMLInputElement).maxLength).toBe(80);
+    // Pressing the button in a browser is requestSubmit(): the browser runs its own checks first, unless the form has novalidate.
+    form.requestSubmit();
+    await settle();
+    expect(writes(calls)).toHaveLength(1);
+    expect($("#add-field-1-error").textContent).toBe("Dog is required.");
+    expect($("#add-field-2-error").textContent).toBe("Handler is required.");
+    // A submit event dispatched by hand (what the golden replay does) reaches the server too.
+    submit($(".sched-panel"));
+    await settle();
+    expect(writes(calls)).toHaveLength(2);
+  });
+
   it("says in plain English when the dog and handler already have a booking, with the time", async () => {
     await start({
       respond: (c) => (c.method === "POST"

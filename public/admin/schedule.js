@@ -306,7 +306,8 @@ export async function init({ document, fetch, navigate, clipboard, location, nav
         if (message) { x.input.setAttribute("aria-invalid", "true"); x.input.setAttribute("aria-describedby", x.error.id); }
         else { x.input.removeAttribute("aria-invalid"); x.input.removeAttribute("aria-describedby"); }
       };
-      const form = h("form", { class: "sched-panel", "aria-label": `Add booking at ${when}` },
+      // novalidate: the inputs say what is required, but the browser's own check must not stop an empty submit, or the server's "{Label} is required." never shows.
+      const form = h("form", { class: "sched-panel", "aria-label": `Add booking at ${when}`, novalidate: true },
         h("h3", {}, `Add booking at ${when}`),
         formError,
         ...inputs.map((x) => h("div", { class: "field" }, h("label", { for: x.input.id }, x.label), x.input, x.error)),
