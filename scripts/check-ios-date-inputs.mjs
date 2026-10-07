@@ -42,8 +42,12 @@
 // --engine      webkit (default) or chromium. Chromium never showed the bug, so it is only a sanity check of the
 //               script and the page; only a WebKit run says anything about iOS.
 // --allow-skip  exit 0 instead of 2 when WebKit can't launch here (Playwright supports a limited set of systems).
-// --break-css   self-test: forces a wide min-width on the inputs, short buttons and fields in the schedule rows, lane
-//               rows, booking form card and Add panel, and wide, short lane buttons on the booking page, so the run must FAIL.
+// --break-css   self-test: breaks the CSS for every kind of check (wide date and time inputs, short nav links, an error shown above its input in paired rows, short buttons, selects
+//               and fields in the schedule rows, Add and Move panels, lane rows and booking form card, short time and lane buttons
+//               and wide lane grids on the booking page) and counts the failures PER CATEGORY (date and time inputs, admin
+//               navigation, paired rows, admin lanes and booking-form card, public booking page). It exits 1 (a failing run, as
+//               it must) only if every category caught something; if any category found nothing it says so and exits 0, because
+//               that check can't fail yet and the self-test has failed.
 // --shots       also writes full-page PNGs of the main states (<name>-<width>-<scheme>.png) to --shots-dir (default:
 //               slot-booker-layout in the system temp folder), for looking at.
 // Every state runs at both widths in light and dark.
@@ -227,6 +231,7 @@ async function stubApi(page, stub) {
       return method === "DELETE" ? json(route, { deleted: { id: found.id, name: found.name } }) : json(route, { template: found });
     }
     if (pathname === `/api/admin/events/${SLUG}`) {
+      if (method === "PUT" && stub.putAnswer) return json(route, stub.putAnswer.body, stub.putAnswer.status);
       if (method === "PUT" && stub.putFields) return json(route, { error: { code: "invalid_input", message: "Check the highlighted fields." }, fields: stub.putFields }, 400);
       return json(route, { event: stub.event ?? EVENT, slots: stub.slots, orphans: [], lineup: "", defaultShareMessage: "" });
     }
@@ -347,15 +352,20 @@ function checkPairs(label, pairs) {
   return failures;
 }
 
-const inside = (inner, outer) =>
-  inner.left >= outer.left - TOLERANCE && inner.right <= outer.right + TOLERANCE;
+// Sideways always; top and bottom too for a container that grows to hold what is in it (a card, a row, a panel), so a control that sticks out
+// of the bottom of its card is caught as well. Not for the date and time inputs' field/row/group checks, which only ever mattered sideways.
+const inside = (inner, outer, vertical = false) =>
+  inner.left >= outer.left - TOLERANCE && inner.right <= outer.right + TOLERANCE
+  && (!vertical || (inner.top >= outer.top - TOLERANCE && inner.bottom <= outer.bottom + TOLERANCE));
 const overlap = (a, b) =>
   a.left < b.right - TOLERANCE && b.left < a.right - TOLERANCE && a.top < b.bottom - TOLERANCE && b.top < a.bottom - TOLERANCE;
 const NAV_HREFS = ["/admin/", "/admin/templates", "/admin/settings"];
 
-/** The failures for one loaded page, as readable lines (empty when it is fine). */
+/** The failures for one loaded page, as readable lines in two lists: `inputs` (the date and time inputs, the page's width) and `nav` (the admin navigation). */
 function check(label, m, { ids: expectedIds = [], breakInputs }) {
   const failures = [];
+  const navFailures = [];
+  const done = () => ({ inputs: failures, nav: navFailures });
   const ids = m.inputs.map((i) => i.id);
   for (const id of expectedIds) if (!ids.includes(id)) failures.push(`${label}: expected input #${id} is not on the page`);
   if (breakInputs !== undefined) {
@@ -380,28 +390,28 @@ function check(label, m, { ids: expectedIds = [], breakInputs }) {
 
   const nav = m.nav;
   if (!nav) {
-    failures.push(`${label}: no .admin-nav on the page`);
-    return failures;
+    navFailures.push(`${label}: no .admin-nav on the page`);
+    return done();
   }
-  for (const href of NAV_HREFS) if (!nav.links.some((l) => l.href === href)) failures.push(`${label}: the admin nav has no link to ${href}`);
+  for (const href of NAV_HREFS) if (!nav.links.some((l) => l.href === href)) navFailures.push(`${label}: the admin nav has no link to ${href}`);
   for (const l of nav.links) {
-    if (!l.visible) failures.push(`${label}: nav link ${l.href} is not visible`);
-    if (l.rect.height < 48 - TOLERANCE || l.rect.width < 48 - TOLERANCE) failures.push(`${label}: nav link ${l.href} is ${round(l.rect.width)}x${round(l.rect.height)}, under 48x48`);
-    if (l.rect.left < -TOLERANCE || l.rect.right > m.innerWidth + TOLERANCE) failures.push(`${label}: nav link ${l.href} (${span(l.rect)}) is outside the screen (0..${m.innerWidth})`);
+    if (!l.visible) navFailures.push(`${label}: nav link ${l.href} is not visible`);
+    if (l.rect.height < 48 - TOLERANCE || l.rect.width < 48 - TOLERANCE) navFailures.push(`${label}: nav link ${l.href} is ${round(l.rect.width)}x${round(l.rect.height)}, under 48x48`);
+    if (l.rect.left < -TOLERANCE || l.rect.right > m.innerWidth + TOLERANCE) navFailures.push(`${label}: nav link ${l.href} (${span(l.rect)}) is outside the screen (0..${m.innerWidth})`);
   }
-  if (nav.links.some((l) => Math.abs(l.rect.top - nav.links[0].rect.top) > 1)) failures.push(`${label}: the nav links wrap onto more than one row`);
+  if (nav.links.some((l) => Math.abs(l.rect.top - nav.links[0].rect.top) > 1)) navFailures.push(`${label}: the nav links wrap onto more than one row`);
   for (const [a, b] of nav.links.flatMap((a, n) => nav.links.slice(n + 1).map((b) => [a, b]))) {
-    if (overlap(a.rect, b.rect)) failures.push(`${label}: nav links ${a.href} and ${b.href} overlap`);
+    if (overlap(a.rect, b.rect)) navFailures.push(`${label}: nav links ${a.href} and ${b.href} overlap`);
   }
   if (nav.scrollWidth > nav.clientWidth + TOLERANCE || nav.rect.right > m.innerWidth + TOLERANCE) {
-    failures.push(`${label}: the nav scrolls or runs past the screen (scrollWidth ${nav.scrollWidth}, clientWidth ${nav.clientWidth}, right ${round(nav.rect.right)})`);
+    navFailures.push(`${label}: the nav scrolls or runs past the screen (scrollWidth ${nav.scrollWidth}, clientWidth ${nav.clientWidth}, right ${round(nav.rect.right)})`);
   }
-  if (!nav.header) failures.push(`${label}: no header band (header.site-header) on the page`);
+  if (!nav.header) navFailures.push(`${label}: no header band (header.site-header) on the page`);
   else {
-    if (!nav.header.before) failures.push(`${label}: the header band is not before the nav in the page order`);
-    if (nav.header.rect.bottom > nav.rect.top + TOLERANCE) failures.push(`${label}: the header band (bottom ${round(nav.header.rect.bottom)}) is not above the nav (top ${round(nav.rect.top)})`);
+    if (!nav.header.before) navFailures.push(`${label}: the header band is not before the nav in the page order`);
+    if (nav.header.rect.bottom > nav.rect.top + TOLERANCE) navFailures.push(`${label}: the header band (bottom ${round(nav.header.rect.bottom)}) is not above the nav (top ${round(nav.rect.top)})`);
   }
-  return failures;
+  return done();
 }
 
 /**
@@ -435,7 +445,7 @@ function checkLayout(label, m, o) {
     if (!m.held.some((x) => x.innerSelector === innerSelector)) failures.push(`${label}: nothing matched ${innerSelector}`);
   }
   for (const x of m.held) {
-    if (!inside(x.rect, x.outer)) failures.push(`${label}: ${x.what} (${round(x.rect.left)}..${round(x.rect.right)}) leaves its ${x.outerSelector} (${round(x.outer.left)}..${round(x.outer.right)})`);
+    if (!inside(x.rect, x.outer, true)) failures.push(`${label}: ${x.what} (${round(x.rect.left)}..${round(x.rect.right)}, ${round(x.rect.top)}..${round(x.rect.bottom)}) leaves its ${x.outerSelector} (${round(x.outer.left)}..${round(x.outer.right)}, ${round(x.outer.top)}..${round(x.outer.bottom)})`);
   }
   return failures;
 }
@@ -473,7 +483,7 @@ function checkPublic(label, m, o) {
     const name = `${b.lane ? "lane" : "time"} button "${b.text}"`;
     if (b.rect.height < 48 - TOLERANCE) failures.push(`${label}: ${name} is ${round(b.rect.height)}px tall, under 48`);
     if (b.scrollWidth > b.clientWidth + TOLERANCE || b.scrollHeight > b.clientHeight + TOLERANCE) failures.push(`${label}: ${name} clips its text (scroll ${b.scrollWidth}x${b.scrollHeight}, client ${b.clientWidth}x${b.clientHeight})`);
-    if (b.card && !inside(b.rect, b.card)) failures.push(`${label}: ${name} leaves its card`);
+    if (b.card && !inside(b.rect, b.card, true)) failures.push(`${label}: ${name} leaves its card`);
   }
   const lanes = m.buttons.filter((b) => b.lane);
   for (const [a, b] of lanes.flatMap((a, n) => lanes.slice(n + 1).map((b) => [a, b]))) {
@@ -503,7 +513,10 @@ async function main() {
   const { defaultBrowserType, ...phone } = devices["iPhone 13"];
   const schemes = ["light", "dark"];
   if (flag("shots")) mkdirSync(shotsDir, { recursive: true });
-  const failures = [];
+  // The failures by what they are about. A check that cannot fail proves nothing, so --break-css counts them per category.
+  const CATEGORIES = ["date and time inputs", "admin navigation", "paired rows", "admin lanes and booking-form card", "public booking page"];
+  const tally = new Map(CATEGORIES.map((c) => [c, { checks: 0, failures: [] }]));
+  const record = (category, lines) => { const t = tally.get(category); t.checks++; t.failures.push(...lines); };
   let checked = 0;
   let loads = 0;
   let pairedChecked = 0;
@@ -514,31 +527,39 @@ async function main() {
       for (const scheme of schemes) {
         const context = await browser.newContext({ ...phone, viewport: { width, height: 844 }, colorScheme: scheme });
         const page = await context.newPage();
-        const stub = { templates: [], slots: [], public: null, event: null, affected: [], placeCount: 0, putFields: null };
+        const stub = { templates: [], slots: [], public: null, event: null, affected: [], placeCount: 0, putFields: null, putAnswer: null };
         await stubApi(page, stub);
 
         /** Checks the page as it is now; `o.shot` names its screenshot. */
         const verify = async (label, o) => {
           if (flag("break-css")) {
-            await page.addStyleTag({ content: 'input[type="date"], input[type="time"] { min-width: 300px !important; }' });
+            await page.addStyleTag({ content: 'input[type="date"], input[type="time"] { min-width: 300px !important; } .admin-nav a { min-height: 20px !important; height: 20px !important; padding-block: 0 !important; }' });
           }
           const m = await page.evaluate(measure, { formSelector: o.form ?? null, dateTime: DATE_TIME });
-          failures.push(...check(`${label} @${width}px ${scheme}`, m, o));
+          const found = check(`${label} @${width}px ${scheme}`, m, o);
+          record("date and time inputs", found.inputs);
+          record("admin navigation", found.nav);
           checked++;
           // Before the paired-row check, which writes (and clears) errors in the cells to see whether the rows stay level.
           if (flag("shots") && o.shot) await page.screenshot({ path: join(shotsDir, `${o.shot}-${width}-${scheme}.png`), fullPage: true });
           if (o.form) {
+            if (flag("break-css")) {
+              // An error that shows ABOVE its input pushes that cell down and out of line with the other (what the rows' shared grid prevents).
+              await page.addStyleTag({ content: ".field-row { align-items: start !important; } .field-row > .field { display: flex !important; flex-direction: column !important; grid-row: auto !important; grid-template-rows: none !important; } .field-row > .field > .field-error { order: -1 !important; }" });
+            }
             const pairs = await page.evaluate(measurePairs);
-            if (pairs.length === 0) failures.push(`${label} @${width}px ${scheme}: no paired rows found to test with an error`);
-            failures.push(...checkPairs(`${label} @${width}px ${scheme}`, pairs));
+            record("paired rows", [
+              ...(pairs.length === 0 ? [`${label} @${width}px ${scheme}: no paired rows found to test with an error`] : []),
+              ...checkPairs(`${label} @${width}px ${scheme}`, pairs),
+            ]);
             pairedChecked += pairs.filter((p) => p.sideBySide).length;
           }
           if (o.targets || o.inside) {
             if (flag("break-css")) {
-              await page.addStyleTag({ content: ".sched-actions .button, .lane-row .button, .lane-row input, #capacity, #tpl-capacity, .field-def .button, .field-def input, .field-def .select-all, #event-identity-limit, #tpl-identity-limit, .sched-panel input { min-height: 20px !important; height: 20px !important; }" });
+              await page.addStyleTag({ content: ".sched-actions .button, .lane-row .button, .lane-row input, #capacity, #tpl-capacity, .field-def .button, .field-def input, .field-def .select-all, .fields-group > .button, #event-identity-limit, #tpl-identity-limit, .sched-panel input, .sched-panel select, .sched-panel button { min-height: 20px !important; height: 20px !important; }" });
             }
             const lm = await page.evaluate(measureLayout, { targets: o.targets ?? "", inside: o.inside ?? [] });
-            failures.push(...checkLayout(`${label} @${width}px ${scheme}`, lm, o));
+            record("admin lanes and booking-form card", checkLayout(`${label} @${width}px ${scheme}`, lm, o));
             laneChecked++;
           }
         };
@@ -553,6 +574,7 @@ async function main() {
           stub.affected = o.affected ?? [];
           stub.placeCount = o.placeCount ?? 0;
           stub.putFields = o.putFields ?? null;
+          stub.putAnswer = o.putAnswer ?? null;
           await page.goto(`${origin}${path}`);
           await page.waitForSelector(".site-header");
           await page.waitForSelector(o.ready);
@@ -721,6 +743,22 @@ async function main() {
             },
           }],
         });
+        // Bookings arrived while the admin was editing: the save is refused and the card goes back to the form as it was loaded, saying so.
+        await run("edit, Booking form after a fields_locked answer", `/admin/edit?slug=${SLUG}`, {
+          ready: "#event-field-3-label", form, event: { ...EVENT, fields: THREE_FIELDS, identityLimit: 2 }, ids: [...plain, ...breakIds(2)],
+          putAnswer: { status: 409, body: { error: { code: "fields_locked", message: "This event has bookings, so fields can't be added or removed and the fields that identify a booking can't be changed. You can still change labels, which fields are required, how long each can be and how many bookings one identity may hold." } } },
+          targets: cardControls(LIMIT_EVENT), inside: cardInside(LIMIT_EVENT),
+          then: [{
+            label: "reset to the loaded form", shot: "edit-booking-form-reset",
+            act: async () => {
+              await page.click('button:has-text("Add field")');
+              await page.fill("#event-field-4-label", "Owner");
+              await page.fill("#event-field-1-label", "Hound");
+              await page.click('button:has-text("Save changes")');
+              await page.waitForSelector("#event-fields-error:not(:empty)");
+            },
+          }],
+        });
         await run("edit, Booking form locked (the event has bookings)", `/admin/edit?slug=${SLUG}`, {
           ready: "#event-fields-locked:not([hidden])", form, event: { ...EVENT, fields: THREE_FIELDS, identityLimit: 2, hasBookings: true }, ids: [...plain, ...breakIds(2)],
           shot: "edit-booking-form-locked", targets: cardControls(LIMIT_EVENT), inside: cardInside(LIMIT_EVENT),
@@ -763,10 +801,10 @@ async function main() {
           if (o.act) await o.act();
           await page.waitForTimeout(300); // the buttons' colour transition (0.15s), so a shot shows the settled state
           if (flag("break-css")) {
-            await page.addStyleTag({ content: ".lane-grid { grid-template-columns: repeat(3, 160px) !important; } .slot.lane { min-height: 20px !important; padding: 0 !important; line-height: 1 !important; }" });
+            await page.addStyleTag({ content: ".lane-grid { grid-template-columns: repeat(3, 160px) !important; } .slot, .slot.lane, .slot.has-note { min-height: 20px !important; height: 20px !important; padding: 0 !important; line-height: 1 !important; }" });
           }
           const m = await page.evaluate(measurePublic, width);
-          failures.push(...checkPublic(`booking ${label} @${width}px ${scheme}`, m, { ...o, oneRow: o.oneRow && width >= 390 }));
+          record("public booking page", checkPublic(`booking ${label} @${width}px ${scheme}`, m, { ...o, oneRow: o.oneRow && width >= 390 }));
           checked++;
           publicChecked++;
           if (flag("shots")) await page.screenshot({ path: join(shotsDir, `booking-${o.shot}-${width}-${scheme}.png`), fullPage: true });
@@ -800,6 +838,20 @@ async function main() {
     server.close();
   }
 
+  const failures = [...tally.values()].flatMap((t) => t.failures);
+  const counts = [...tally].map(([name, t]) => `${name}: ${t.failures.length} failure(s) in ${t.checks} check(s)`);
+  if (flag("break-css")) {
+    // The self-test: every category must catch what was broken for it, or the run says nothing about that category.
+    const blind = [...tally].filter(([, t]) => t.checks > 0 && t.failures.length === 0).map(([name]) => name);
+    console.log(`Per category with the CSS broken (${engineName}):`);
+    for (const line of counts) console.log(`  ${line}`);
+    if (blind.length > 0) {
+      console.log(`SELF-TEST FAILED (${engineName}): nothing was caught in: ${blind.join(", ")}. Those checks cannot fail yet.`);
+      process.exit(0);
+    }
+    console.log(`FAIL (${engineName}), as the self-test needs: every category caught the broken CSS (${failures.length} problem(s) in all).`);
+    process.exit(1);
+  }
   if (failures.length > 0) {
     console.log(`FAIL (${engineName}): ${failures.length} problem(s)`);
     for (const f of failures) console.log(`  ${f}`);
