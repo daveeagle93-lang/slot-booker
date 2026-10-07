@@ -1,6 +1,6 @@
 import {
   bookableSlots, createBooking, declaresOversizeBody, findByIdempotencyKey, findSlot, noStore, payloadTooLarge, readJsonObject,
-  validateBookingInput, type BookingResult, type CreateResult,
+  validateBookingInput, type BookingInput, type BookingResult, type CreateResult,
 } from "../../../../server/bookings";
 import { bookingCutoffOffsetMinutes } from "../../../../server/config";
 import type { RouteHandler } from "../../../../server/env";
@@ -37,14 +37,14 @@ export const onRequestPost: RouteHandler<"slug"> = async ({ request, env, params
   let current = event;
   if (!result) {
     // Everything that depends on the event, so a retry after an edit re-checks it all against the fresh event.
-    const book = async (ev: EventRow): Promise<Response | CreateResult> => {
+    const book = async (ev: EventRow, wanted: BookingInput): Promise<Response | CreateResult> => {
       if (ev.archived) return errorResponse(410, "event_archived", "This event is closed to bookings.", {}, noStore);
       const now = new Date();
       const window = bookingWindow(ev, bookingCutoffOffsetMinutes(env.BOOKING_CUTOFF_OFFSET_MINUTES), now);
       if (!window.open) {
         return errorResponse(410, "bookings_closed", "Bookings for this event are now closed.", {}, noStore);
       }
-      const slot = findSlot(ev, input.slot);
+      const slot = findSlot(ev, wanted.slot);
       if (!slot) return errorResponse(400, "invalid_slot", "That time isn't one of this event's slots.", {}, noStore);
       if (!isSlotBookable(slot.start, window, now)) {
         return errorResponse(
@@ -52,16 +52,20 @@ export const onRequestPost: RouteHandler<"slug"> = async ({ request, env, params
           { freeSlots: await bookableSlots(env.DB, ev, now) }, noStore,
         );
       }
-      return createBooking(env.DB, ev, slot, input, now);
+      return createBooking(env.DB, ev, slot, wanted, now);
     };
     try {
-      let outcome = await book(event);
+      let outcome = await book(event, input);
       if (!(outcome instanceof Response) && outcome.kind === "schedule_changed") {
         // Edited between our read and the insert (nothing was written): look once more, and retry once if the slot survived.
         const fresh = await loadEventBySlug(env.DB, event.slug);
         if (!fresh) return errorResponse(404, "not_found", "Event not found", {}, noStore);
         current = fresh;
-        outcome = await book(fresh);
+        // The values were checked against the form as it was: the edit may have changed the fields (how many, which are required,
+        // how long) or the lanes, so they are checked again against the fresh event, never booked on the strength of the first check.
+        const again = validateBookingInput(body, fresh);
+        if ("fields" in again) return errorResponse(400, "invalid_input", "Check the highlighted fields.", { fields: again.fields }, noStore);
+        outcome = await book(fresh, again);
       }
       if (outcome instanceof Response) return outcome;
       if (outcome.kind === "schedule_changed") {

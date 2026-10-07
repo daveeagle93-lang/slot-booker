@@ -674,6 +674,52 @@ describe("admin tools with capacity and lanes", () => {
     expect(swapped).toEqual({ a: { id: a, slotStart: e.s[6], lane: { id: l2, name: "Ring 2" } }, b: { id: b, slotStart: e.s[1], lane: { id: l1, name: "Ring 1" } } });
   });
 
+  it("checks the lane of each side when the request names it: a stale lane is changed, and nothing moves", async () => {
+    const e = await seed({ capacity: 1, lanes: ["Ring 1", "Ring 2"] });
+    const [l1, l2] = e.laneIds;
+    const a = await insertBooking(t.env.DB, e.id, e.s[1], "Rex", "Sam", { laneId: l1 });
+    const b = await insertBooking(t.env.DB, e.id, e.s[6], "Bella", "Alex", { laneId: l2 });
+    const before = await placesOf(e.id);
+    for (const [la, lb] of [[l2, l2], [l1, l1], [l2, l1]]) {
+      expect(failed(await swapBookings(t.env.DB, e.event, { a: { id: a, slot: e.s[1], lane: la }, b: { id: b, slot: e.s[6], lane: lb } })), `${la} ${lb}`)
+        .toMatchObject({ status: 409, code: "changed" });
+      expect(await placesOf(e.id)).toEqual(before);
+    }
+    expect(ok(await swapBookings(t.env.DB, e.event, { a: { id: a, slot: e.s[1], lane: l1 }, b: { id: b, slot: e.s[6], lane: l2 } }))).toMatchObject({ a: { id: a, lane: { id: l2 } }, b: { id: b, lane: { id: l1 } } });
+    expect(await placesOf(e.id)).toEqual({ [a]: [l2, e.s[6], 1], [b]: [l1, e.s[1], 1] });
+  });
+
+  it("takes the lane of one side only, and leaves the other side's lane unchecked as before", async () => {
+    const e = await seed({ capacity: 1, lanes: ["Ring 1", "Ring 2"] });
+    const [l1, l2] = e.laneIds;
+    const a = await insertBooking(t.env.DB, e.id, e.s[1], "Rex", "Sam", { laneId: l1 });
+    const b = await insertBooking(t.env.DB, e.id, e.s[6], "Bella", "Alex", { laneId: l2 });
+    expect(failed(await swapBookings(t.env.DB, e.event, { a: { id: a, slot: e.s[1], lane: l2 }, b: { id: b, slot: e.s[6] } })).code).toBe("changed");
+    ok(await swapBookings(t.env.DB, e.event, { a: { id: a, slot: e.s[1] }, b: { id: b, slot: e.s[6], lane: l2 } }));
+    expect(await placesOf(e.id)).toEqual({ [a]: [l2, e.s[6], 1], [b]: [l1, e.s[1], 1] });
+  });
+
+  it("answers changed when a booking named with its lane left that lane between the read and the swap", async () => {
+    const e = await seed({ capacity: 1, lanes: ["Ring 1", "Ring 2"] });
+    const [l1, l2] = e.laneIds;
+    const a = await insertBooking(t.env.DB, e.id, e.s[1], "Rex", "Sam", { laneId: l1 });
+    const b = await insertBooking(t.env.DB, e.id, e.s[6], "Bella", "Alex", { laneId: l1 });
+    const f = failed(await swapBookings(t.env.DB, e.event, { a: { id: a, slot: e.s[1], lane: l1 }, b: { id: b, slot: e.s[6], lane: l1 } }, {
+      afterRead: async () => { await t.env.DB.prepare("UPDATE bookings SET lane_id = ? WHERE id = ?").bind(l2, a).run(); },
+    }));
+    expect(f).toMatchObject({ status: 409, code: "changed" });
+    expect(await placesOf(e.id)).toEqual({ [a]: [l2, e.s[1], 1], [b]: [l1, e.s[6], 1] });
+  });
+
+  it("refuses a lane that is not a positive whole number", async () => {
+    const e = await seed({ lanes: ["Ring 1", "Ring 2"] });
+    const a = await insertBooking(t.env.DB, e.id, e.s[1], "Rex", "Sam");
+    const b = await insertBooking(t.env.DB, e.id, e.s[6], "Bella", "Alex");
+    for (const lane of ["1", 0, -1, 1.5, null]) {
+      expect(failed(await swapBookings(t.env.DB, e.event, { a: { id: a, slot: e.s[1], lane }, b: { id: b, slot: e.s[6] } })).code, String(lane)).toBe("invalid_input");
+    }
+  });
+
   it("swaps two bookings of the same time in different lanes, and two places of one lane and time", async () => {
     const e = await seed({ capacity: 2, lanes: ["Ring 1", "Ring 2"] });
     const [l1, l2] = e.laneIds;

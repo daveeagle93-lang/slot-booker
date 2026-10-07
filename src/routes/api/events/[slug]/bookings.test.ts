@@ -1089,6 +1089,87 @@ describe("POST /api/events/:slug/bookings", () => {
     });
   });
 
+  describe("an edit of the booking form racing the booking (the retry is checked against the fresh form)", () => {
+    const body = (over: Record<string, unknown>) => ({ slot: SLOT, idempotencyKey: newKey(), ...over });
+    /** The real database, except that `edit` runs once, just before the first booking insert: the form is edited between the handler's read and its insert. */
+    const racing = (edit: () => Promise<unknown>) => {
+      let first = true;
+      return {
+        DB: interceptBatches(t.env.DB, async (sqls, run) => {
+          if (insertsBooking(sqls) && first) {
+            first = false;
+            await edit();
+          }
+          return run();
+        }),
+      };
+    };
+    const bump = (id: number) => t.env.DB.prepare("UPDATE event_layout SET config_rev = config_rev + 1 WHERE event_id = ?").bind(id).run();
+    const answer = async (res: Response) => ({ status: res.status, ...((await res.json()) as ErrorBody) });
+
+    it("refuses a value that is longer than the new longest value, writing nothing", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const env = racing(async () => {
+        await t.env.DB.prepare("UPDATE event_fields SET max_length = 5 WHERE event_id = ? AND position = 1").bind(id).run();
+        await bump(id);
+      });
+      const res = await answer(await post(slug, body({ field1: "Fly-away", field2: "Pat" }), { env }));
+      expect(res).toMatchObject({ status: 400, error: { code: "invalid_input" }, fields: { field1: "Dog must be at most 5 characters." } });
+      expect(await rows(id)).toHaveLength(0);
+    });
+
+    it("refuses a blank value for an optional field that became required, writing nothing", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, { fields: [{ label: "Rider", identity: true }, { label: "Phone", required: false }] });
+      const env = racing(async () => {
+        await t.env.DB.prepare("UPDATE event_fields SET required = 1 WHERE event_id = ? AND position = 2").bind(id).run();
+        await bump(id);
+      });
+      const res = await answer(await post(slug, body({ field1: "Ann" }), { env }));
+      expect(res).toMatchObject({ status: 400, error: { code: "invalid_input" }, fields: { field2: "Phone is required." } });
+      expect(await rows(id)).toHaveLength(0);
+    });
+
+    it("answers 400 for the new field, not 500, when the form grew from one field to two", async () => {
+      const { id, slug } = await insertEvent(t.env.DB, { fields: [{ label: "Car reg", identity: true }] });
+      const env = racing(async () => {
+        await t.env.DB.prepare("INSERT INTO event_fields (event_id, position, label, required, max_length, in_identity) VALUES (?, 2, 'Driver', 1, 80, 1)").bind(id).run();
+        await bump(id);
+      });
+      const res = await answer(await post(slug, body({ field1: "AB12 CDE" }), { env }));
+      expect(res).toMatchObject({ status: 400, error: { code: "invalid_input" }, fields: { field2: "Driver is required." } });
+      expect(await rows(id)).toHaveLength(0);
+    });
+
+    it("books with the fresh form's one value, and stores nothing in the second column, when the form shrank from two fields to one", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const env = racing(async () => {
+        await t.env.DB.prepare("DELETE FROM event_fields WHERE event_id = ? AND position = 2").bind(id).run();
+        await bump(id);
+      });
+      const res = await answer(await post(slug, body({ field1: "Rex", field2: "Sam Jones" }), { env }));
+      expect(res).toMatchObject({ status: 201, booking: { fields: [{ label: "Dog", value: "Rex" }] } });
+      expect(await rows(id)).toMatchObject([{ value_1: "Rex", value_2: "", identity_key: identityKeyOf(["Rex"]) }]);
+    });
+
+    it("books when the edit left the form as the request was checked against", async () => {
+      const { id, slug } = await insertEvent(t.env.DB);
+      const env = racing(() => bump(id));
+      expect((await post(slug, body({ field1: "Rex", field2: "Sam Jones" }), { env })).status).toBe(201);
+      expect(await rows(id)).toHaveLength(1);
+    });
+
+    it("refuses a lane the edit removed with the laneId message, writing nothing", async () => {
+      const { id, slug, laneIds } = await insertEvent(t.env.DB, { lanes: ["Ring 1", "Ring 2"] });
+      const env = racing(async () => {
+        await t.env.DB.prepare("DELETE FROM event_lanes WHERE id = ?").bind(laneIds[1]).run();
+        await bump(id);
+      });
+      const res = await answer(await post(slug, body({ field1: "Rex", field2: "Sam Jones", laneId: laneIds[1] }), { env }));
+      expect(res).toMatchObject({ status: 400, error: { code: "invalid_input" }, fields: { laneId: "Choose a lane." } });
+      expect(await rows(id)).toHaveLength(0);
+    });
+  });
+
   describe("unexpected failures", () => {
     it("returns a generic 500 and logs, without leaking SQL, when the insert fails for another reason", async () => {
       const { slug } = await insertEvent(t.env.DB);

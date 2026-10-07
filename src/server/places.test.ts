@@ -76,6 +76,32 @@ describe("createBooking: place and identity number", () => {
   });
 });
 
+describe("createBooking: an identity limit the admin lowered", () => {
+  /** An identity holding numbers 2 and 3 of a limit of 3 (number 1 was cleared), then the limit lowered to 2. */
+  const lowered = async () => {
+    const e = await seed({ identityLimit: 3, capacity: 2 });
+    for (const slot of [S1, S2, "2026-06-13T08:30:00Z"]) await insertBooking(t.env.DB, e.id, slot, "Rex", "Sam");
+    await t.env.DB.prepare("DELETE FROM bookings WHERE event_id = ? AND identity_seq = 1").bind(e.id).run();
+    await t.env.DB.prepare("UPDATE event_layout SET identity_limit = 2, config_rev = config_rev + 1 WHERE event_id = ?").bind(e.id).run();
+    return e;
+  };
+
+  it("refuses with duplicate_booking when the identity already holds as many bookings as the new limit, though number 1 is free", async () => {
+    const e = await lowered();
+    expect((await make(e, input(e.laneId, "Rex", "Sam", "2026-06-13T08:45:00Z", "l".repeat(22)))).kind).toBe("duplicate_booking");
+    expect((await stored(e.id)).map((b) => b.identity_seq)).toEqual([2, 3]);
+  });
+
+  it("still admits an identity below the new limit, on the lowest free number, and then refuses the next", async () => {
+    const e = await lowered();
+    await t.env.DB.prepare("DELETE FROM bookings WHERE event_id = ? AND identity_seq = 2").bind(e.id).run(); // holds only number 3 now
+    expect((await make(e, input(e.laneId, "Rex", "Sam", "2026-06-13T08:45:00Z", "m".repeat(22)))).kind).toBe("created");
+    expect((await stored(e.id)).map((b) => b.identity_seq)).toEqual([3, 1]);
+    expect((await make(e, input(e.laneId, "Rex", "Sam", "2026-06-13T09:00:00Z", "n".repeat(22)))).kind).toBe("duplicate_booking");
+    expect(await stored(e.id)).toHaveLength(2);
+  });
+});
+
 describe("createBooking: what a refusal says", () => {
   it("is slot_taken when the lane has no place left, with the live free slots and their places", async () => {
     const e = await seed({ capacity: 2 });

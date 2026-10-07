@@ -90,12 +90,14 @@ function fold(line: string): string {
 }
 
 /**
- * What a booking's calendar UID is hashed from: the event's slug and the identity fields' keys joined with "|" (the
- * same text v1.0 hashed for a dog and a handler, so existing UIDs do not change), and "|#2", "|#3" and so on for
- * an identity's second and later bookings in an event (the first has no suffix).
+ * What a booking's calendar UID is hashed from. An identity's first booking: the event's slug and the identity fields' keys joined
+ * with "|", the same text v1.0 hashed for a dog and a handler, so existing UIDs do not change. From its second booking: a JSON list
+ * of the slug, the keys and the number. That text starts with "[" and a first booking's with the slug (letters, numbers, "_" and
+ * "-"), so the two can never be equal, and a list is read back one way only. A suffix such as "|#2" on the first form would make
+ * the second booking of "Rex" equal the first booking of someone called "Rex|#2".
  */
 export const uidSource = (slug: string, identityKey: string, seq: number): string =>
-  [slug, ...identityKey.split(IDENTITY_SEPARATOR)].join("|") + (seq > 1 ? `|#${seq}` : "");
+  seq > 1 ? JSON.stringify([slug, ...identityKey.split(IDENTITY_SEPARATOR), seq]) : [slug, ...identityKey.split(IDENTITY_SEPARATOR)].join("|");
 
 export function buildBookingIcs(input: BookingIcsInput): string {
   const start = toMs(input.slot.start);

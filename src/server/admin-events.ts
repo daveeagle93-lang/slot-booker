@@ -2,7 +2,7 @@ import { londonToUtc, LondonTimeError, utcToLondon } from "../core/london";
 import { DEFAULT_NEAR_MISS_MINUTES, generateSchedule, type TimeRange } from "../core/schedule";
 import { generateSlug } from "../core/slug";
 import { IDEMPOTENCY_KEY, INVISIBLE, invisibleMessage, LINE_SEPARATORS, noStore, readJsonObject } from "./bookings";
-import { bookingWindow, fieldOf, type EventRow, type RawField } from "./events";
+import { bookingWindow, fieldOf, layoutRepairStatements, type EventRow, type RawField } from "./events";
 import { DEFAULT_FIELDS, draftsOf, LEGACY_FIELDS, MAX_FIELD_LABEL_CODE_POINTS, MAX_FIELD_LENGTH, MAX_FIELDS, MAX_IDENTITY_LIMIT, withPositions, type FieldDraft } from "./fields";
 import { errorResponse } from "./http";
 
@@ -610,15 +610,19 @@ export const defaultShareMessageStatement = (db: D1Database): D1PreparedStatemen
  * The admin list in three groups; every event is in exactly one (archived wins, then the end time decides):
  * `events` (Upcoming: not archived, ends after now, soonest first), `past` (not archived, ended at or before
  * now) and `archived`, each of the last two at most 100, most recently started first, with a HasMore flag.
- * One batch of nine queries: the upcoming events, their breaks, lanes, fields, layouts and booking counts, then Past and
- * Archived, then the default template's share message (`defaultShareMessage`, "" if there is none). An upcoming event
+ * One batch of eleven statements: two idempotent repairs that give an upcoming event with no layout row or lane (one made by the previous
+ * version of the app between the migration and the deploy) its one unnamed lane (they write nothing for any other), then the upcoming
+ * events, their breaks, lanes, fields, layouts and booking counts, then Past and Archived, then the default template's share message
+ * (`defaultShareMessage`, "" if there is none). An upcoming event
  * is `full` when every place of every lane at every time is booked. `slotCount` is the number of times and `bookedCount` the
  * number of bookings; `laneCount`, `capacity` and `placeCount` (times x lanes x places per lane) say how many places there are.
  */
 export async function listAdminEvents(db: D1Database, now: Date, cutoffOffsetMinutes: number) {
   const nowIso = `${now.toISOString().slice(0, 19)}Z`;
   const upcoming = `SELECT id FROM events WHERE archived = 0 AND end_utc > ?1 ORDER BY start_utc, id LIMIT ${MAX_LIST}`;
-  const [events, breaks, lanes, fieldRows, layouts, counts, pastRows, archivedRows, defaultMessage] = await db.batch([
+  const [, , events, breaks, lanes, fieldRows, layouts, counts, pastRows, archivedRows, defaultMessage] = await db.batch([
+    // First, so the reads below see an upcoming event the previous version of the app made without a layout row or lane (see ensureEventLayout).
+    ...layoutRepairStatements(db, upcoming, nowIso),
     db.prepare(
       `SELECT id, slug, name, start_utc, end_utc, session_minutes, gap_minutes, cost_pence, venue_postcode, details, share_message, listed
        FROM events WHERE id IN (${upcoming}) ORDER BY start_utc, id`,

@@ -6,7 +6,7 @@ import type { RouteHandler } from "../../../../../../server/env";
 import { loadEventBySlug } from "../../../../../../server/events";
 import { json } from "../../../../../../server/http";
 
-/** Swaps the slots of two bookings, given as the ids and slots the admin saw: see swapBookings. */
+/** Swaps the places of two bookings, given as the ids and slots (and optionally lanes) the admin saw: see swapBookings. */
 export const onRequestPost: RouteHandler<"slug"> = async ({ request, env, data, params }) => {
   const refused = refuseUnlessAdmin(data);
   if (refused) return refused;

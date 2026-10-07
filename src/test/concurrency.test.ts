@@ -115,6 +115,21 @@ describe("booking places under concurrent requests", () => {
     }
   }, 120_000);
 
+  it.each([
+    { held: "numbers 2 and 3", cleared: 1, created: 0 },
+    { held: "only number 3", cleared: 2, created: 1 },
+  ])("an identity limit lowered from 3 to 2 while the identity holds $held: 8 parallel bookings of it never take it above 2 (exactly $created created)", async ({ cleared, created }) => {
+    for (let round = 0; round < ITERATIONS; round++) {
+      const e = await insertEvent(t.env.DB, { ...DAY, identityLimit: 3 });
+      for (let i = 0; i < 3; i++) await insertBooking(t.env.DB, e.id, slotAt(i), "Rex", "Sam Jones");
+      await t.env.DB.prepare("DELETE FROM bookings WHERE event_id = ? AND identity_seq <= ?").bind(e.id, cleared).run();
+      await t.env.DB.prepare("UPDATE event_layout SET identity_limit = 2, config_rev = config_rev + 1 WHERE event_id = ?").bind(e.id).run();
+      const answers = await Promise.all(Array.from({ length: 8 }, (_, i) => book(e.slug, slotAt(4 + i), "Rex", "Sam Jones")));
+      expect(tally(answers), `round ${round}`).toEqual(created === 0 ? { "409 duplicate_booking": 8 } : { "201": 1, "409 duplicate_booking": 7 });
+      expect((await rows(e.id)).length, `round ${round}`).toBe(2);
+    }
+  }, 120_000);
+
   it.each([1, 2, 3])("N parallel bookings of ONE rider and pony (a form with an optional third field that differs every time) with an identity limit of %i: exactly that many are created", async (limit) => {
     for (let round = 0; round < ITERATIONS; round++) {
       const e = await insertEvent(t.env.DB, {

@@ -55,7 +55,10 @@ export async function placeAtFreeSpot<T, S>(o: {
     ]);
     const held = holders.results as { place: number; identity_key: string }[];
     const place = lowestFree(new Set(held.map((h) => h.place)), event.capacity);
-    const seq = o.identityKey === null ? 1 : lowestFree(new Set((numbers.results as { identity_seq: number }[]).map((n) => n.identity_seq)), event.identityLimit);
+    // The identity's held numbers can sit above a limit the admin has since lowered, so the limit is a count of what it holds, not
+    // only the range of numbers to choose from: below the limit there is always a free number from 1 to the limit.
+    const heldNumbers = (numbers.results as { identity_seq: number }[]).map((n) => n.identity_seq);
+    const seq = o.identityKey === null ? 1 : heldNumbers.length >= event.identityLimit ? null : lowestFree(new Set(heldNumbers), event.identityLimit);
     if (place === null || seq === null) {
       const prior = await o.settled?.();
       if (prior) return { kind: "settled", value: prior };

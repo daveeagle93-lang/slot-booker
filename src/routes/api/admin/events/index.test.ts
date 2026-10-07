@@ -828,7 +828,7 @@ describe("GET /api/admin/events: details, cost, share message and the default sh
     expect((await listing()).defaultShareMessage).toBe("");
   });
 
-  it("answers in the same single batch as before (no extra round trip for the default message)", async () => {
+  it("answers in one batch (no extra round trip for the repairs or the default message)", async () => {
     let batches = 0;
     let statements = 0;
     const db = {
@@ -839,7 +839,7 @@ describe("GET /api/admin/events: details, cost, share message and the default sh
       request: new Request("http://localhost/api/admin/events"), env: { DB: db }, data: ADMIN,
     } as unknown as Parameters<typeof onRequestGet>[0]);
     expect(res.status).toBe(200);
-    expect([batches, statements]).toEqual([1, 9]);
+    expect([batches, statements]).toEqual([1, 11]); // two idempotent layout repairs, then the nine reads
   });
 });
 

@@ -56,22 +56,51 @@ export const fieldOf = (r: RawField): EventField =>
   ({ position: r.position, label: r.label, required: r.required === 1, maxLength: r.max_length, identity: r.in_identity === 1 });
 
 /**
- * The event with its breaks, lanes, fields and layout, from one batch (one round trip, one consistent snapshot). An
- * event without a layout row (inserted by hand, not by the app) gets capacity 1, limit 1 and revision 0, and with no lane it
- * can't be booked. One without field rows has the Dog and Handler form (LEGACY_FIELDS).
+ * The two idempotent statements that give the events chosen by `idsSql` (a query that selects event ids, with `binds` for its
+ * parameters) what the migration gave every event that existed then: a layout row (capacity 1, limit 1, revision 0) and one unnamed
+ * lane at position 1. Each only adds what is missing, so running them again, or at the same time, changes nothing, and an event that
+ * is gone is skipped (a foreign key would refuse it).
+ */
+export const layoutRepairStatements = (db: D1Database, idsSql: string, ...binds: unknown[]): D1PreparedStatement[] => [
+  db.prepare(`INSERT OR IGNORE INTO event_layout (event_id) SELECT id FROM events WHERE id IN (${idsSql})`).bind(...binds),
+  db.prepare(
+    `INSERT INTO event_lanes (event_id, position, name) SELECT id, 1, '' FROM events
+     WHERE id IN (${idsSql}) AND NOT EXISTS (SELECT 1 FROM event_lanes WHERE event_lanes.event_id = events.id)`,
+  ).bind(...binds),
+];
+
+/**
+ * Repairs an event that has no layout row or no lane: one made by the previous version of the app between `migrations apply` and
+ * `wrangler deploy` (that code knows nothing of lanes), which would otherwise show every slot taken and refuse every booking.
+ * Idempotent (see layoutRepairStatements).
+ */
+export async function ensureEventLayout(db: D1Database, eventId: number): Promise<void> {
+  await db.batch(layoutRepairStatements(db, "SELECT ?", eventId));
+}
+
+/**
+ * The event with its breaks, lanes, fields and layout, from one batch (one round trip, one consistent snapshot). One without
+ * field rows has the Dog and Handler form (LEGACY_FIELDS). One with no lane (made by the previous version of the app in the moments
+ * between the migration and the deploy) is repaired first (ensureEventLayout) and read again, so it has one unnamed lane, capacity 1,
+ * limit 1 and revision 0; an event with a lane but no layout row reads as capacity 1, limit 1 and revision 0.
  */
 export async function loadEventBySlug(db: D1Database, slug: string): Promise<EventRow | null> {
   if (!isValidSlug(slug)) return null;
   const idOf = "(SELECT id FROM events WHERE slug = ?)";
-  const [event, breaks, lanes, fields, layout] = await db.batch([
+  const read = () => db.batch([
     db.prepare("SELECT * FROM events WHERE slug = ?").bind(slug),
     db.prepare(`SELECT start_utc, end_utc, label FROM breaks WHERE event_id = ${idOf} ORDER BY start_utc`).bind(slug),
     db.prepare(`SELECT id, position, name FROM event_lanes WHERE event_id = ${idOf} ORDER BY position`).bind(slug),
     db.prepare(`SELECT position, label, required, max_length, in_identity FROM event_fields WHERE event_id = ${idOf} ORDER BY position`).bind(slug),
     db.prepare(`SELECT capacity, identity_limit, config_rev FROM event_layout WHERE event_id = ${idOf}`).bind(slug),
   ]);
+  let [event, breaks, lanes, fields, layout] = await read();
   const e = (event.results as unknown as RawEvent[])[0];
   if (!e) return null;
+  if (lanes.results.length === 0) {
+    await ensureEventLayout(db, e.id);
+    [event, breaks, lanes, fields, layout] = await read();
+  }
   const results = breaks.results as { start_utc: string; end_utc: string; label: string }[];
   const rawLayout = (layout.results as { capacity: number; identity_limit: number; config_rev: number }[])[0];
   return {

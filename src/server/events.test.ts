@@ -96,13 +96,19 @@ describe("loadEventBySlug and computeSlotViews with lanes and places", () => {
     expect(singles).toBe(5); // the five statements of that one batch, and no query of its own
   });
 
-  it("gives an event with no layout row capacity 1, limit 1, revision 0, and a lane-less event no lanes", async () => {
+  it("gives an event with no layout row capacity 1, limit 1, revision 0", async () => {
+    const e = await insertEvent(t.env.DB, DAY);
+    await t.env.DB.prepare("DELETE FROM event_layout WHERE event_id = ?").bind(e.id).run();
+    expect(await loadEventBySlug(t.env.DB, e.slug)).toMatchObject({ capacity: 1, identityLimit: 1, configRev: 0, lanes: [{ id: e.laneId, name: "" }] });
+  });
+
+  it("repairs a lane-less event with one unnamed lane (see event-layout-repair.test.ts), so it can be booked", async () => {
     const e = await insertEvent(t.env.DB, DAY);
     await t.env.DB.batch([
       t.env.DB.prepare("DELETE FROM event_layout WHERE event_id = ?").bind(e.id),
       t.env.DB.prepare("DELETE FROM event_lanes WHERE event_id = ?").bind(e.id),
     ]);
-    expect(await loadEventBySlug(t.env.DB, e.slug)).toMatchObject({ capacity: 1, identityLimit: 1, configRev: 0, lanes: [] });
+    expect(await loadEventBySlug(t.env.DB, e.slug)).toMatchObject({ capacity: 1, identityLimit: 1, configRev: 0, lanes: [{ position: 1, name: "" }] });
   });
 
   it("gives an event with no field rows the Dog and Handler form (an event made by the previous version between the migration and the deploy), and books it as such", async () => {

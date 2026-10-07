@@ -180,14 +180,19 @@ const PARKING_SLOT = "0001-01-01T00:00:00Z";
 /** One side of a swap as it ended up: its id, time and lane (the lane may have changed too). */
 type SwappedRef = { id: number; slotStart: string; lane: { id: number; name: string } };
 
-function swapSide(value: unknown): { id: number; slot: string } | null {
-  const v = value as { id?: unknown; slot?: unknown } | null;
+/** One side of the request: the booking's id and slot, and the lane it was in when the admin saw it (optional: left out, the lane is not checked). */
+function swapSide(value: unknown): { id: number; slot: string; lane?: number } | null {
+  const v = value as { id?: unknown; slot?: unknown; lane?: unknown } | null;
   if (typeof v !== "object" || v === null) return null;
-  return typeof v.id === "number" && Number.isSafeInteger(v.id) && v.id > 0 && typeof v.slot === "string" ? { id: v.id, slot: v.slot } : null;
+  if (!(typeof v.id === "number" && Number.isSafeInteger(v.id) && v.id > 0 && typeof v.slot === "string")) return null;
+  if (v.lane === undefined) return { id: v.id, slot: v.slot };
+  return typeof v.lane === "number" && Number.isSafeInteger(v.lane) && v.lane > 0 ? { id: v.id, slot: v.slot, lane: v.lane } : null;
 }
 
 /**
- * Swaps the places of two bookings of this event: each takes the other's lane, time and place (they may be in different lanes). SQLite checks UNIQUE
+ * Swaps the places of two bookings of this event: each takes the other's lane, time and place (they may be in different lanes). Each
+ * side is `{ id, slot }` as the admin saw it, with the booking's `lane` too when the caller sends it (left out, the lane is not checked, as
+ * before lanes existed): a booking that has left that lane is `changed`, like one that has left its slot. SQLite checks UNIQUE
  * after every row, so the swap goes through a parking slot inside one batch: guards first (both bookings still where
  * the admin saw them, the parking slot unused, the schedule unchanged), then A to parking, B to A's place, A to B's
  * place, then a last guard that both ended up where intended. Any failure rolls the whole batch back, so no booking
@@ -209,6 +214,7 @@ export async function swapBookings(
   const at = new Map(results.map((r) => [r.id, r]));
   const [rowA, rowB] = [at.get(a.id)!, at.get(b.id)!];
   if (rowA.slot_start_utc !== a.slot || rowB.slot_start_utc !== b.slot) return changed();
+  if ((a.lane !== undefined && a.lane !== rowA.lane_id) || (b.lane !== undefined && b.lane !== rowB.lane_id)) return changed();
   // Both must end up on real slots: swapping an orphan with a booked slot would orphan the other booking.
   if (!findSlot(event, a.slot) || !findSlot(event, b.slot)) return invalidSlot();
   await hooks.afterRead?.();
@@ -222,7 +228,7 @@ export async function swapBookings(
   try {
     const out = await db.batch([
       scheduleUnchanged(db, event),
-      guard(db, bothAt, event.id, a.id, a.slot, rowA.lane_id, rowA.place, b.id, b.slot, rowB.lane_id, rowB.place),
+      guard(db, bothAt, event.id, a.id, a.slot, a.lane ?? rowA.lane_id, rowA.place, b.id, b.slot, b.lane ?? rowB.lane_id, rowB.place),
       guard(db, "NOT EXISTS (SELECT 1 FROM bookings WHERE event_id = ? AND slot_start_utc = ?)", event.id, PARKING_SLOT),
       move(a.id, rowA, parking),
       move(b.id, rowB, rowA),
