@@ -217,7 +217,7 @@ The button makes a copy. Changes to the template do **not** flow into it, and Cl
 
 Apply all migrations before running new code that needs them. For instance `0011_site_icons` adds the `site_icons` table: without it Settings, saving or removing the logo and uploading icons return errors, while public pages fall back to the default icons.
 
-Migrations `0015` to `0017` rebuild the `bookings` table (for lanes and places) in three files, because Cloudflare's documentation does not say whether a migration file is applied as one transaction: `0016` is written so that running it again after an interruption finishes the job, and the old table is only dropped by `0017`, after the rows have been copied (and checked). From `0015` (which renames the old table) until the new Worker is live, the previous version of the Worker cannot read or make bookings, so a deploy that includes these migrations has a gap, normally seconds long: update at a quiet time, and take an export first (`npx wrangler d1 export`, see [handover.md](handover.md)). I have not measured the gap on a deployed copy. Migration `0018` (the booking form's fields) only adds tables and rows, so it has no gap of its own: the previous Worker keeps working after it, and an event that Worker makes before the new one is live has no field rows and is read as Dog and Handler. The same goes for an event made in the window between `0016` and the new Worker going live: it has no layout row and no lane, so the new Worker gives it one unnamed lane, capacity 1 and a limit of 1 the first time anyone opens it (the public page, the booking form, or the admin list or event page), and it then behaves like any other event.
+Migrations `0015` to `0017` rebuild the `bookings` table (for lanes and places) in three files, because Cloudflare's documentation does not say whether a migration file is applied as one transaction: `0016` is written so that running it again after an interruption finishes the job, and the old table is only dropped by `0017`, after the rows have been copied (and checked). From `0015` (which renames the old table) until the new Worker is live, the previous version of the Worker cannot read or make bookings, so a deploy that includes these migrations has a gap, normally seconds long: update at a quiet time, and take an export first (`npx wrangler d1 export`, see [handover.md](handover.md)). I have not measured the gap on a deployed copy. The booking table's id counter is not carried across (a write to D1's internal `sqlite_sequence` table might be refused, which would stop the migration after `0015` and leave the site down), so the id of a booking that was cleared before the migration may be given to a new booking; nothing outside the app refers to booking ids. Migration `0018` (the booking form's fields) only adds tables and rows, so it has no gap of its own: the previous Worker keeps working after it, and an event that Worker makes before the new one is live has no field rows and is read as Dog and Handler. The same goes for an event made in the window between `0016` and the new Worker going live: it has no layout row and no lane, so the new Worker gives it one unnamed lane, capacity 1 and a limit of 1 the first time anyone opens it (the public page, the booking form, or the admin list or event page), and it then behaves like any other event.
 
 ## Troubleshooting
 
@@ -261,6 +261,23 @@ The Free plan's daily request limit for the Worker (100,000 a day) has been pass
 ### The button's build failed
 
 Open the build log on the Worker's page in the dashboard (**unverified** where). A migration step that fails stops the deploy, so the Worker is not updated with code that needs a missing table. Fix the cause and retry. `npm run db:migrations:apply` can be run on its own from a terminal.
+
+### `migrations apply` stops at `0015` with "no such table: bookings"
+
+**Unverified on real D1** (checked only on the local database, where running `0015` again after the rename gives exactly this error). It means the rename in `0015_bookings_legacy.sql` was committed but Wrangler's own record of it in the `d1_migrations` table was not, so Wrangler tries `0015` again. Do not edit the migration. First confirm the state: the old table must exist under its new name and the new one must not exist yet.
+
+```sh
+npx wrangler d1 execute DB --remote --env="" --command "SELECT name FROM sqlite_master WHERE name IN ('bookings', 'bookings_legacy')"
+```
+
+Only if that lists `bookings_legacy` and not `bookings`, record `0015` as applied by hand, then run the migrations again (it carries on with `0016`):
+
+```sh
+npx wrangler d1 execute DB --remote --env="" --command "INSERT INTO d1_migrations (name) VALUES ('0015_bookings_legacy.sql')"
+npm run db:migrations:apply
+```
+
+If both tables are listed, or neither, stop and restore from the export you took before updating (see [handover.md](handover.md#exporting-before-deleting)).
 
 ### Admin shows an error saving Settings or a logo
 

@@ -44,8 +44,12 @@
 -- the new table can reuse the first two names. On a re-run the same DROP removes the new table's indexes of those
 -- names, and the CREATE ... IF NOT EXISTS at the end puts them back.
 --
--- The AUTOINCREMENT high-water mark (the largest id ever issued, which can be above the largest id still present) is
--- carried over through sqlite_sequence, so the id of a booking that was cleared is not issued again.
+-- The AUTOINCREMENT high-water mark (the largest id ever issued) is deliberately NOT carried over. An earlier draft of this file
+-- wrote it into sqlite_sequence, but remote D1 may refuse writes to that internal table, and a refusal here would stop the
+-- migration after 0015 has already renamed the bookings table, leaving the site down. The only cost of leaving it out is that the id
+-- of a booking cleared before the migration may be issued again for a new booking (the new table's counter starts at the highest id
+-- copied). That is harmless: a booking's id is not an external reference (the public link uses the token, and the admin pages
+-- read the ids fresh from the server).
 
 CREATE TABLE IF NOT EXISTS event_layout (
   event_id        INTEGER PRIMARY KEY REFERENCES events (id) ON DELETE CASCADE,
@@ -124,12 +128,6 @@ INSERT OR IGNORE INTO bookings (id, event_id, lane_id, slot_start_utc, place, va
   FROM bookings_legacy AS l;
 
 SELECT CASE WHEN (SELECT COUNT(*) FROM bookings_legacy) = (SELECT COUNT(*) FROM bookings WHERE id IN (SELECT id FROM bookings_legacy)) THEN 1 ELSE abs(-9223372036854775808) END;
-
-INSERT INTO sqlite_sequence (name, seq)
-  SELECT 'bookings', seq FROM sqlite_sequence
-  WHERE name = 'bookings_legacy' AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'bookings');
-
-UPDATE sqlite_sequence SET seq = max(seq, COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'bookings_legacy'), 0)) WHERE name = 'bookings';
 
 CREATE UNIQUE INDEX IF NOT EXISTS bookings_one_per_place ON bookings (event_id, lane_id, slot_start_utc, place);
 

@@ -46,7 +46,7 @@ async function seedLegacy(db: D1Database): Promise<void> {
         `INSERT INTO bookings (id, event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, created_at, token, idempotency_key)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(id, ev, slot, dog, handler, identityKey(dog), identityKey(handler), created, token, idem)),
-    // A booking that existed and was cleared: its id was issued, so the counter is ahead of the highest id left.
+    // A booking that existed and was cleared. The migration does not carry the id counter over (remote D1 may refuse writes to sqlite_sequence), so its id may be issued again.
     db.prepare(
       `INSERT INTO bookings (id, event_id, slot_start_utc, dog_name, handler_name, dog_key, handler_key, token)
        VALUES (9, 2, '2026-10-18T08:00:00Z', 'Gone', 'Gone', 'gone', 'gone', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa9')`),
@@ -64,7 +64,6 @@ async function dump(db: D1Database) {
   // The token made for the booking that had none is random, so only its shape is compared.
   for (const b of out.bookings as { token: string }[]) if (/^[0-9a-f]{32}$/.test(b.token) && !TOKENS.includes(b.token)) b.token = "<random 32 hex>";
   out.schema = await all(db, "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_autoindex%' AND name NOT LIKE 'sqlite_%' ORDER BY type, name");
-  out.sequence = await all(db, "SELECT name, seq FROM sqlite_sequence WHERE name IN ('bookings', 'bookings_legacy', 'event_lanes') ORDER BY name");
   return out;
 }
 
@@ -149,11 +148,12 @@ describe("0015 to 0017 applied by wrangler to a v1.0 database", () => {
     expect(await all(db(), "SELECT name FROM pragma_index_list('bookings') WHERE origin = 'u'")).toEqual([]);
   });
 
-  it("does not issue an id again that v1.0 had issued: the next booking is 10, not 6", async () => {
+  it("does not write to sqlite_sequence (remote D1 may refuse it), so the counter starts at the highest id copied: the next booking is 6, and the cleared booking 9's id may be reused", async () => {
+    expect(statements16().filter((x) => /sqlite_sequence/i.test(x))).toEqual([]);
     const row = await db().prepare(
       `INSERT INTO bookings (event_id, lane_id, slot_start_utc, value_1, identity_key, token) VALUES (2, (SELECT id FROM event_lanes WHERE event_id = 2), '2026-10-18T08:00:00Z', 'Next', 'next', 'cccccccccccccccccccccccccccccc1') RETURNING id`,
     ).first<{ id: number }>();
-    expect(row!.id).toBe(10);
+    expect(row!.id).toBe(6);
   });
 
   it("enforces the new rules: a second place in the same slot is fine, the same place, identity number, key or token is not", async () => {
@@ -246,7 +246,7 @@ describe("0016 can be run again", () => {
     ["after dropping the legacy indexes", (s) => s.startsWith("DROP INDEX IF EXISTS bookings_one_run_per_dog_handler_keys")],
     ["after creating the new bookings table, before the copy", (s) => s.startsWith("CREATE TABLE IF NOT EXISTS bookings")],
     ["after the copy, before any index of the new table", (s) => s.startsWith("INSERT OR IGNORE INTO bookings")],
-    ["after the sequence is carried over, before the indexes", (s) => s.startsWith("UPDATE sqlite_sequence")],
+    ["after the check that every legacy row arrived, before any index", (s) => s.startsWith("SELECT CASE WHEN (SELECT COUNT(*) FROM bookings_legacy)")],
     ["after the first two unique indexes", (s) => s.startsWith("CREATE UNIQUE INDEX IF NOT EXISTS bookings_identity_seq")],
   ];
   it.each(cuts)("finishes a run that stopped %s", async (_name, isLast) => {
