@@ -20,6 +20,15 @@
 // every state gets, these check that every button, select and field in them is at least 48px tall and wide, and that rows,
 // lane rows, buttons and fields stay inside the card that holds them.
 //
+// The booking form's fields (an event or template has one to four, each with a label, Required, Max length and Identifies a booking,
+// and a limit on how many bookings one identity may hold) are checked in these states: the create form with four fields (long
+// labels, one optional, two identifying a booking) and, after a rejected save, errors under a label, a max length, the limit and the
+// card; the edit form of an event that has bookings (the card locked: Add, Remove and the Identifies boxes disabled, with the hint);
+// the template form (create with a second field, edit with a template that has three fields); and the schedule's Add booking panel
+// for a form of three fields. They check that every control (inputs, the two checkboxes' labels, buttons) is at least 48px
+// tall and wide, that the field rows, checkboxes and the limit stay inside the card, and that the paired Required / Identifies
+// a booking cells stay level whichever of them shows an error.
+//
 // The public booking page (/e/<slug>, event.html with the booking API stubbed) is checked in these states: one lane with
 // one place (the v1.0 look), one lane with two places, one named lane, three lanes with two places each (all open; one
 // lane full and a started time; long lane names; a lane chosen with the form open; the confirmation with its Lane row).
@@ -33,8 +42,8 @@
 // --engine      webkit (default) or chromium. Chromium never showed the bug, so it is only a sanity check of the
 //               script and the page; only a WebKit run says anything about iOS.
 // --allow-skip  exit 0 instead of 2 when WebKit can't launch here (Playwright supports a limited set of systems).
-// --break-css   self-test: forces a wide min-width on the inputs, short buttons and fields in the schedule rows and lane
-//               rows, and wide, short lane buttons on the booking page, so the run must FAIL.
+// --break-css   self-test: forces a wide min-width on the inputs, short buttons and fields in the schedule rows, lane
+//               rows, booking form card and Add panel, and wide, short lane buttons on the booking page, so the run must FAIL.
 // --shots       also writes full-page PNGs of the main states (<name>-<width>-<scheme>.png) to --shots-dir (default:
 //               slot-booker-layout in the system temp folder), for looking at.
 // Every state runs at both widths in light and dark.
@@ -93,33 +102,46 @@ const EVENT = {
   date: "2030-06-15", start: "10:00", end: "14:00", sessionMinutes: 15, gapMinutes: 5, costPence: 1200,
   venuePostcode: "AB1 2CD", details: "Bring water.",
   startUtc: "2030-06-15T09:00:00.000Z", endUtc: "2030-06-15T13:00:00.000Z",
+  fields: [{ label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }], identityLimit: 1, hasBookings: false,
   breaks: [
     { start: "11:00", end: "11:30", label: "Tea", startUtc: "2030-06-15T10:00:00.000Z", endUtc: "2030-06-15T10:30:00.000Z" },
     { start: "12:30", end: "13:00", label: "Lunch", startUtc: "2030-06-15T11:30:00.000Z", endUtc: "2030-06-15T12:00:00.000Z" },
   ],
 };
 const SLOTS = [{ start: "2030-06-15T09:00:00.000Z", end: "2030-06-15T09:15:00.000Z" }];
-// Schedule page rows: a free slot, a booked one with long names, the break between, another booked one.
+// Schedule page rows: a free slot, a booked one with long names, the break between, another booked one. Each slot lists its one lane.
+const dh = (dog, handler) => [{ label: "Dog", value: dog }, { label: "Handler", value: handler }];
+const oneLane = (...bookings) => [{ laneId: 1, laneName: "", free: bookings.length ? 0 : 1, bookings }];
 const SCHEDULE_SLOTS = [
-  { start: "2030-06-15T09:00:00.000Z", end: "2030-06-15T09:15:00.000Z", booking: null },
-  { start: "2030-06-15T09:20:00.000Z", end: "2030-06-15T09:35:00.000Z", booking: { id: 1, dogName: "Bartholomew-Maximilian", handlerName: "Alexandria Featherstonehaugh-Cholmondeley" } },
-  { start: "2030-06-15T10:40:00.000Z", end: "2030-06-15T10:55:00.000Z", booking: { id: 2, dogName: "Pip", handlerName: "Sam" } },
+  { start: "2030-06-15T09:00:00.000Z", end: "2030-06-15T09:15:00.000Z", places: oneLane() },
+  { start: "2030-06-15T09:20:00.000Z", end: "2030-06-15T09:35:00.000Z", places: oneLane({ id: 1, fields: dh("Bartholomew-Maximilian", "Alexandria Featherstonehaugh-Cholmondeley") }) },
+  { start: "2030-06-15T10:40:00.000Z", end: "2030-06-15T10:55:00.000Z", places: oneLane({ id: 2, fields: dh("Pip", "Sam") }) },
 ];
 // An event with three lanes and two places in each (the shape of eventDetail's `event`, and its slots with `places`).
 const RING_LANES = [{ id: 31, name: "Ring 1" }, { id: 32, name: "Ring 2" }, { id: 33, name: "Indoor hall, far end" }];
 const LANED_EVENT = { ...EVENT, lanes: RING_LANES, capacity: 2 };
-const LONG_DOG = { id: 1, dogName: "Bartholomew-Maximilian", handlerName: "Alexandria Featherstonehaugh-Cholmondeley" };
+const LONG_DOG = { id: 1, fields: dh("Bartholomew-Maximilian", "Alexandria Featherstonehaugh-Cholmondeley") };
 const heldIn = (lane, free, ...bookings) => ({ laneId: lane.id, laneName: lane.name, free, bookings });
 // 10:00 (London) all free; 10:20 Ring 1 full (a long name and a short one), Ring 2 one booking, hall free; 11:40 the hall full, Rings free.
 const LANE_SLOTS = [
-  { start: "2030-06-15T09:00:00.000Z", end: "2030-06-15T09:15:00.000Z", booking: null, places: RING_LANES.map((l) => heldIn(l, 2)) },
-  { start: "2030-06-15T09:20:00.000Z", end: "2030-06-15T09:35:00.000Z", booking: null,
-    places: [heldIn(RING_LANES[0], 0, LONG_DOG, { id: 2, dogName: "Pip", handlerName: "Sam" }), heldIn(RING_LANES[1], 1, { id: 3, dogName: "Moss", handlerName: "Lee Ann" }), heldIn(RING_LANES[2], 2)] },
-  { start: "2030-06-15T10:40:00.000Z", end: "2030-06-15T10:55:00.000Z", booking: null,
-    places: [heldIn(RING_LANES[0], 2), heldIn(RING_LANES[1], 2), heldIn(RING_LANES[2], 0, { id: 4, dogName: "Fly", handlerName: "Jo" }, { id: 5, dogName: "Tess", handlerName: "Ali" })] },
+  { start: "2030-06-15T09:00:00.000Z", end: "2030-06-15T09:15:00.000Z", places: RING_LANES.map((l) => heldIn(l, 2)) },
+  { start: "2030-06-15T09:20:00.000Z", end: "2030-06-15T09:35:00.000Z",
+    places: [heldIn(RING_LANES[0], 0, LONG_DOG, { id: 2, fields: dh("Pip", "Sam") }), heldIn(RING_LANES[1], 1, { id: 3, fields: dh("Moss", "Lee Ann") }), heldIn(RING_LANES[2], 2)] },
+  { start: "2030-06-15T10:40:00.000Z", end: "2030-06-15T10:55:00.000Z",
+    places: [heldIn(RING_LANES[0], 2), heldIn(RING_LANES[1], 2), heldIn(RING_LANES[2], 0, { id: 4, fields: dh("Fly", "Jo") }, { id: 5, fields: dh("Tess", "Ali") })] },
 ];
 // Bookings that removing the third lane would strand, as the preview lists them.
-const STRANDED = [{ id: 4, slotStart: "2030-06-15T10:40:00.000Z", dogName: "Fly", handlerName: "Jo", lane: RING_LANES[2] }, { id: 5, slotStart: "2030-06-15T10:40:00.000Z", dogName: "Tess", handlerName: "Ali", lane: RING_LANES[2] }];
+const STRANDED = [{ id: 4, slotStart: "2030-06-15T10:40:00.000Z", fields: dh("Fly", "Jo"), lane: RING_LANES[2] }, { id: 5, slotStart: "2030-06-15T10:40:00.000Z", fields: dh("Tess", "Ali"), lane: RING_LANES[2] }];
+// Booking forms with long labels: four fields (the third optional, with a short longest value; two identify a booking), and three for the Add panel.
+const draft = (label, o = {}) => ({ label, required: true, maxLength: 80, identity: false, ...o });
+const FOUR_FIELDS = [
+  draft("Name of the dog as on the entry form", { identity: true }), draft("Handler's full name and club", { identity: true }),
+  draft("Phone number for the day of the event", { required: false, maxLength: 20 }), draft("Anything else we should know?", { required: false, maxLength: 40 }),
+];
+const THREE_FIELDS = FOUR_FIELDS.slice(0, 3);
+// The card's controls and what each must stay inside (the same ids for the event form's card, `event-`, and the template form's, `tpl-`).
+const cardControls = (limit) => `.field-def button, .field-def .select-all, .field-def input[type="text"], .field-def input[type="number"], .fields-group > button, ${limit}`;
+const cardInside = (limit) => [[".field-def", ".fields-group"], [".field-def input", ".field-def"], [".field-def .select-all", ".field-def"], [".field-def button", ".field-def"], [limit, ".fields-group"]];
 // The events list (GET /api/admin/events): two upcoming events, the second with a long unbroken name.
 const LIST_EVENTS = [
   { slug: SLUG, path: `/e/${SLUG}`, name: "Saturday agility", startUtc: EVENT.startUtc, endUtc: EVENT.endUtc, bookedCount: 3, slotCount: 12, full: false, listed: true, bookings: { open: true } },
@@ -165,7 +187,7 @@ const tpl = (id, name, isDefault, breaks, more = {}) => ({
 const LIST_TEMPLATES = [
   tpl(1, "Weekend scent trial", true, [{ start: "12:00", end: "12:30", label: "Lunch" }, { start: "14:00", end: "14:15", label: "" }]),
   tpl(2, "Regional qualifier, novice and intermediate scent work", false, [{ start: "11:00", end: "11:30", label: "Tea break for everyone and the judges" }, { start: "13:00", end: "13:45", label: "Lunch" }],
-    { lanes: [{ name: "Ring 1" }, { name: "Ring 2" }, { name: "Indoor hall, far end" }], capacity: 2 }),
+    { lanes: [{ name: "Ring 1" }, { name: "Ring 2" }, { name: "Indoor hall, far end" }], capacity: 2, fields: THREE_FIELDS, identityLimit: 2 }),
   tpl(3, "Extraordinarily-long-template-name-without-any-spaces-at-a", false, []),
 ];
 // The create page's picker: the default has two breaks, the other three.
@@ -503,6 +525,8 @@ async function main() {
           const m = await page.evaluate(measure, { formSelector: o.form ?? null, dateTime: DATE_TIME });
           failures.push(...check(`${label} @${width}px ${scheme}`, m, o));
           checked++;
+          // Before the paired-row check, which writes (and clears) errors in the cells to see whether the rows stay level.
+          if (flag("shots") && o.shot) await page.screenshot({ path: join(shotsDir, `${o.shot}-${width}-${scheme}.png`), fullPage: true });
           if (o.form) {
             const pairs = await page.evaluate(measurePairs);
             if (pairs.length === 0) failures.push(`${label} @${width}px ${scheme}: no paired rows found to test with an error`);
@@ -511,13 +535,12 @@ async function main() {
           }
           if (o.targets || o.inside) {
             if (flag("break-css")) {
-              await page.addStyleTag({ content: ".sched-actions .button, .lane-row .button, .lane-row input, #capacity, #tpl-capacity { min-height: 20px !important; height: 20px !important; }" });
+              await page.addStyleTag({ content: ".sched-actions .button, .lane-row .button, .lane-row input, #capacity, #tpl-capacity, .field-def .button, .field-def input, .field-def .select-all, #event-identity-limit, #tpl-identity-limit, .sched-panel input { min-height: 20px !important; height: 20px !important; }" });
             }
             const lm = await page.evaluate(measureLayout, { targets: o.targets ?? "", inside: o.inside ?? [] });
             failures.push(...checkLayout(`${label} @${width}px ${scheme}`, lm, o));
             laneChecked++;
           }
-          if (flag("shots") && o.shot) await page.screenshot({ path: join(shotsDir, `${o.shot}-${width}-${scheme}.png`), fullPage: true });
         };
         /**
          * Loads `path` (with the API stubbed as `o.templates` / `o.slots` say), waits for `o.ready`, runs `o.prepare`, then
@@ -613,7 +636,7 @@ async function main() {
               act: async () => {
                 await page.click(".sched-panel button:has-text('Cancel')");
                 await page.click('button[aria-label="Add booking at 10:20 · Indoor hall, far end"]');
-                await page.waitForSelector("#add-dog");
+                await page.waitForSelector("#add-field-1");
               },
             },
           ],
@@ -666,6 +689,68 @@ async function main() {
           prepare: async () => {
             await page.click(`[aria-label="Edit ${LIST_TEMPLATES[1].name}"]`);
             await page.waitForSelector("#tpl-lane-3-name");
+          },
+        });
+
+        // The booking form's card (fields, Required, Max length, Identifies a booking, the identity limit): create, edit (with errors, and locked) and the template form.
+        const LIMIT_EVENT = "#event-identity-limit";
+        const LIMIT_TPL = "#tpl-identity-limit";
+        await run("new, Booking form with four fields", "/admin/new", {
+          ready: "#event-form", form, ids: plain, shot: "new-booking-form", targets: cardControls(LIMIT_EVENT), inside: cardInside(LIMIT_EVENT),
+          prepare: async () => {
+            for (let i = 0; i < 3; i++) await page.click('button:has-text("Add field")');
+            for (const [n, f] of FOUR_FIELDS.entries()) await page.fill(`#event-field-${n + 1}-label`, f.label);
+            await page.check("#event-field-2-identity");
+            await page.fill("#event-field-3-max", "20");
+            await page.fill("#event-identity-limit", "2");
+          },
+        });
+        await run("edit, Booking form with four fields", `/admin/edit?slug=${SLUG}`, {
+          ready: "#event-field-4-label", form, event: { ...EVENT, fields: FOUR_FIELDS, identityLimit: 2 }, ids: [...plain, ...breakIds(2)], shot: "edit-booking-form",
+          targets: cardControls(LIMIT_EVENT), inside: cardInside(LIMIT_EVENT),
+          then: [{
+            label: "errors under a label, a max length, the limit and the card", shot: "edit-booking-form-errors",
+            act: async () => {
+              stub.putFields = {
+                "fields.1.label": "Two fields can't have the same label. Give this field a different label from the others.",
+                "fields.2.maxLength": "Enter a whole number of characters from 1 to 80.", "fields.3.required": "A field that identifies a booking must be required.",
+                identityLimit: "Enter a whole number of bookings from 1 to 20.", fields: "At least one field must identify a booking.",
+              };
+              await page.click('button:has-text("Save changes")');
+              await page.waitForSelector("#event-field-2-label-error:not(:empty)");
+            },
+          }],
+        });
+        await run("edit, Booking form locked (the event has bookings)", `/admin/edit?slug=${SLUG}`, {
+          ready: "#event-fields-locked:not([hidden])", form, event: { ...EVENT, fields: THREE_FIELDS, identityLimit: 2, hasBookings: true }, ids: [...plain, ...breakIds(2)],
+          shot: "edit-booking-form-locked", targets: cardControls(LIMIT_EVENT), inside: cardInside(LIMIT_EVENT),
+        });
+        await run("templates create, Booking form with a second field", "/admin/templates", {
+          ready: ".event-card", templates: LIST_TEMPLATES, form: tform, ids: tplIds, shot: "template-create-booking-form",
+          targets: cardControls(LIMIT_TPL), inside: cardInside(LIMIT_TPL),
+          prepare: async () => {
+            await page.click("text=New template");
+            await page.waitForSelector(tform);
+            await page.click('button:has-text("Add field")');
+            await page.fill("#tpl-field-2-label", FOUR_FIELDS[1].label);
+            await page.check("#tpl-field-2-identity");
+          },
+        });
+        await run("templates edit, a template with three fields", "/admin/templates", {
+          ready: ".event-card", templates: LIST_TEMPLATES, form: tform, ids: [...tplIds, ...breakIds(2, "tpl-break")], breakInputs: 4, shot: "template-edit-booking-form",
+          targets: cardControls(LIMIT_TPL), inside: cardInside(LIMIT_TPL),
+          prepare: async () => {
+            await page.click(`[aria-label="Edit ${LIST_TEMPLATES[1].name}"]`);
+            await page.waitForSelector("#tpl-field-3-label");
+          },
+        });
+        await run("schedule, Add panel with three fields", `/admin/schedule?slug=${SLUG}`, {
+          ready: ".sched", slots: SCHEDULE_SLOTS, event: { ...EVENT, fields: THREE_FIELDS }, shot: "schedule-add-panel",
+          targets: ".sched-actions button, .sched-panel button, .sched-panel input",
+          inside: [[".sched-panel", ".sched-row"], [".sched-panel input", ".sched-panel"], [".sched-panel button", ".sched-panel"]],
+          prepare: async () => {
+            await page.click('button[aria-label="Add booking at 10:00"]');
+            await page.waitForSelector("#add-field-3");
           },
         });
 

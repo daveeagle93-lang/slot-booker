@@ -1,4 +1,5 @@
 import { formatTime, newIdempotencyKey, penceFromPounds } from "../lib.js";
+import { DEFAULT_FIELDS, mountFieldsCard } from "./fields-card.js";
 
 const DEBOUNCE_MS = 300;
 const PLACEHOLDER = "Fill in the highlighted fields to see the schedule.";
@@ -6,8 +7,8 @@ const PREVIEW_FAILED = "We couldn't update the preview. Check your connection an
 const SAVE_FAILED = "We couldn't save the event. Check your connection and try again.";
 const TEMPLATES_URL = "/api/admin/templates";
 const TEMPLATES_FAILED = "Templates couldn't be loaded. You can still fill the form in by hand.";
-const TEMPLATE_NOTE = "Choosing a template replaces the details, times, cost, breaks, lanes, places and share message below. The event name and date stay as they are. The event keeps its own copy: changing a template later never changes events already made.";
-const REPLACE_CONFIRM = "Replace what you've typed in the details, times, cost, breaks, lanes, places and share message with this template?";
+const TEMPLATE_NOTE = "Choosing a template replaces the details, times, cost, breaks, booking form, lanes, places and share message below. The event name and date stay as they are. The event keeps its own copy: changing a template later never changes events already made.";
+const REPLACE_CONFIRM = "Replace what you've typed in the details, times, cost, breaks, booking form, lanes, places and share message with this template?";
 const SHARE_NOTE = "Used when you share this event. Leave it blank to use your default template's message. Placeholders such as {event} and {date} are filled in when you share. ";
 const SAVED_EARLIER = "We'd already saved an event from this page, so we haven't changed it. Here it is as saved. Any changes you made since weren't applied.";
 const AFFECTED_APPEARED = "Another booking has appeared since you checked, so please check the list again.";
@@ -29,8 +30,8 @@ const plural = (n, one, many) => (n === 1 ? one : many);
 /** Whole pounds as "15", otherwise "12.50": what the cost field takes back through penceFromPounds. */
 export const poundsText = (pence) => (pence % 100 === 0 ? String(pence / 100) : `${Math.floor(pence / 100)}.${String(pence % 100).padStart(2, "0")}`);
 
-/** "10:05 — Rex — Sam Smith" (London time); "10:05 — Ring 1 — Rex — Sam Smith" when the booking's lane has a name. */
-export const bookingLine = (b) => `${formatTime(b.slotStart)}${b.lane?.name ? ` — ${b.lane.name}` : ""} — ${b.dogName} — ${b.handlerName}`;
+/** "10:05 — Rex — Sam Smith" (London time, then the booking's values in the form's order); "10:05 — Ring 1 — Rex — Sam Smith" when its lane has a name. */
+export const bookingLine = (b) => `${formatTime(b.slotStart)}${b.lane?.name ? ` — ${b.lane.name}` : ""} — ${b.fields.map((f) => f.value).join(" — ")}`;
 
 /**
  * The event form shared by the create page (`mode: "create"`) and the edit page (`mode: "edit"`): fields,
@@ -132,6 +133,24 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
   const templateNote = h("div", { class: "note", hidden: true });
   const templateStatus = h("p", { class: "form-status", "aria-live": "polite" });
 
+  // ---- booking form (the fields and the identity limit) ----
+  // Once the event has bookings the number of fields and which of them identify a booking can't change (the card says so); the server
+  // checks it too and answers fields_locked, which locks the card as the page loaded it.
+  const initialFields = editing && Array.isArray(initial.fields) && initial.fields.length > 0 ? initial.fields.map(({ label, required, maxLength, identity }) => ({ label, required, maxLength, identity })) : DEFAULT_FIELDS;
+  const initialLimit = editing && Number.isInteger(initial.identityLimit) ? initial.identityLimit : 1;
+  const formCard = mountFieldsCard({
+    h, prefix: "event", fields: initialFields, identityLimit: initialLimit, locked: editing && initial.hasBookings === true,
+    onChange: () => { edited = true; templateEdited = true; },
+  });
+  /** The fields and limit as a request carries them: create always sends them; an edit only what differs from what the event had, so an unrelated save can't undo someone else's change. */
+  function bookingFormPayload(card) {
+    const sameFields = JSON.stringify(card.fields) === JSON.stringify(initialFields);
+    return {
+      ...(editing && sameFields ? {} : { fields: card.fields }),
+      ...(editing && card.identityLimit === initialLimit ? {} : { identityLimit: card.identityLimit }),
+    };
+  }
+
   const form = h("form", { id: "event-form", novalidate: true },
     h("h1", {}, editing ? "Edit event" : "Create event"),
     ...(editing ? [] : [pickerField, templateNote, templateStatus]),
@@ -143,6 +162,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     h("fieldset", { class: "breaks-group" },
       h("legend", {}, "Breaks (optional)"),
       breakList, breaksError, addBreak),
+    formCard.el,
     h("fieldset", { class: "breaks-group lanes-group" },
       h("legend", {}, "Lanes"),
       h("p", { class: "note" }, LANES_NOTE),
@@ -296,7 +316,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
   }
 
   function focusFirstError() {
-    form.querySelector("[aria-invalid='true'], .field-error:not(:empty)")?.focus();
+    [...form.querySelectorAll("[aria-invalid='true'], .field-error")].find((el) => el.getAttribute("aria-invalid") === "true" || el.textContent !== "")?.focus();
   }
 
   /**
@@ -531,9 +551,11 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     const cost = penceFromPounds(fields.get("costPence").input.value);
     if ("error" in cost) return null;
     const used = rows.filter(isUsed);
+    const card = formCard.read();
     return {
       rowIds: used.map((r) => r.id),
       laneKeys: laneRows.map((r) => r.key),
+      fieldKeys: card.keys,
       payload: {
         name: value("name"), date: value("date"), start: value("start"), end: value("end"),
         sessionMinutes: wholeNumber(value("sessionMinutes")), gapMinutes: wholeNumber(value("gapMinutes")),
@@ -541,6 +563,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
         listed: listed.checked,
         breaks: used.map((r) => ({ start: r.startInput.value, end: r.endInput.value, label: r.labelInput.value })),
         ...layoutPayload({ forPreview: false }),
+        ...bookingFormPayload(card),
       },
     };
   }
@@ -593,16 +616,26 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
       return;
     }
     closeConfirmation();
+    // Bookings appeared since the page loaded, so the shape of the form is fixed now: lock the card, back to the form as it was loaded.
+    if (editing && res?.status === 409 && res.data?.error?.code === "fields_locked") {
+      formCard.lock(true);
+      formCard.restoreShape(initialFields);
+      formCard.showMessage(res.data.error.message);
+      return focusFirstError();
+    }
     if (res?.status === 400 && res.data?.fields) {
       serverErrors = {};
       const unplaced = [];
+      const cardErrors = {};
       for (const [key, message] of Object.entries(res.data.fields)) {
         const mapped = mapKey(key, draft.rowIds, draft.laneKeys);
-        if (fields.has(mapped)) serverErrors[mapped] = message;
+        if (key === "fields" || key === "identityLimit" || key.startsWith("fields.")) cardErrors[key] = message;
+        else if (fields.has(mapped)) serverErrors[mapped] = message;
         else unplaced.push(message);
       }
       renderErrors();
-      if (unplaced.length > 0 || Object.keys(serverErrors).length === 0) {
+      formCard.showErrors(cardErrors, draft.fieldKeys);
+      if (unplaced.length > 0 || (Object.keys(serverErrors).length === 0 && Object.keys(cardErrors).length === 0)) {
         formError.textContent = unplaced.join(" ") || res.data.error?.message || SAVE_FAILED;
       }
       return focusFirstError();
@@ -766,6 +799,7 @@ export function mountEventForm({ document, root, api, h, mode, slug, initial, do
     for (const k of ["lanes", "capacity"]) delete serverErrors[k];
     fields.get("capacity").input.value = String(Number.isInteger(t?.capacity) ? t.capacity : 1);
     fields.get("capacity").touched = false;
+    formCard.set(t?.fields?.length > 0 ? t.fields : DEFAULT_FIELDS, Number.isInteger(t?.identityLimit) ? t.identityLimit : 1);
     for (const row of [...rows]) removeRow(row);
     for (const b of t?.breaks ?? []) {
       const row = addRow(false);

@@ -14,12 +14,13 @@
 // can say the same things in the new words and translate the answers back. Everything that translates or allows is in this file's
 // ADAPTERS and WORDING tables below, each with its reason, and each must be USED by the replay or the last test fails:
 //   - REQUEST adapter (adaptRequest): the public POST bodies of the scenario are v1.0's (dogName, handlerName) and are sent as
-//     field1 and field2. The admin requests are NOT adapted: the admin API still accepts the v1.0 names (TRANSITIONAL(6b)).
+//     field1 and field2. The admin requests are NOT adapted yet: the admin API still accepts the v1.0 names (TRANSITIONAL(6b)).
 //   - RESPONSE normalisers (legacyPublic, legacyCall): new -> v1.0 shape, public answers only, and only when the labels really
 //     are Dog and Handler (anything else throws): `booking.fields` -> dogName and handlerName, the error keys field1 and field2 ->
 //     dogName and handlerName, and the page's own request bodies in the logged calls.
-//   - DOM normaliser (legacyDom): the booking page's ids, names, `for` and `aria-describedby` that are derived from the position
-//     (field-1 and so on), listed one by one, applied to the booking page's innerHTML only. textContent is never normalised.
+//   - DOM normalisers (legacyDom, legacyAdminDom): the booking page's ids, names, `for` and `aria-describedby` that are derived from
+//     the position (field-1 and so on), and the admin schedule's Add panel's (add-field-1 and so on, plus the maxlength and required
+//     attributes its inputs have now), listed one by one, applied to the pages' innerHTML only. textContent is never normalised.
 //   - WORDING table (WORDING): the only text that may differ: the decision-1 changes (form titles are the bare label, "{Label} is
 //     required.") and the same bare label in the other validation messages, and the default privacy notice (decision 5).
 import { readdirSync, readFileSync } from "node:fs";
@@ -98,6 +99,10 @@ const ALLOWED_ADDITIONS: Allowed[] = [
   { files: /^admin-api\/event-edit\.json$/, path: "*.body.removed[].fields", why: "a booking an edit removed lists its values by label" },
   { files: /^admin-api\/bookings-add\.json$/, path: "*.body.fields.field1", why: "the admin add also keys the first value's error by its number (dogName stays, TRANSITIONAL(6b))" },
   { files: /^admin-api\/bookings-add\.json$/, path: "*.body.fields.field2", why: "the admin add also keys the second value's error by its number (handlerName stays, TRANSITIONAL(6b))" },
+  // ONE additive key, written twice only because the paths differ (a single-case file, and a grouped file whose cases are keyed): the edit form needs
+  // to know whether the event has bookings, because then the number of fields and the identity fields can't change (decision 3).
+  { files: /^admin-api\/detail-/, path: "body.event.hasBookings", why: "the admin event view says whether the event has any booking, so the edit form can lock the booking form's shape" },
+  { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.event.hasBookings", why: "the admin event view (detail or saved edit) says whether the event has any booking, so the edit form can lock the booking form's shape" },
   { files: /^admin-api\/templates-list\.json$/, path: "body.templates[].fields", why: "a template lists its booking form fields" },
   { files: /^admin-api\/templates-list\.json$/, path: "body.templates[].identityLimit", why: "a template gives how many bookings one identity may hold" },
   { files: /^admin-api\/template-\d+\.json$/, path: "body.template.fields", why: "a template lists its booking form fields" },
@@ -117,6 +122,8 @@ const BARE = "decision 1: the other validation messages use the same bare label"
 const WORDING: Worded[] = [
   { files: /^booking-page(-flows)?\/.*\.(html|txt)$/, old: "Dog's name", now: "Dog", why: "decision 1: the booking form's field title is the bare label" },
   { files: /^booking-page(-flows)?\/.*\.(html|txt)$/, old: "Handler's name", now: "Handler", why: "decision 1: the booking form's field title is the bare label" },
+  { files: /^admin-schedule(-flows)?\/.*\.(html|txt)$/, old: "Dog's name", now: "Dog", why: "decision 1: the admin Add panel's field title is the bare label" },
+  { files: /^admin-schedule(-flows)?\/.*\.(html|txt)$/, old: "Handler's name", now: "Handler", why: "decision 1: the admin Add panel's field title is the bare label" },
   { files: MESSAGES_IN, old: "Enter the dog's name.", now: "Dog is required.", why: REQUIRED },
   { files: MESSAGES_IN, old: "Enter the handler's name.", now: "Handler is required.", why: REQUIRED },
   { files: MESSAGES_IN, old: "The dog's name must be at most 80 characters.", now: "Dog must be at most 80 characters.", why: BARE },
@@ -159,6 +166,11 @@ const ADAPTERS = [
   "dom: <label for=field-1>", "dom: <label for=field-2>", "dom: input id field-1", "dom: input id field-2", "dom: input name field1", "dom: input name field2",
   "dom: input aria-describedby field-1-error", "dom: input aria-describedby field-2-error", "dom: error id field-1-error", "dom: error id field-2-error",
   "dom: handler input autocomplete off -> name",
+  "call log: admin page request field1 -> dogName", "call log: admin page request field2 -> handlerName",
+  "admin dom: <label for=add-field-1>", "admin dom: <label for=add-field-2>", "admin dom: input id add-field-1", "admin dom: input id add-field-2",
+  "admin dom: input aria-describedby add-field-1-error", "admin dom: input aria-describedby add-field-2-error",
+  "admin dom: error id add-field-1-error", "admin dom: error id add-field-2-error",
+  "admin dom: add input maxlength=80 dropped", "admin dom: add input required dropped",
 ];
 
 /** REQUEST adapter: a v1.0 public booking body (dogName, handlerName) as the current public API takes it (field1, field2). Anything else is left alone. */
@@ -202,13 +214,15 @@ function legacyPublic(body: unknown): unknown {
   return out;
 }
 
-/** The booking page's own request body as it is written in the call log: field1 and field2 as v1.0 named them. */
+/** A page's own request body as it is written in the call log: field1 and field2 as v1.0 named them (the booking page's and the admin schedule's Add panel's). */
 function legacyCall(url: string, method: string, logged: any): any {
-  if (method !== "POST" || !/^\/api\/events\/[^/]+\/bookings$/.test(url) || !logged || typeof logged !== "object") return logged;
+  const admin = /^\/api\/admin\/events\/[^/]+\/bookings$/.test(url);
+  if (method !== "POST" || !(admin || /^\/api\/events\/[^/]+\/bookings$/.test(url)) || !logged || typeof logged !== "object") return logged;
+  const who = admin ? "admin page" : "page";
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(logged)) {
-    if (k === "field1") { used("call log: page request field1 -> dogName"); out.dogName = v; }
-    else if (k === "field2") { used("call log: page request field2 -> handlerName"); out.handlerName = v; }
+    if (k === "field1") { used(`call log: ${who} request field1 -> dogName`); out.dogName = v; }
+    else if (k === "field2") { used(`call log: ${who} request field2 -> handlerName`); out.handlerName = v; }
     else if (/^field\d$/.test(k)) throw new Error(`the v1.0 shape only exists for two fields, got ${k}`);
     else out[k] = v;
   }
@@ -234,6 +248,30 @@ function legacyDom(html: string): string {
   swap("dom: input aria-describedby field-2-error", 'aria-describedby="field-2-error"', 'aria-describedby="handler-error"');
   swap("dom: error id field-1-error", 'id="field-1-error"', 'id="dog-error"');
   swap("dom: error id field-2-error", 'id="field-2-error"', 'id="handler-error"');
+  return out;
+}
+
+/**
+ * DOM normaliser for the admin schedule's innerHTML: the Add panel's ids, `for` and `aria-describedby`, derived from the field's position now
+ * (add-field-1 and so on), and the maxlength and required attributes its inputs have now (for the longest value of 80 and a required
+ * field: any other value is left alone, so it fails). Only the first two fields' attributes are rewritten (a third would fail).
+ */
+function legacyAdminDom(html: string): string {
+  let out = html;
+  const drop = (name: string, attr: string) => {
+    out = out.replace(new RegExp(`(<input id="add-field-[12]"[^>]*?) ${attr}`, "g"), (_m, head) => { used(name); return head; });
+  };
+  drop("admin dom: add input maxlength=80 dropped", 'maxlength="80"');
+  drop("admin dom: add input required dropped", 'required=""');
+  const swap = (name: string, from: string, to: string) => { out = out.replaceAll(from, () => { used(name); return to; }); };
+  swap("admin dom: <label for=add-field-1>", 'for="add-field-1"', 'for="add-dog"');
+  swap("admin dom: <label for=add-field-2>", 'for="add-field-2"', 'for="add-handler"');
+  swap("admin dom: input id add-field-1", 'id="add-field-1"', 'id="add-dog"');
+  swap("admin dom: input id add-field-2", 'id="add-field-2"', 'id="add-handler"');
+  swap("admin dom: input aria-describedby add-field-1-error", 'aria-describedby="add-field-1-error"', 'aria-describedby="add-dog-error"');
+  swap("admin dom: input aria-describedby add-field-2-error", 'aria-describedby="add-field-2-error"', 'aria-describedby="add-handler-error"');
+  swap("admin dom: error id add-field-1-error", 'id="add-field-1-error"', 'id="add-dog-error"');
+  swap("admin dom: error id add-field-2-error", 'id="add-field-2-error"', 'id="add-handler-error"');
   return out;
 }
 
@@ -609,7 +647,7 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
     bp.finish();
 
     // --- Admin schedule states (read-only)
-    const as = makeDomSaver("admin-schedule", "admin schedule page");
+    const as = makeDomSaver("admin-schedule", "admin schedule page", legacyAdminDom);
     {
       const clip: string[] = [];
       const page = await openSchedule(c, SLUG.e1, clip);
@@ -822,25 +860,25 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
     const env = await appEnv(current.env.DB);
     const session = await adminSession(env);
     const c: Ctx = { env, session };
-    const as = makeDomSaver("admin-schedule-flows", "admin schedule flow");
+    const as = makeDomSaver("admin-schedule-flows", "admin schedule flow", legacyAdminDom);
     const page = await openSchedule(c, SLUG.e1);
     const record = (name: string, desc: string) => as.state(name, page.window, desc, { status: page.$(".sched-status").textContent, calls: page.net.calls.filter((x: any) => x.method !== "GET") });
 
     // add
     opener(page, T["1120"], "add").click();
-    page.$("#add-dog").value = "Willow";
-    page.$("#add-handler").value = "Gail Park";
+    page.$("#add-field-1").value = "Willow";
+    page.$("#add-field-2").value = "Gail Park";
     await submitForm(page, page.doc.querySelector("form.sched-panel"));
     record("add-ok", "after adding Willow / Gail Park at 11:20");
     // add a duplicate identity: inline error
     opener(page, T["1230"], "add").click();
-    page.$("#add-dog").value = "zoë";
-    page.$("#add-handler").value = "ANN LEE";
+    page.$("#add-field-1").value = "zoë";
+    page.$("#add-field-2").value = "ANN LEE";
     await submitForm(page, page.doc.querySelector("form.sched-panel"));
     record("add-duplicate", "adding zoë / ANN LEE at 12:30, which duplicates booking 2: inline message");
     // add with an invalid name
-    page.$("#add-dog").value = "Re​x";
-    page.$("#add-handler").value = "Ann Lee";
+    page.$("#add-field-1").value = "Re​x";
+    page.$("#add-field-2").value = "Ann Lee";
     await submitForm(page, page.doc.querySelector("form.sched-panel"));
     record("add-invalid-input", "adding with a zero-width space in the dog name: field error");
     buttonByText(page, "Cancel").click();

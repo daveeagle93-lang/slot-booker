@@ -100,6 +100,7 @@ describe("form", () => {
     const labels = $$("label").map((l) => l.textContent);
     expect(labels).toEqual([
       "Template", "Event name", "Date", "Start time", "End time", "Session length (minutes)", "Gap between sessions (minutes)",
+      "Label", "Required", "Identifies a booking", "Max length", "How many bookings can one Name make?",
       "Lane name (optional)", "Places per lane per time", "Cost (£)", "Venue postcode", "Details (optional)", "Share message (optional)", "Listed on the home page",
     ]);
     for (const label of $$("label")) expect(document.getElementById(label.getAttribute("for")!)).not.toBeNull();
@@ -589,6 +590,7 @@ describe("saving", () => {
       name: "Trial Day", date: "2026-06-13", start: "09:00", end: "16:00", sessionMinutes: 15, gapMinutes: 5,
       costPence: 1250, venuePostcode: "SW1A 1AA", details: "Bring water.", breaks: [{ start: "12:00", end: "12:20", label: "" }],
       shareMessage: "", listed: true, idempotencyKey: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+      fields: [{ label: "Name", required: true, maxLength: 80, identity: true }], identityLimit: 1,
     });
   });
 
@@ -1175,7 +1177,7 @@ describe("template picker and share message", () => {
     expect([...picker().options].map((o) => o.textContent)).toEqual(["No template", "Saturday trial (default)", "Evening"]);
     expect([...picker().options].map((o) => o.value)).toEqual(["", "1", "2"]);
     expect(document.getElementById("template-hint")!.textContent).toBe(
-      "Choosing a template replaces the details, times, cost, breaks, lanes, places and share message below. The event name and date stay as they are. The event keeps its own copy: changing a template later never changes events already made.");
+      "Choosing a template replaces the details, times, cost, breaks, booking form, lanes, places and share message below. The event name and date stay as they are. The event keeps its own copy: changing a template later never changes events already made.");
     expect(picker().getAttribute("aria-describedby")).toBe("template-hint");
     expect(picker().closest(".field")!.hasAttribute("hidden")).toBe(false);
   });
@@ -1278,7 +1280,7 @@ describe("template picker and share message", () => {
   });
 
   describe("protecting what was typed", () => {
-    const MESSAGE = "Replace what you've typed in the details, times, cost, breaks, lanes, places and share message with this template?";
+    const MESSAGE = "Replace what you've typed in the details, times, cost, breaks, booking form, lanes, places and share message with this template?";
     const typed: [string, () => void][] = [
       ["details", () => set("details", "mine")], ["postcode", () => set("postcode", "ZZ1 1ZZ")], ["cost", () => set("cost", "3")],
       ["start", () => set("start", "08:00")], ["end", () => set("end", "13:00")], ["session", () => set("session", "10")],
@@ -1468,6 +1470,7 @@ describe("template picker and share message", () => {
       name: "Spring Scent Trial", date: "2026-06-13", start: "09:00", end: "12:00", sessionMinutes: 15, gapMinutes: 5,
       costPence: 1500, venuePostcode: "AB1 2CD", details: "Bring water", shareMessage: "Book {event} on {date}",
       breaks: [{ start: "10:30", end: "10:45", label: "Tea" }], listed: true, idempotencyKey: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+      fields: [{ label: "Name", required: true, maxLength: 80, identity: true }], identityLimit: 1,
     });
   });
 
@@ -1836,6 +1839,272 @@ describe("lanes and places", () => {
         expect(confirm).toHaveBeenCalledTimes(1);
         expect(picker().value).toBe("1");
       }
+    });
+  });
+});
+
+describe("booking form", () => {
+  const NAME = { label: "Name", required: true, maxLength: 80, identity: true };
+  const cardRows = () => $$(".field-def");
+  const part = (row: number, what: "label" | "required" | "max" | "identity") => cardRows()[row].querySelector(`[id$="-${what}"]`) as HTMLInputElement;
+  const typeInto = (el: HTMLInputElement, value: string) => { el.value = value; el.dispatchEvent(new Event("input", { bubbles: true })); };
+  const addField = () => buttonNamed("Add field").click();
+  const limit = () => input("event-identity-limit");
+  const limitLabel = () => $(`label[for="event-identity-limit"]`).textContent;
+  const hintOf = (row: number) => cardRows()[row].querySelector(".note")!;
+  const created = (calls: Call[]) => calls.find((c) => c.url === CREATE)!.body;
+  const fill = () => { fillAll(); };
+  const errorText = (el: HTMLElement) => document.getElementById(`${el.id}-error`)!.textContent;
+
+  it("is a card called Booking form before Lanes, with one required Name field that identifies the booking and a limit of 1", async () => {
+    await start();
+    const card = $(".fields-group");
+    expect(card.querySelector("legend")!.textContent).toBe("Booking form");
+    expect(card.nextElementSibling!.classList.contains("lanes-group")).toBe(true);
+    expect(cardRows()).toHaveLength(1);
+    expect(cardRows()[0].querySelector("legend")!.textContent).toBe("Field 1");
+    expect(part(0, "label").value).toBe("Name");
+    expect(part(0, "label").maxLength).toBe(40);
+    expect([part(0, "required").checked, part(0, "required").disabled]).toEqual([true, true]);
+    expect(part(0, "identity").checked).toBe(true);
+    expect(part(0, "max").value).toBe("80");
+    expect([part(0, "max").min, part(0, "max").max]).toEqual(["1", "80"]);
+    expect(limit().value).toBe("1");
+    expect([limit().min, limit().max]).toEqual(["1", "20"]);
+    expect(limitLabel()).toBe("How many bookings can one Name make?");
+    expect(cardRows()[0].querySelector<HTMLElement>("button.remove")!.hidden).toBe(true);
+    expect((buttonNamed("Add field") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("adds fields up to four, disables Add at four, shows Remove on each row, and focuses the new label", async () => {
+    await start();
+    addField();
+    expect(cardRows()).toHaveLength(2);
+    expect(document.activeElement).toBe(part(1, "label"));
+    expect(part(1, "label").value).toBe("");
+    expect([part(1, "required").checked, part(1, "required").disabled, part(1, "identity").checked, part(1, "max").value]).toEqual([false, false, false, "80"]);
+    expect(cardRows().map((r) => r.querySelector<HTMLElement>("button.remove")!.hidden)).toEqual([false, false]);
+    addField();
+    addField();
+    expect(cardRows()).toHaveLength(4);
+    expect((buttonNamed("Add field") as HTMLButtonElement).disabled).toBe(true);
+    expect(cardRows().map((r) => r.querySelector("legend")!.textContent)).toEqual(["Field 1", "Field 2", "Field 3", "Field 4"]);
+    expect(cardRows()[2].querySelector("button.remove")!.getAttribute("aria-label")).toBe("Remove field 3");
+  });
+
+  it("removes a field, renumbers, re-enables Add, hides the last Remove and moves focus to Add field", async () => {
+    await start();
+    addField();
+    addField();
+    typeInto(part(1, "label"), "Phone");
+    typeInto(part(2, "label"), "Car reg");
+    (cardRows()[1].querySelector("button.remove") as HTMLButtonElement).click();
+    expect(cardRows().map((r) => r.querySelector("legend")!.textContent)).toEqual(["Field 1", "Field 2"]);
+    expect(part(1, "label").value).toBe("Car reg");
+    expect(document.activeElement).toBe(buttonNamed("Add field"));
+    (cardRows()[1].querySelector("button.remove") as HTMLButtonElement).click();
+    expect(cardRows()[0].querySelector<HTMLElement>("button.remove")!.hidden).toBe(true);
+  });
+
+  it("makes field 1 and every identity field required and disabled, and lets a ticked-off identity field be required or not again", async () => {
+    await start();
+    addField();
+    const req = part(1, "required");
+    expect([req.checked, req.disabled]).toEqual([false, false]);
+    part(1, "identity").click();
+    expect([req.checked, req.disabled]).toEqual([true, true]);
+    expect(hintOf(1).textContent).toBe("Always required: it identifies a booking.");
+    expect((hintOf(1) as HTMLElement).hidden).toBe(false);
+    part(1, "identity").click();
+    expect([req.checked, req.disabled]).toEqual([true, false]);
+    expect((hintOf(1) as HTMLElement).hidden).toBe(true);
+    req.click();
+    expect(req.checked).toBe(false);
+    part(0, "identity").click(); // field 1 stays required whether or not it identifies a booking
+    expect([part(0, "required").checked, part(0, "required").disabled]).toEqual([true, true]);
+    expect(hintOf(0).textContent).toBe("The first field is always required.");
+  });
+
+  it("words the identity limit by the labels of the identity fields, joined with +, as they change", async () => {
+    await start();
+    typeInto(part(0, "label"), "Dog");
+    expect(limitLabel()).toBe("How many bookings can one Dog make?");
+    addField();
+    typeInto(part(1, "label"), "Handler");
+    expect(limitLabel()).toBe("How many bookings can one Dog make?");
+    part(1, "identity").click();
+    expect(limitLabel()).toBe("How many bookings can one Dog + Handler make?");
+    typeInto(part(1, "label"), "  Owner ");
+    expect(limitLabel()).toBe("How many bookings can one Dog + Owner make?");
+    typeInto(part(1, "label"), "");
+    expect(limitLabel()).toBe("How many bookings can one Dog + field 2 make?");
+    part(0, "identity").click();
+    part(1, "identity").click();
+    expect(limitLabel()).toBe("How many bookings can one identity make?");
+    expect($(`label[for="event-identity-limit"]`).textContent).not.toContain("undefined");
+  });
+
+  it("does not announce the identity limit's label as it changes", async () => {
+    await start();
+    expect($(`label[for="event-identity-limit"]`).closest("[aria-live]")).toBeNull();
+  });
+
+  it("sends the fields and the identity limit with a create, with the label trimmed and the numbers as numbers", async () => {
+    const { calls } = await start();
+    fill();
+    typeInto(part(0, "label"), "  Dog ");
+    addField();
+    typeInto(part(1, "label"), "Handler");
+    part(1, "identity").click();
+    addField();
+    typeInto(part(2, "label"), "Phone");
+    typeInto(part(2, "max"), "20");
+    typeInto(limit(), "3");
+    submit();
+    await tick();
+    expect(created(calls).fields).toEqual([
+      { label: "Dog", required: true, maxLength: 80, identity: true },
+      { label: "Handler", required: true, maxLength: 80, identity: true },
+      { label: "Phone", required: false, maxLength: 20, identity: false },
+    ]);
+    expect(created(calls).identityLimit).toBe(3);
+  });
+
+  it("sends a max length or limit that isn't a whole number as null, so the server's message comes back", async () => {
+    const { calls } = await start();
+    fill();
+    typeInto(part(0, "max"), "");
+    typeInto(limit(), "1.5");
+    submit();
+    await tick();
+    expect(created(calls)).toMatchObject({ fields: [{ maxLength: null }], identityLimit: null });
+  });
+
+  it("shows the server's field errors at the right inputs, marks them invalid, and focuses the first", async () => {
+    await start({
+      create: () => reply(400, {
+        error: { code: "invalid_input" },
+        fields: { "fields.1.label": "Two fields can't have the same label.", "fields.1.maxLength": "Enter a whole number of characters from 1 to 80.", identityLimit: "Enter a whole number of bookings from 1 to 20." },
+      }),
+    });
+    fill();
+    addField();
+    typeInto(part(1, "label"), "Name");
+    submit();
+    await tick();
+    expect(errorText(part(1, "label"))).toBe("Two fields can't have the same label.");
+    expect(errorText(part(1, "max"))).toBe("Enter a whole number of characters from 1 to 80.");
+    expect(errorText(limit())).toBe("Enter a whole number of bookings from 1 to 20.");
+    expect(part(1, "label").getAttribute("aria-invalid")).toBe("true");
+    expect(part(1, "label").getAttribute("aria-describedby")).toContain(`${part(1, "label").id}-error`);
+    expect(part(0, "label").hasAttribute("aria-invalid")).toBe(false);
+    expect(document.activeElement).toBe(part(1, "label"));
+    expect($(".form-error")!.textContent).toBe("");
+    typeInto(part(1, "label"), "Phone");
+    expect(errorText(part(1, "label"))).toBe("");
+    expect(part(1, "label").hasAttribute("aria-invalid")).toBe(false);
+    expect(errorText(part(1, "max"))).toBe("Enter a whole number of characters from 1 to 80.");
+  });
+
+  it("shows the list error (such as no identity field) at the card, focusable", async () => {
+    await start({ create: () => reply(400, { error: { code: "invalid_input" }, fields: { fields: "At least one field must identify a booking." } }) });
+    fill();
+    part(0, "identity").click();
+    submit();
+    await tick();
+    const message = document.getElementById("event-fields-error")!;
+    expect(message.textContent).toBe("At least one field must identify a booking.");
+    expect(document.activeElement).toBe(message);
+    part(0, "identity").click();
+    expect(message.textContent).toBe("");
+  });
+
+  it("shows the required and identity errors of a field next to those boxes", async () => {
+    await start({
+      create: () => reply(400, { error: { code: "invalid_input" }, fields: { "fields.0.required": "The first field must be required." } }),
+    });
+    fill();
+    submit();
+    await tick();
+    expect(errorText(part(0, "required"))).toBe("The first field must be required.");
+    expect(part(0, "required").getAttribute("aria-invalid")).toBe("true");
+  });
+
+  describe("templates", () => {
+    const DOG_HANDLER = [
+      { label: "Dog", required: true, maxLength: 60, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true },
+      { label: "Phone", required: false, maxLength: 20, identity: false },
+    ];
+    const WITH_FORM = {
+      id: 1, name: "Agility", isDefault: false, details: "", venuePostcode: "AB1 2CD", costPence: 1500, start: "09:00", end: "12:00",
+      sessionMinutes: 15, gapMinutes: 5, breaks: [], shareMessage: "", fields: DOG_HANDLER, identityLimit: 2,
+    };
+    const PLAIN = { ...WITH_FORM, id: 2, name: "Plain", fields: undefined, identityLimit: undefined };
+    const picker = () => document.getElementById("template") as HTMLSelectElement;
+    const choose = (value: string) => { picker().value = value; picker().dispatchEvent(new Event("change", { bubbles: true })); };
+    const originalConfirm = (document.defaultView as unknown as { confirm?: unknown }).confirm;
+    afterEach(() => { (document.defaultView as unknown as { confirm?: unknown }).confirm = originalConfirm; });
+
+    it("copies the template's fields and limit when it is the default, and sends them", async () => {
+      const { calls } = await start({ templates: () => reply(200, { templates: [{ ...WITH_FORM, isDefault: true }] }) });
+      await tick();
+      expect(cardRows()).toHaveLength(3);
+      expect(cardRows().map((_, i) => part(i, "label").value)).toEqual(["Dog", "Handler", "Phone"]);
+      expect(part(0, "max").value).toBe("60");
+      expect(part(2, "required").checked).toBe(false);
+      expect(limit().value).toBe("2");
+      expect(limitLabel()).toBe("How many bookings can one Dog + Handler make?");
+      set("name", "Trial Day");
+      set("date", "2026-06-13");
+      submit();
+      await tick();
+      expect(created(calls)).toMatchObject({ fields: DOG_HANDLER, identityLimit: 2 });
+    });
+
+    it("switches between templates and No template: a template without fields, and No template, give the Name field and a limit of 1", async () => {
+      await start({ templates: () => reply(200, { templates: [WITH_FORM, PLAIN] }) });
+      await tick();
+      choose("1");
+      expect(cardRows()).toHaveLength(3);
+      choose("2");
+      expect(cardRows().map((_, i) => part(i, "label").value)).toEqual(["Name"]);
+      expect(limit().value).toBe("1");
+      choose("1");
+      expect(limit().value).toBe("2");
+      choose("");
+      expect(cardRows().map((_, i) => part(i, "label").value)).toEqual(["Name"]);
+      expect(limit().value).toBe("1");
+      expect(limitLabel()).toBe("How many bookings can one Name make?");
+    });
+
+    it("counts an edit of the booking form as one a template must ask before replacing", async () => {
+      const confirm = vi.fn(() => false);
+      (document.defaultView as unknown as { confirm: unknown }).confirm = confirm;
+      await start({ templates: () => reply(200, { templates: [WITH_FORM, PLAIN] }) });
+      await tick();
+      choose("1");
+      expect(confirm).not.toHaveBeenCalled();
+      typeInto(part(0, "label"), "Hound");
+      choose("2");
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(picker().value).toBe("1");
+      expect(part(0, "label").value).toBe("Hound");
+    });
+
+    it("clears errors left by a rejected save when a template replaces the card", async () => {
+      (document.defaultView as unknown as { confirm: unknown }).confirm = () => true;
+      await start({
+        templates: () => reply(200, { templates: [WITH_FORM] }),
+        create: () => reply(400, { error: { code: "invalid_input" }, fields: { "fields.0.label": "Bad label." } }),
+      });
+      await tick();
+      fill();
+      submit();
+      await tick();
+      expect(errorText(part(0, "label"))).toBe("Bad label.");
+      choose("");
+      choose("1");
+      expect(errorText(part(0, "label"))).toBe("");
     });
   });
 });

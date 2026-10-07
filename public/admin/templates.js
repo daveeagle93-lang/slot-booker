@@ -2,6 +2,7 @@ import { brandPage, loadSettings } from "../branding.js";
 import { formatPounds, penceFromPounds } from "../lib.js";
 import { BUILT_IN_SHARE_TEMPLATE, buildShareMessage, PLACEHOLDERS } from "../share-message.js";
 import { createApi, makeH } from "./api.js";
+import { DEFAULT_FIELDS, mountFieldsCard } from "./fields-card.js";
 import { poundsText } from "./event-form.js";
 
 const URL_BASE = "/api/admin/templates";
@@ -23,6 +24,11 @@ const lanesLine = (t) => {
   const lanes = t.lanes?.length ?? 1;
   const places = t.capacity ?? 1;
   return lanes === 1 && places === 1 ? null : `${lanes} ${plural(lanes, "lane", "lanes")} × ${places} ${plural(places, "place", "places")}`;
+};
+/** "Fields: Dog, Handler" for a template whose booking form isn't the default one, else null. */
+const fieldsLine = (t) => {
+  const labels = Array.isArray(t.fields) ? t.fields.map((f) => f.label) : [];
+  return labels.length === 0 || (labels.length === 1 && labels[0] === DEFAULT_FIELDS[0].label) ? null : `Fields: ${labels.join(", ")}`;
 };
 const summaryLine = (t) => `${t.start}–${t.end}, ${t.sessionMinutes} min sessions, ${formatPounds(t.costPence)}`;
 
@@ -122,7 +128,7 @@ export async function init({ document, fetch, navigate, location, settings = nul
     create.addEventListener("click", () => showForm(null));
     show(
       h("h1", {}, "Templates"),
-      h("p", { class: "note" }, "A template fills in the details, times, cost, breaks and share message when you create an event."),
+      h("p", { class: "note" }, "A template fills in the details, times, cost, breaks, booking form and share message when you create an event."),
       create,
       ...(full ? [h("p", { class: "note", id: "limit-note" }, `You have ${MAX_TEMPLATES} templates, which is the most there can be. Delete one to make a new one.`)] : []),
       live,
@@ -136,6 +142,7 @@ export async function init({ document, fetch, navigate, location, settings = nul
       h("h2", {}, t.name),
       ...(t.isDefault ? [h("p", {}, h("span", { class: "badge open" }, "Default"))] : []),
       h("p", { class: "when" }, summaryLine(t)),
+      ...(fieldsLine(t) ? [h("p", { class: "note" }, fieldsLine(t))] : []),
       ...(lanesLine(t) ? [h("p", { class: "note" }, lanesLine(t))] : []));
     const edit = h("button", { type: "button", class: "button", "aria-label": `Edit ${t.name}` }, "Edit");
     edit.addEventListener("click", () => { if (!busy) showForm(t); });
@@ -179,7 +186,7 @@ export async function init({ document, fetch, navigate, location, settings = nul
   const bodyOf = (t) => ({
     name: t.name, details: t.details, venuePostcode: t.venuePostcode, costPence: t.costPence, start: t.start, end: t.end,
     sessionMinutes: t.sessionMinutes, gapMinutes: t.gapMinutes, breaks: t.breaks, shareMessage: t.shareMessage,
-    lanes: t.lanes, capacity: t.capacity,
+    lanes: t.lanes, capacity: t.capacity, fields: t.fields, identityLimit: t.identityLimit,
   });
 
   function deletePanel(t, cancel) {
@@ -316,6 +323,11 @@ export async function init({ document, fetch, navigate, location, settings = nul
     for (const b of editing ? t.breaks : []) addRow(b);
     const usedRows = () => rows.filter((r) => r.startInput.value !== "" || r.endInput.value !== "");
 
+    // The booking form: the same card as the event form.
+    const startFields = editing && Array.isArray(t.fields) && t.fields.length > 0 ? t.fields.map(({ label, required, maxLength, identity }) => ({ label, required, maxLength, identity })) : DEFAULT_FIELDS;
+    const startLimit = editing && Number.isInteger(t.identityLimit) ? t.identityLimit : 1;
+    const formCard = mountFieldsCard({ h, prefix: "tpl", fields: startFields, identityLimit: startLimit });
+
     // Lanes: one row per lane, names only (a template's lanes have no ids, and an event made from it gets its own copy).
     const lanesError = h("p", { id: "tpl-lanes-error", class: "field-error", role: "alert", tabindex: "-1" });
     const lanesTarget = { input: null, error: lanesError };
@@ -430,6 +442,7 @@ export async function init({ document, fetch, navigate, location, settings = nul
         field("sessionMinutes", "tpl-session", "Session length (minutes)", session),
         field("gapMinutes", "tpl-gap", "Gap between sessions (minutes)", gap)),
       h("fieldset", { class: "breaks-group" }, h("legend", {}, "Breaks (optional)"), breakList, breaksError, addBreak),
+      formCard.el,
       h("fieldset", { class: "breaks-group lanes-group" },
         h("legend", {}, "Lanes"),
         h("p", { class: "note" }, "Lanes run side by side at the same time, such as separate rings. Most events have just one."),
@@ -454,9 +467,10 @@ export async function init({ document, fetch, navigate, location, settings = nul
       if (message) x.input.setAttribute("aria-invalid", "true");
       else x.input.removeAttribute("aria-invalid");
     }
-    const clearErrors = () => { summary.textContent = ""; for (const x of targets) setError(x, ""); };
-    // First in page order: the first field marked invalid, else the breaks message, else the lanes message, else the summary.
-    const focusFirstError = () => (form.querySelector("[aria-invalid='true']") ?? (breaksError.textContent ? breaksError : lanesError.textContent ? lanesError : summary)).focus();
+    const clearErrors = () => { summary.textContent = ""; for (const x of targets) setError(x, ""); formCard.showErrors({}, []); };
+    // First in page order: the first field marked invalid, else the booking form's, breaks' or lanes' message, else the summary.
+    const focusFirstError = () => (form.querySelector("[aria-invalid='true']")
+      ?? (formCard.listError.textContent ? formCard.listError : breaksError.textContent ? breaksError : lanesError.textContent ? lanesError : summary)).focus();
 
     form.addEventListener("input", (e) => {
       const x = [...targets].find((y) => y.input === e.target);
@@ -478,6 +492,7 @@ export async function init({ document, fetch, navigate, location, settings = nul
       // Only what differs from the template as it was (a new one: one unnamed lane, one place): left out, the server keeps it.
       const lanes = laneRows.map((r) => ({ name: r.input.value.trim() }));
       const places = wholeNumber(capacity.value.trim());
+      const card = formCard.read();
       const body = {
         name: name.value.trim(), details: details.value.trim(), venuePostcode: postcode.value.trim(), costPence: priced.pence,
         start: start.value, end: end.value, sessionMinutes: wholeNumber(session.value.trim()), gapMinutes: wholeNumber(gap.value.trim()),
@@ -485,6 +500,8 @@ export async function init({ document, fetch, navigate, location, settings = nul
         shareMessage: share.value.trim(),
         ...(JSON.stringify(lanes) === JSON.stringify(startLanes) ? {} : { lanes }),
         ...(places === startCapacity ? {} : { capacity: places }),
+        ...(editing && JSON.stringify(card.fields) === JSON.stringify(startFields) ? {} : { fields: card.fields }),
+        ...(editing && card.identityLimit === startLimit ? {} : { identityLimit: card.identityLimit }),
         ...(locked ? {} : { isDefault: defaultBox.checked }),
       };
       saving = true;
@@ -503,7 +520,9 @@ export async function init({ document, fetch, navigate, location, settings = nul
       }
       if (res?.status === 400 && res.data?.fields) {
         const unplaced = [];
+        const cardErrors = {};
         for (const [key, message] of Object.entries(res.data.fields)) {
+          if (key === "fields" || key === "identityLimit" || key.startsWith("fields.")) { cardErrors[key] = message; continue; }
           const m = /^breaks\.(\d+)\.(start|end|label)$/.exec(key);
           const lane = /^lanes\.(\d+)\.name$/.exec(key);
           const x = m ? used[Number(m[1])]?.cells[m[2]] : lane ? laneRows[Number(lane[1])]?.cell
@@ -511,7 +530,8 @@ export async function init({ document, fetch, navigate, location, settings = nul
           if (x) setError(x, message);
           else unplaced.push(message);
         }
-        if (unplaced.length > 0 || ![...targets].some((x) => x.error.textContent)) {
+        formCard.showErrors(cardErrors, card.keys);
+        if (unplaced.length > 0 || (Object.keys(cardErrors).length === 0 && ![...targets].some((x) => x.error.textContent))) {
           summary.textContent = unplaced.join(" ") || res.data.error?.message || "We couldn't save the template. Try again.";
         }
         return focusFirstError();

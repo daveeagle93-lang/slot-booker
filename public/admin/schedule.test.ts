@@ -12,19 +12,25 @@ const SESSION = { identity: "ann@example.com", provider: "password", csrfToken: 
 
 // 2026-06-13 is BST: 09:00 London is 08:00Z. Slots 09:00 09:15 09:30 | lunch 09:45-10:15 | 10:15 10:30.
 const S = ["2026-06-13T08:00:00Z", "2026-06-13T08:15:00Z", "2026-06-13T08:30:00Z", "2026-06-13T09:15:00Z", "2026-06-13T09:30:00Z"];
+/** The values of a booking of the Dog and Handler form, as the admin API lists them (a blank value is left out). */
+const dh = (dog: string, handler: string) => [{ label: "Dog", value: dog }, { label: "Handler", value: handler }];
+const FORM = [{ label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }];
 const EVENT = {
   slug: SLUG, name: "Trial Day", archived: false, date: "2026-06-13", start: "09:00", end: "10:45",
   startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T09:45:00Z", sessionMinutes: 15, gapMinutes: 0, costPence: 0, venuePostcode: "AB1 2CD", details: "",
   breaks: [{ start: "09:45", end: "10:15", label: "Lunch", startUtc: "2026-06-13T08:45:00Z", endUtc: "2026-06-13T09:15:00Z" }],
+  fields: FORM, identityLimit: 1,
 };
-const REX = { id: 11, dogName: "Rex", handlerName: "Sam Smith" };
-const FLO = { id: 12, dogName: "Flo", handlerName: "Pat Jones" };
-const LOST = { id: 13, slotStart: "2026-06-13T07:00:00Z", dogName: "Lost", handlerName: "Lou" }; // 08:00 London, not a slot
+const REX = { id: 11, fields: dh("Rex", "Sam Smith") };
+const FLO = { id: 12, fields: dh("Flo", "Pat Jones") };
+const LOST = { id: 13, slotStart: "2026-06-13T07:00:00Z", fields: dh("Lost", "Lou") }; // 08:00 London, not a slot
 const LINEUP = "Trial Day\nSaturday 13 June 2026 · AB1 2CD\n\n09:00 — free\n09:15 — Rex — Sam Smith";
 
-type Booking = { id: number; dogName: string; handlerName: string } | null;
+type Booking = { id: number; fields: { label: string; value: string }[] } | null;
+/** The plain page's detail: one unnamed lane with one place per time, so each slot has one lane entry holding its booking, if any. */
 const detail = (booked: Booking[] = [null, REX, null, FLO, null], orphans: unknown[] = [], lineup = LINEUP, event: unknown = EVENT) => ({
-  event, orphans, lineup, slots: S.map((start, i) => ({ start, end: start, booking: booked[i] ?? null })),
+  event, orphans, lineup,
+  slots: S.map((start, i) => ({ start, end: start, places: [{ laneId: 1, laneName: "", free: booked[i] ? 0 : 1, bookings: booked[i] ? [booked[i]] : [] }] })),
 });
 
 type Call = { url: string; method: string; body?: any };
@@ -136,8 +142,8 @@ describe("loading and rendering", () => {
   });
 
   it("keeps hostile names inert everywhere they appear", async () => {
-    const hostile = { id: 21, dogName: HOSTILE, handlerName: `<b>${HOSTILE}</b>` };
-    await start({ initial: detail([null, hostile, null, FLO, null], [{ ...LOST, dogName: HOSTILE }], LINEUP, { ...EVENT, name: HOSTILE, breaks: [{ ...EVENT.breaks[0], label: HOSTILE }] }) });
+    const hostile = { id: 21, fields: dh(HOSTILE, `<b>${HOSTILE}</b>`) };
+    await start({ initial: detail([null, hostile, null, FLO, null], [{ ...LOST, fields: dh(HOSTILE, "Lou") }], LINEUP, { ...EVENT, name: HOSTILE, breaks: [{ ...EVENT.breaks[0], label: HOSTILE }] }) });
     expect(document.querySelector("img")).toBeNull();
     expect($(".event-name").textContent).toBe(HOSTILE);
     expect(row("09:15").querySelector(".sched-who")!.textContent).toBe(`${HOSTILE} (<b>${HOSTILE}</b>)`);
@@ -304,7 +310,7 @@ describe("Move", () => {
 
   it("says who holds a slot that was just taken, and refreshes", async () => {
     const { calls } = await start({
-      respond: (c) => (c.method === "POST" ? reply(409, { error: { code: "slot_taken" }, booking: { id: 99, dogName: "Zed", handlerName: "Zoe Zee" } }) : undefined),
+      respond: (c) => (c.method === "POST" ? reply(409, { error: { code: "slot_taken" }, bookings: [{ id: 99, fields: dh("Zed", "Zoe Zee") }] }) : undefined),
     });
     button(row("09:15"), "Move").click();
     ($("select") as HTMLSelectElement).value = S[0];
@@ -326,7 +332,7 @@ describe("Move", () => {
 
 describe("Swap", () => {
   it("lists only the other booked slots", async () => {
-    await start({ initial: detail([REX, FLO, null, { id: 14, dogName: "Cy", handlerName: "Dee" }, null]) });
+    await start({ initial: detail([REX, FLO, null, { id: 14, fields: dh("Cy", "Dee") }, null]) });
     button(row("09:15"), "Swap").click();
     expect(options($("select"))).toEqual(["09:00: Rex (Sam Smith)", "10:15: Cy (Dee)"]);
   });
@@ -356,17 +362,17 @@ describe("Swap", () => {
 describe("Add booking", () => {
   it("opens a form for the slot, with focus in the dog field, and sends the names as typed", async () => {
     const { calls, setDetail } = await start({
-      respond: (c) => (c.method === "POST" ? reply(201, { booking: { id: 30, slotStart: S[0], dogName: "Newt", handlerName: "Nan Ng" } }) : undefined),
+      respond: (c) => (c.method === "POST" ? reply(201, { booking: { id: 30, slotStart: S[0], fields: dh("Newt", "Nan Ng") } }) : undefined),
     });
-    setDetail(detail([{ id: 30, dogName: "Newt", handlerName: "Nan Ng" }, REX, null, FLO, null]));
+    setDetail(detail([{ id: 30, fields: dh("Newt", "Nan Ng") }, REX, null, FLO, null]));
     button(row("09:00"), "Add booking").click();
-    expect(document.activeElement).toBe($("#add-dog"));
+    expect(document.activeElement).toBe($("#add-field-1"));
     expect($(".sched-panel h3").textContent).toBe("Add booking at 09:00");
-    ($("#add-dog") as HTMLInputElement).value = "  Newt ";
-    ($("#add-handler") as HTMLInputElement).value = "Nan Ng";
+    ($("#add-field-1") as HTMLInputElement).value = "  Newt ";
+    ($("#add-field-2") as HTMLInputElement).value = "Nan Ng";
     submit($(".sched-panel"));
     await settle();
-    expect(writes(calls)).toEqual([{ url: `${BASE}/bookings`, method: "POST", body: { slot: S[0], dogName: "  Newt ", handlerName: "Nan Ng" } }]);
+    expect(writes(calls)).toEqual([{ url: `${BASE}/bookings`, method: "POST", body: { slot: S[0], field1: "  Newt ", field2: "Nan Ng" } }]);
     expect(statusText()).toBe("Added Newt (Nan Ng) at 09:00.");
     expect(row("09:00").querySelector(".sched-who")!.textContent).toBe("Newt (Nan Ng)");
     expect(document.activeElement).toBe(row("09:00"));
@@ -375,19 +381,19 @@ describe("Add booking", () => {
   it("shows the server's messages against the right field and keeps what was typed", async () => {
     const { calls } = await start({
       respond: (c) => (c.method === "POST"
-        ? reply(400, { error: { code: "invalid_input" }, fields: { dogName: "Enter the dog's name.", handlerName: "The handler's name must be at most 80 characters." } })
+        ? reply(400, { error: { code: "invalid_input" }, fields: { field1: "Dog is required.", field2: "Handler must be at most 80 characters." } })
         : undefined),
     });
     button(row("09:00"), "Add booking").click();
-    ($("#add-handler") as HTMLInputElement).value = "x";
+    ($("#add-field-2") as HTMLInputElement).value = "x";
     submit($(".sched-panel"));
     await settle();
-    expect($("#add-dog-error").textContent).toBe("Enter the dog's name.");
-    expect($("#add-handler-error").textContent).toBe("The handler's name must be at most 80 characters.");
-    expect($("#add-dog").getAttribute("aria-invalid")).toBe("true");
-    expect($("#add-dog").getAttribute("aria-describedby")).toBe("add-dog-error");
-    expect(($("#add-handler") as HTMLInputElement).value).toBe("x");
-    expect(document.activeElement).toBe($("#add-dog"));
+    expect($("#add-field-1-error").textContent).toBe("Dog is required.");
+    expect($("#add-field-2-error").textContent).toBe("Handler must be at most 80 characters.");
+    expect($("#add-field-1").getAttribute("aria-invalid")).toBe("true");
+    expect($("#add-field-1").getAttribute("aria-describedby")).toBe("add-field-1-error");
+    expect(($("#add-field-2") as HTMLInputElement).value).toBe("x");
+    expect(document.activeElement).toBe($("#add-field-1"));
     expect(calls.filter((c) => c.method === "GET" && c.url === BASE)).toHaveLength(1); // no refresh
     expect($$<HTMLButtonElement>("button").every((b) => !b.disabled)).toBe(true);
   });
@@ -395,7 +401,7 @@ describe("Add booking", () => {
   it("says in plain English when the dog and handler already have a booking, with the time", async () => {
     await start({
       respond: (c) => (c.method === "POST"
-        ? reply(409, { error: { code: "duplicate_booking" }, booking: { id: 11, slotStart: S[1], dogName: "Rex", handlerName: "Sam Smith" } })
+        ? reply(409, { error: { code: "duplicate_booking" }, booking: { id: 11, slotStart: S[1], fields: dh("Rex", "Sam Smith") } })
         : undefined),
     });
     button(row("09:00"), "Add booking").click();
@@ -407,7 +413,7 @@ describe("Add booking", () => {
 
   it("says in plain English who holds a slot that was just taken, and refreshes", async () => {
     const { calls } = await start({
-      respond: (c) => (c.method === "POST" ? reply(409, { error: { code: "slot_taken" }, booking: { id: 11, dogName: "Rex", handlerName: "Sam Smith" } }) : undefined),
+      respond: (c) => (c.method === "POST" ? reply(409, { error: { code: "slot_taken" }, bookings: [{ id: 11, fields: dh("Rex", "Sam Smith") }] }) : undefined),
     });
     button(row("09:00"), "Add booking").click();
     submit($(".sched-panel"));
@@ -624,15 +630,15 @@ describe("Share", () => {
     const navigator = withShare();
     const ctx = await start({
       navigator, initial: withDetail({ ...SHARE_EVENT, shareMessage: "Before {event}" }),
-      respond: (c) => (c.url.endsWith("/bookings") && c.method === "POST" ? reply(201, { booking: { id: 99, dogName: "Zed", handlerName: "Zoe" } }) : undefined),
+      respond: (c) => (c.url.endsWith("/bookings") && c.method === "POST" ? reply(201, { booking: { id: 99, fields: dh("Zed", "Zoe") } }) : undefined),
     });
     shareButton()!.click();
     expect(sent(navigator.share, 0)).toBe(`Before Trial Day\nhttps://club.example/e/${SLUG}`);
     ctx.setDetail(withDetail({ ...SHARE_EVENT, name: "Renamed", shareMessage: "After {event}" }));
     button(row("09:00"), "Add booking").click();
     const form = $("form");
-    (document.getElementById("add-dog") as HTMLInputElement).value = "Zed";
-    (document.getElementById("add-handler") as HTMLInputElement).value = "Zoe";
+    (document.getElementById("add-field-1") as HTMLInputElement).value = "Zed";
+    (document.getElementById("add-field-2") as HTMLInputElement).value = "Zoe";
     submit(form);
     await vi.waitFor(() => expect($(".event-name").textContent).toBe("Renamed"));
     shareButton()!.click();
@@ -654,15 +660,15 @@ describe("Share", () => {
 });
 
 // ---- lanes and places ----
-type Held = { id: number; dogName: string; handlerName: string };
+type Held = { id: number; fields: { label: string; value: string }[] };
 const RING = [{ id: 1, name: "Ring 1" }, { id: 2, name: "Ring 2" }, { id: 3, name: "Ring 3" }];
-const CY = { id: 14, dogName: "Cy", handlerName: "Dee" };
+const CY = { id: 14, fields: dh("Cy", "Dee") };
 /** A detail for `lanes` with `capacity` places each: `held` says who is where, as "slotIndex:laneIndex" -> bookings. */
 function laneDetail(lanes: { id: number; name: string }[], capacity: number, held: Record<string, Held[]> = {}, orphans: unknown[] = [], extra: object = {}) {
   return {
     event: { ...EVENT, lanes, capacity, ...extra }, orphans, lineup: LINEUP,
     slots: S.map((start, i) => ({
-      start, end: start, booking: null,
+      start, end: start,
       places: lanes.map((l, j) => {
         const bookings = held[`${i}:${j}`] ?? [];
         return { laneId: l.id, laneName: l.name, bookings, free: capacity - bookings.length };
@@ -740,7 +746,7 @@ describe("lanes and places: the schedule with several lanes or places", () => {
   });
 
   it("keeps names inert in the lane rows", async () => {
-    const hostile = { id: 21, dogName: HOSTILE, handlerName: HOSTILE };
+    const hostile = { id: 21, fields: dh(HOSTILE, HOSTILE) };
     await start({ initial: laneDetail([{ id: 1, name: HOSTILE }, { id: 2, name: "B" }], 1, { "1:0": [hostile] }) });
     expect(document.querySelector("img")).toBeNull();
     expect(subText(subs(group("09:15"))[0]).join("|")).toBe(`${HOSTILE}|${HOSTILE} (${HOSTILE})`);
@@ -912,17 +918,17 @@ describe("lanes and places: Swap", () => {
 describe("lanes and places: Add booking", () => {
   it("opens for that time and lane, sends laneId, and focuses the time's header afterwards", async () => {
     const { calls, setDetail } = await start({
-      initial: threeByTwo(), respond: (c) => (c.method === "POST" ? reply(201, { booking: { id: 30, slotStart: S[0], dogName: "Newt", handlerName: "Nan Ng", lane: RING[2] } }) : undefined),
+      initial: threeByTwo(), respond: (c) => (c.method === "POST" ? reply(201, { booking: { id: 30, slotStart: S[0], fields: dh("Newt", "Nan Ng"), lane: RING[2] } }) : undefined),
     });
-    setDetail(threeByTwo({ ...HELD, "0:2": [{ id: 30, dogName: "Newt", handlerName: "Nan Ng" }] }));
+    setDetail(threeByTwo({ ...HELD, "0:2": [{ id: 30, fields: dh("Newt", "Nan Ng") }] }));
     button(subs(group("09:00"))[2], "Add booking").click();
     expect($(".sched-panel h3").textContent).toBe("Add booking at 09:00 · Ring 3");
-    expect(document.activeElement).toBe($("#add-dog"));
-    ($("#add-dog") as HTMLInputElement).value = "Newt";
-    ($("#add-handler") as HTMLInputElement).value = "Nan Ng";
+    expect(document.activeElement).toBe($("#add-field-1"));
+    ($("#add-field-1") as HTMLInputElement).value = "Newt";
+    ($("#add-field-2") as HTMLInputElement).value = "Nan Ng";
     submit($(".sched-panel"));
     await settle();
-    expect(writes(calls)).toEqual([{ url: `${BASE}/bookings`, method: "POST", body: { slot: S[0], laneId: 3, dogName: "Newt", handlerName: "Nan Ng" } }]);
+    expect(writes(calls)).toEqual([{ url: `${BASE}/bookings`, method: "POST", body: { slot: S[0], laneId: 3, field1: "Newt", field2: "Nan Ng" } }]);
     expect(statusText()).toBe("Added Newt (Nan Ng) at 09:00 · Ring 3.");
     expect(subs(group("09:00")).map((li) => subText(li).join("|"))).toContain("Ring 3|Newt (Nan Ng)");
     expect(document.activeElement).toBe(group("09:00"));
@@ -939,16 +945,16 @@ describe("lanes and places: Add booking", () => {
     await start({
       initial: threeByTwo(),
       respond: (c) => (c.method === "POST"
-        ? reply(400, { error: { code: "invalid_input" }, fields: { laneId: "That isn't one of this event's lanes.", dogName: "Enter the dog's name." } })
+        ? reply(400, { error: { code: "invalid_input" }, fields: { laneId: "That isn't one of this event's lanes.", field1: "Dog is required." } })
         : undefined),
     });
     button(subs(group("09:00"))[0], "Add booking").click();
-    ($("#add-handler") as HTMLInputElement).value = "x";
+    ($("#add-field-2") as HTMLInputElement).value = "x";
     submit($(".sched-panel"));
     await settle();
     expect($(".sched-panel .form-error").textContent).toBe("That isn't one of this event's lanes.");
-    expect($("#add-dog-error").textContent).toBe("Enter the dog's name.");
-    expect(($("#add-handler") as HTMLInputElement).value).toBe("x");
+    expect($("#add-field-1-error").textContent).toBe("Dog is required.");
+    expect(($("#add-field-2") as HTMLInputElement).value).toBe("x");
   });
 
   it("names the lane in a duplicate_booking answer", async () => {
@@ -975,15 +981,15 @@ describe("lanes and places: Add booking", () => {
     expect(calls.at(-1)!.method).toBe("GET");
   });
 
-  it("prefers the v1.0 'already taken by' text when the answer carries the v1.0 booking key", async () => {
+  it("says the lane is full, and does not name who holds the places, when the event has more than one place per time", async () => {
     await start({
       initial: laneDetail([{ id: 1, name: "" }], 2),
-      respond: (c) => (c.method === "POST" ? reply(409, { error: { code: "slot_taken" }, booking: REX, bookings: [REX] }) : undefined),
+      respond: (c) => (c.method === "POST" ? reply(409, { error: { code: "slot_taken" }, bookings: [REX, FLO] }) : undefined),
     });
     button(subs(group("09:00"))[0], "Add booking").click();
     submit($(".sched-panel"));
     await settle();
-    expect(statusText()).toBe("That slot is already taken by Rex (Sam Smith).");
+    expect(statusText()).toBe("09:00 is full.");
   });
 
   it("names the time alone when the one lane has no name", async () => {
@@ -1022,5 +1028,139 @@ describe("lanes and places: Add booking", () => {
     release(reply(200, { removed: { ...REX, slotStart: S[1] } }));
     await settle();
     expect($$<HTMLButtonElement>("button").every((b) => !b.disabled)).toBe(true);
+  });
+});
+
+// ---- configurable booking form ----
+const field = (label: string, over: object = {}) => ({ label, required: true, maxLength: 80, identity: false, ...over });
+const values = (...pairs: [string, string][]) => pairs.map(([label, value]) => ({ label, value }));
+const withForm = (fields: object[], held: Booking[] = [null, null, null, null, null], orphans: unknown[] = []) =>
+  detail(held, orphans, LINEUP, { ...EVENT, fields });
+const labelsOf = () => $$(".sched-panel .field label").map((l) => l.textContent);
+const inputsOf = () => $$<HTMLInputElement>(".sched-panel input");
+
+describe("the booking form's fields: the Add booking panel", () => {
+  it("has one input for each field, labelled with the bare label, in order, with focus in the first", async () => {
+    for (const n of [1, 2, 3, 4]) {
+      const form = [field("Name", { identity: true }), field("Owner"), field("Phone"), field("Car reg")].slice(0, n);
+      await start({ initial: withForm(form) });
+      button(row("09:00"), "Add booking").click();
+      expect(labelsOf()).toEqual(form.map((f) => f.label));
+      expect(inputsOf().map((i) => i.id)).toEqual(form.map((_, i) => `add-field-${i + 1}`));
+      expect(document.activeElement).toBe(inputsOf()[0]);
+      expect($$(".sched-panel .field-error")).toHaveLength(n);
+    }
+  });
+
+  it("puts (optional) after an optional field's label, and sets maxlength and required from the field", async () => {
+    await start({ initial: withForm([field("Name", { identity: true, maxLength: 30 }), field("Phone", { required: false, maxLength: 20 })]) });
+    button(row("09:00"), "Add booking").click();
+    expect(labelsOf()).toEqual(["Name", "Phone (optional)"]);
+    expect(inputsOf().map((i) => [i.maxLength, i.required])).toEqual([[30, true], [20, false]]);
+  });
+
+  it("sends field1 to field4 and the lane when there is one, as typed", async () => {
+    const form = [field("A", { identity: true }), field("B", { required: false }), field("C"), field("D", { required: false })];
+    const { calls } = await start({ initial: withForm(form), respond: (c) => (c.method === "POST" ? reply(201, { booking: { id: 30, fields: values(["A", "a"]) } }) : undefined) });
+    button(row("09:00"), "Add booking").click();
+    inputsOf().forEach((input, i) => { input.value = ["a", "", "c", " d "][i]; });
+    submit($(".sched-panel"));
+    await settle();
+    expect(writes(calls)).toEqual([{ url: `${BASE}/bookings`, method: "POST", body: { slot: S[0], field1: "a", field2: "", field3: "c", field4: " d " } }]);
+    expect(statusText()).toBe("Added a at 09:00.");
+  });
+
+  it("maps field errors to their inputs by position, and focuses the first one with an error", async () => {
+    const form = [field("A", { identity: true }), field("B"), field("C", { required: false })];
+    await start({
+      initial: withForm(form),
+      respond: (c) => (c.method === "POST" ? reply(400, { error: { code: "invalid_input" }, fields: { field2: "B is required.", field3: "C must be at most 80 characters." } }) : undefined),
+    });
+    button(row("09:00"), "Add booking").click();
+    submit($(".sched-panel"));
+    await settle();
+    expect($("#add-field-1-error").textContent).toBe("");
+    expect($("#add-field-1").hasAttribute("aria-invalid")).toBe(false);
+    expect($("#add-field-2-error").textContent).toBe("B is required.");
+    expect($("#add-field-3-error").textContent).toBe("C must be at most 80 characters.");
+    expect($("#add-field-2").getAttribute("aria-describedby")).toBe("add-field-2-error");
+    expect(document.activeElement).toBe($("#add-field-2"));
+  });
+
+  it("names only the fields that identify a booking in the duplicate message, and uses 'has' for one", async () => {
+    const form = [field("Name", { identity: true }), field("Phone", { required: false })];
+    await start({
+      initial: withForm(form),
+      respond: (c) => (c.method === "POST"
+        ? reply(409, { error: { code: "duplicate_booking" }, booking: { id: 11, slotStart: S[1], fields: values(["Name", "Sam"], ["Phone", "0700"]) } })
+        : undefined),
+    });
+    button(row("09:00"), "Add booking").click();
+    submit($(".sched-panel"));
+    await settle();
+    expect($(".sched-panel .form-error").textContent).toBe("Sam already has a booking at 09:15.");
+    expect(document.activeElement).toBe($("#add-field-1"));
+  });
+
+  it("lists three identity values as 'A, B and C already have'", async () => {
+    const form = [field("A", { identity: true }), field("B", { identity: true }), field("C", { identity: true })];
+    await start({
+      initial: withForm(form),
+      respond: (c) => (c.method === "POST"
+        ? reply(409, { error: { code: "duplicate_booking" }, booking: { id: 11, slotStart: S[1], fields: values(["A", "1"], ["B", "2"], ["C", "3"]) } })
+        : undefined),
+    });
+    button(row("09:00"), "Add booking").click();
+    submit($(".sched-panel"));
+    await settle();
+    expect($(".sched-panel .form-error").textContent).toBe("1, 2 and 3 already have a booking at 09:15.");
+  });
+});
+
+describe("the booking form's fields: how a booking reads", () => {
+  it("shows the first value, then the others in brackets, left out when blank, for one to four fields", async () => {
+    const held = (...f: [string, string][]) => [null, { id: 40, fields: values(...f) }, null, null, null] as Booking[];
+    const cases: [object[], Booking[], string][] = [
+      [[field("Name", { identity: true })], held(["Name", "Sam"]), "Sam"],
+      [[field("Name", { identity: true }), field("Phone", { required: false })], held(["Name", "Sam"]), "Sam"],
+      [[field("Name", { identity: true }), field("Phone", { required: false })], held(["Name", "Sam"], ["Phone", "0700"]), "Sam (0700)"],
+      [[field("A"), field("B"), field("C")], held(["A", "a"], ["B", "b"], ["C", "c"]), "a (b, c)"],
+      [[field("A"), field("B", { required: false }), field("C", { required: false }), field("D", { required: false })], held(["A", "a"], ["C", "c"], ["D", "d"]), "a (c, d)"],
+    ];
+    for (const [form, booked, who] of cases) {
+      await start({ initial: withForm(form, booked) });
+      expect(row("09:15").querySelector(".sched-who")!.textContent).toBe(who);
+    }
+  });
+
+  it("uses the same text in the Clear panel, the Move and Swap messages and the orphans", async () => {
+    const form = [field("Name", { identity: true }), field("Phone", { required: false })];
+    const ann = { id: 41, fields: values(["Name", "Ann"], ["Phone", "0701"]) };
+    const bob = { id: 42, fields: values(["Name", "Bob"]) };
+    const lost = { id: 43, slotStart: "2026-06-13T07:00:00Z", fields: values(["Name", "Lou"], ["Phone", "0702"]) };
+    const { setDetail } = await start({
+      initial: withForm(form, [ann, bob, null, null, null], [lost]),
+      respond: (c) => (c.method === "POST" && c.url.endsWith("/swap") ? reply(200, { a: {}, b: {} }) : undefined),
+    });
+    expect($(".sched-orphans li .sched-who").textContent).toBe("Lou (0702)");
+    button(row("09:00"), "Clear").click();
+    expect($(".sched-panel").textContent).toContain("09:00: Ann (0701)");
+    button($(".sched-panel"), "Cancel").click();
+    button(row("09:00"), "Swap").click();
+    expect(options($("select"))).toEqual(["09:15: Bob"]);
+    ($("select") as HTMLSelectElement).value = S[1];
+    setDetail(withForm(form, [bob, ann, null, null, null], [lost]));
+    submit($(".sched-panel"));
+    await settle();
+    expect(statusText()).toBe("Swapped Ann (09:00) with Bob (09:15).");
+  });
+
+  it("labels the Move, Swap and Clear buttons of a place by the first value", async () => {
+    const lanes = [{ id: 1, name: "Ring 1" }, { id: 2, name: "Ring 2" }];
+    const d = laneDetail(lanes, 1, { "1:0": [{ id: 50, fields: values(["Name", "Ann"], ["Phone", "0701"]) }] }, [], { fields: [field("Name", { identity: true }), field("Phone", { required: false })] });
+    await start({ initial: d });
+    expect($$("button").map((b) => b.getAttribute("aria-label")).filter((l) => l?.includes("Ann"))).toEqual([
+      "Move Ann at 09:15 · Ring 1", "Swap Ann at 09:15 · Ring 1", "Clear Ann at 09:15 · Ring 1",
+    ]);
   });
 });

@@ -63,7 +63,7 @@ export const onRequestPut: RouteHandler<"slug"> = async ({ request, env, data, p
       const message = "Some bookings are on slots this change would remove. Check the list and confirm to remove them.";
       return errorResponse(409, "bookings_affected", message, { affected: result.affected }, noStore);
     }
-    return json({ event: eventView(result.event), slotCount: result.slotCount, removed: result.removed }, 200, noStore);
+    return json({ event: eventView(result.event, result.hasBookings), slotCount: result.slotCount, removed: result.removed }, 200, noStore);
   } catch (e) {
     return editFailed("saveEventEdit", e);
   }

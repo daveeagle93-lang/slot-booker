@@ -68,8 +68,22 @@ describe("GET /api/admin/events/[slug]", () => {
       breaks: [{ start: "10:00", end: "10:30", label: "Lunch", startUtc: "2026-10-24T09:00:00Z", endUtc: "2026-10-24T09:30:00Z" }],
       lanes: [{ id: expect.any(Number), name: "" }], capacity: 1,
       fields: [{ label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }], identityLimit: 1,
+      hasBookings: false,
     });
     expect(body.orphans).toEqual([]);
+  });
+
+  it("says whether the event has any booking at all: no, then yes with one in a slot, and yes with only an orphan", async () => {
+    const { id, slug } = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T09:00:00Z", sessionMinutes: 20 });
+    expect((await detail(slug)).event.hasBookings).toBe(false);
+    await insertBooking(t.env.DB, id, "2026-10-24T08:20:00Z", "Rex", "Sam Smith");
+    expect((await detail(slug)).event.hasBookings).toBe(true);
+    const other = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T09:00:00Z", sessionMinutes: 20 });
+    await insertBooking(t.env.DB, other.id, "2026-10-24T07:00:00Z", "Early", "Eve");
+    expect((await detail(other.slug)).event.hasBookings).toBe(true);
+    expect((await detail(slug)).event.hasBookings).toBe(true); // another event's bookings don't count, and this one's still does
+    const empty = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T09:00:00Z", sessionMinutes: 20 });
+    expect((await detail(empty.slug)).event.hasBookings).toBe(false);
   });
 
   it("says whether the event is listed", async () => {
@@ -317,6 +331,7 @@ describe("PUT /api/admin/events/[slug]: saving without bookings in the way", () 
       breaks: [{ start: "11:00", end: "11:15", label: "Tea", startUtc: "2026-10-31T11:00:00Z", endUtc: "2026-10-31T11:15:00Z" }],
       lanes: [{ id: expect.any(Number), name: "" }], capacity: 1,
       fields: [{ label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }], identityLimit: 1,
+      hasBookings: false,
     });
     expect(body.removed).toEqual([]);
     expect(body.slotCount).toBe(6); // 10:00 10:25 | 11:15 11:40 12:05 12:30 (10:50 would overrun the break, 12:55 the end)
@@ -494,6 +509,16 @@ describe("PUT /api/admin/events/[slug]: bookings that would lose their slot", ()
     expect(await bookingIds(e.id)).toEqual([e.a]);
     expect(await t.env.DB.prepare("SELECT name, end_utc FROM events WHERE id = ?").bind(e.id).first()).toEqual({ name: "Shortened", end_utc: "2026-10-24T10:30:00Z" });
     expect(await t.env.DB.prepare("SELECT value_1 AS dog_name FROM bookings WHERE id = ?").bind(e.a).first()).toEqual({ dog_name: "Alpha" });
+  });
+
+  it("answers hasBookings from what is left after the save: true while a booking stays, false once the last one is removed", async () => {
+    const e = await withBookings();
+    const kept = (await (await put(e.slug, shorter({ removeBookingIds: [e.c, e.b] }))).json()) as Saved;
+    expect(kept.event.hasBookings).toBe(true);
+    const f = await withBookings();
+    const emptied = (await (await put(f.slug, draft({ start: "13:00", end: "14:00", breaks: [], removeBookingIds: [f.a, f.b, f.c] }))).json()) as Saved;
+    expect(emptied.removed).toHaveLength(3);
+    expect(emptied.event.hasBookings).toBe(false);
   });
 
   it("refuses a partial confirmation with 409 listing all of them, changing nothing", async () => {

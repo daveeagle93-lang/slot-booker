@@ -65,7 +65,7 @@ export async function init({ document, fetch, navigate, clipboard, location }) {
       try { res = await api.request("GET", `/api/admin/events/${encodeURIComponent(slug)}`); } catch { /* reported below */ }
       if (res?.status === 200 && Array.isArray(res.data?.slots) && Array.isArray(res.data?.orphans)) {
         const present = new Set([
-          ...res.data.slots.flatMap((s) => [s.booking?.id, ...(s.places ?? []).flatMap((p) => p.bookings.map((x) => x.id))]),
+          ...res.data.slots.flatMap((s) => (s.places ?? []).flatMap((p) => p.bookings.map((x) => x.id))),
           ...res.data.orphans.map((o) => o.id),
         ]);
         fallback = fallback.filter((b) => !present.has(b.id));

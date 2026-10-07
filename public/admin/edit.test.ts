@@ -14,11 +14,15 @@ const EVENT = {
   sessionMinutes: 15, gapMinutes: 5, costPence: 1250, venuePostcode: "SW1A 1AA", details: "Bring water",
   startUtc: "2026-06-13T08:00:00Z", endUtc: "2026-06-13T15:00:00Z",
   breaks: [{ start: "12:00", end: "12:20", label: "Lunch", startUtc: "2026-06-13T11:00:00Z", endUtc: "2026-06-13T11:20:00Z" }],
+  fields: [{ label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true }],
+  identityLimit: 1, hasBookings: false,
 };
 const DETAIL = { event: EVENT, slots: [], orphans: [] };
-const REX = { id: 11, slotStart: "2026-06-13T09:05:00Z", dogName: "Rex", handlerName: "Sam Smith" }; // 10:05 London
-const FLO = { id: 12, slotStart: "2026-06-13T09:25:00Z", dogName: "Flo", handlerName: "Pat Jones" }; // 10:25
-const NEW = { id: 13, slotStart: "2026-06-13T09:45:00Z", dogName: "Newcomer", handlerName: "Nell" }; // 10:45
+/** The values of a booking of the Dog and Handler form, as the admin API lists them. */
+const dh = (dog: string, handler: string) => [{ label: "Dog", value: dog }, { label: "Handler", value: handler }];
+const REX = { id: 11, slotStart: "2026-06-13T09:05:00Z", fields: dh("Rex", "Sam Smith") }; // 10:05 London
+const FLO = { id: 12, slotStart: "2026-06-13T09:25:00Z", fields: dh("Flo", "Pat Jones") }; // 10:25
+const NEW = { id: 13, slotStart: "2026-06-13T09:45:00Z", fields: dh("Newcomer", "Nell") }; // 10:45
 const slots = (...starts: string[]) => starts.map((s) => ({ start: s, end: s }));
 const SLOTS = slots("2026-06-13T08:00:00Z", "2026-06-13T08:20:00Z", "2026-06-13T08:40:00Z");
 const preview = (affected: unknown[] = [], extra: Record<string, unknown> = {}) =>
@@ -209,7 +213,7 @@ describe("the affected bookings panel", () => {
   });
 
   it("shows names as text, not markup", async () => {
-    await start({ preview: () => preview([{ ...REX, dogName: HOSTILE, handlerName: HOSTILE }]) });
+    await start({ preview: () => preview([{ ...REX, fields: dh(HOSTILE, HOSTILE) }]) });
     await tick();
     expect(affectedLines()).toEqual([`10:05 — ${HOSTILE} — ${HOSTILE}`]);
     expect(document.querySelector("img")).toBeNull();
@@ -487,7 +491,7 @@ describe("saving with bookings affected", () => {
   });
 
   it("shows names as text in the confirmation", async () => {
-    await affectedForm({ preview: () => preview([{ ...REX, dogName: HOSTILE, handlerName: HOSTILE }]) });
+    await affectedForm({ preview: () => preview([{ ...REX, fields: dh(HOSTILE, HOSTILE) }]) });
     submit();
     await tick();
     expect(confirmLines()).toEqual([`10:05 — ${HOSTILE} — ${HOSTILE}`]);
@@ -553,10 +557,10 @@ describe("the result view", () => {
   it("leaves out a confirmed booking that is still on the event (moved to a surviving slot, in a slot or among the orphans)", async () => {
     const present = {
       ...DETAIL,
-      slots: [{ start: EVENT.startUtc, end: EVENT.startUtc, booking: { id: 11, dogName: "Rex", handlerName: "Sam Smith" } }],
-      orphans: [{ id: 14, slotStart: "2026-06-13T07:00:00Z", dogName: "Other", handlerName: "Ola" }],
+      slots: [{ start: EVENT.startUtc, end: EVENT.startUtc, places: [{ laneId: 1, laneName: "", free: 0, bookings: [{ id: 11, fields: dh("Rex", "Sam Smith") }] }] }],
+      orphans: [{ id: 14, slotStart: "2026-06-13T07:00:00Z", fields: dh("Other", "Ola") }],
     };
-    const OTHER = { id: 14, slotStart: "2026-06-13T07:00:00Z", dogName: "Other", handlerName: "Ola" };
+    const OTHER = { id: 14, slotStart: "2026-06-13T07:00:00Z", fields: dh("Other", "Ola") };
     let gets = 0;
     await start({
       preview: () => preview([REX, FLO, OTHER]), put: () => reply(200, { ...SAVED, removed: [FLO] }),
@@ -573,7 +577,7 @@ describe("the result view", () => {
   });
 
   it("shows no list when every confirmed booking is still on the event", async () => {
-    const present = { ...DETAIL, slots: [{ start: EVENT.startUtc, end: EVENT.startUtc, booking: { id: 11, dogName: "Rex", handlerName: "Sam Smith" } }] };
+    const present = { ...DETAIL, slots: [{ start: EVENT.startUtc, end: EVENT.startUtc, places: [{ laneId: 1, laneName: "", free: 0, bookings: [{ id: 11, fields: dh("Rex", "Sam Smith") }] }] }] };
     let gets = 0;
     await start({ preview: () => preview([REX]), put: () => reply(200, { ...SAVED, removed: [] }), get: () => reply(200, ++gets === 1 ? DETAIL : present) });
     await tick();
@@ -646,7 +650,7 @@ describe("the result view", () => {
   });
 
   it("shows hostile names and event names as text", async () => {
-    const hostile = { ...REX, dogName: HOSTILE, handlerName: HOSTILE };
+    const hostile = { ...REX, fields: dh(HOSTILE, HOSTILE) };
     await start({
       preview: () => preview([hostile]),
       put: () => reply(200, { ...SAVED, event: { ...EVENT, name: HOSTILE }, removed: [hostile] }),
@@ -959,7 +963,7 @@ describe("lanes and places", () => {
 
     it("leaves a confirmed booking off the rebook list when it is still on the event in one of its lanes' places", async () => {
       const present = {
-        ...LANED, slots: [{ start: EVENT.startUtc, end: EVENT.startUtc, booking: null, places: [{ laneId: 9001, laneName: "Ring 1", free: 1, bookings: [{ id: 11, dogName: "Rex", handlerName: "Sam Smith" }] }] }],
+        ...LANED, slots: [{ start: EVENT.startUtc, end: EVENT.startUtc, places: [{ laneId: 9001, laneName: "Ring 1", free: 1, bookings: [{ id: 11, fields: dh("Rex", "Sam Smith") }] }] }],
       };
       let gets = 0;
       await laned({
@@ -1012,5 +1016,192 @@ describe("lanes and places", () => {
       expect($$("[aria-invalid='true']")).toHaveLength(0);
       expect((buttonNamed("Save changes") as HTMLButtonElement).disabled).toBe(false);
     });
+  });
+});
+
+describe("booking form", () => {
+  const cardRows = () => $$(".field-def");
+  const part = (row: number, what: "label" | "required" | "max" | "identity") => cardRows()[row].querySelector(`[id$="-${what}"]`) as HTMLInputElement;
+  const typeInto = (el: HTMLInputElement, value: string) => { el.value = value; el.dispatchEvent(new Event("input", { bubbles: true })); };
+  const limit = () => input("event-identity-limit");
+  const errorText = (el: HTMLElement) => document.getElementById(`${el.id}-error`)!.textContent;
+  const FORM = [
+    { label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Handler", required: true, maxLength: 80, identity: true },
+    { label: "Phone", required: false, maxLength: 20, identity: false },
+  ];
+  const withForm = (over: object = {}) => ({ get: () => reply(200, { ...DETAIL, event: { ...EVENT, fields: FORM, identityLimit: 2, ...over } }) });
+  const LOCKED_HINT = "Bookings exist, so you can't add or remove fields or change which ones identify a booking. You can still rename them and change the other settings.";
+
+  it("fills the card from the event: its fields, their settings and the limit", async () => {
+    await start(withForm());
+    expect(cardRows().map((_, i) => part(i, "label").value)).toEqual(["Dog", "Handler", "Phone"]);
+    expect(cardRows().map((_, i) => [part(i, "required").checked, part(i, "max").value, part(i, "identity").checked])).toEqual([
+      [true, "80", true], [true, "80", true], [false, "20", false],
+    ]);
+    expect(limit().value).toBe("2");
+    expect($(`label[for="event-identity-limit"]`).textContent).toBe("How many bookings can one Dog + Handler make?");
+    expect(($(".fields-group .note[hidden]") ?? null)).not.toBeNull(); // the locked note is there but hidden
+    expect(document.getElementById("event-fields-locked")!.hidden).toBe(true);
+    expect((buttonNamed("Add field") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("leaves the fields and the limit out of a save that didn't change them", async () => {
+    const { calls } = await start(withForm());
+    await tick();
+    set("name", "Renamed");
+    submit();
+    await tick();
+    expect(puts(calls)[0].body).not.toHaveProperty("fields");
+    expect(puts(calls)[0].body).not.toHaveProperty("identityLimit");
+    expect(previewCalls(calls)[0].body).not.toHaveProperty("fields");
+  });
+
+  it("sends the fields (and not the limit) when only a field changed, and the limit (and not the fields) when only it changed", async () => {
+    const { calls } = await start(withForm());
+    await tick();
+    typeInto(part(2, "label"), "Mobile");
+    submit();
+    await tick();
+    expect(puts(calls)[0].body.fields).toEqual([FORM[0], FORM[1], { ...FORM[2], label: "Mobile" }]);
+    expect(puts(calls)[0].body).not.toHaveProperty("identityLimit");
+    const second = await start(withForm());
+    await tick();
+    typeInto(limit(), "3");
+    submit();
+    await tick();
+    const body = puts(second.calls)[0].body;
+    expect(body.identityLimit).toBe(3);
+    expect(body).not.toHaveProperty("fields");
+  });
+
+  it("sends all the fields when one was added or removed", async () => {
+    const { calls } = await start(withForm());
+    await tick();
+    buttonNamed("Add field").click();
+    typeInto(part(3, "label"), "Car reg");
+    submit();
+    await tick();
+    expect(puts(calls)[0].body.fields).toHaveLength(4);
+    const second = await start(withForm());
+    await tick();
+    (cardRows()[2].querySelector("button.remove") as HTMLButtonElement).click();
+    submit();
+    await tick();
+    expect(puts(second.calls)[0].body.fields).toEqual([FORM[0], FORM[1]]);
+  });
+
+  describe("when the event has bookings", () => {
+    const locked = () => start(withForm({ hasBookings: true }));
+
+    it("shows the hint, disables Add, Remove and the Identity boxes, and leaves everything else editable", async () => {
+      await locked();
+      const hint = document.getElementById("event-fields-locked")!;
+      expect(hint.hidden).toBe(false);
+      expect(hint.textContent).toBe(LOCKED_HINT);
+      expect((buttonNamed("Add field") as HTMLButtonElement).disabled).toBe(true);
+      expect(cardRows().map((r) => (r.querySelector("button.remove") as HTMLButtonElement).disabled)).toEqual([true, true, true]);
+      expect(cardRows().map((_, i) => part(i, "identity").disabled)).toEqual([true, true, true]);
+      expect(cardRows().map((_, i) => part(i, "label").disabled)).toEqual([false, false, false]);
+      expect(cardRows().map((_, i) => part(i, "max").disabled)).toEqual([false, false, false]);
+      expect(limit().disabled).toBe(false);
+      // Required is editable for a field that doesn't identify a booking (and not the first); identity fields stay required.
+      expect(cardRows().map((_, i) => part(i, "required").disabled)).toEqual([true, true, false]);
+      part(2, "required").click();
+      expect(part(2, "required").checked).toBe(true);
+    });
+
+    it("still sends renamed labels, a changed max length and a changed limit", async () => {
+      const { calls } = await locked();
+      await tick();
+      typeInto(part(0, "label"), "Hound");
+      typeInto(part(1, "max"), "50");
+      typeInto(limit(), "4");
+      submit();
+      await tick();
+      const body = puts(calls)[0].body;
+      expect(body.fields).toEqual([{ ...FORM[0], label: "Hound" }, { ...FORM[1], maxLength: 50 }, FORM[2]]);
+      expect(body.identityLimit).toBe(4);
+    });
+
+    it("keeps Add disabled and the hint when a field's label is edited", async () => {
+      await locked();
+      typeInto(part(0, "label"), "Hound");
+      expect((buttonNamed("Add field") as HTMLButtonElement).disabled).toBe(true);
+      expect(document.getElementById("event-fields-locked")!.hidden).toBe(false);
+    });
+  });
+
+  describe("a fields_locked answer", () => {
+    const FIELDS_LOCKED = { error: { code: "fields_locked", message: "This event has bookings, so fields can't be added or removed." } };
+
+    it("locks the card, shows the server's message at it, and puts the form back as it was loaded, keeping what was typed", async () => {
+      await start({ ...withForm(), put: () => reply(409, FIELDS_LOCKED) });
+      await tick();
+      buttonNamed("Add field").click();
+      typeInto(part(3, "label"), "Car reg");
+      typeInto(part(0, "label"), "Hound");
+      part(2, "identity").click();
+      submit();
+      await tick();
+      expect(cardRows()).toHaveLength(3);
+      expect(part(0, "label").value).toBe("Hound");
+      expect(part(2, "identity").checked).toBe(false);
+      expect(document.getElementById("event-fields-locked")!.hidden).toBe(false);
+      expect((buttonNamed("Add field") as HTMLButtonElement).disabled).toBe(true);
+      expect(part(0, "identity").disabled).toBe(true);
+      expect(document.getElementById("event-fields-error")!.textContent).toBe(FIELDS_LOCKED.error.message);
+      expect(document.activeElement).toBe(document.getElementById("event-fields-error"));
+      expect($(".form-error")!.textContent).toBe("");
+    });
+
+    it("lets the next save through with the shape as loaded", async () => {
+      let n = 0;
+      const { calls } = await start({ ...withForm(), put: () => (++n === 1 ? reply(409, FIELDS_LOCKED) : reply(200, SAVED)) });
+      await tick();
+      buttonNamed("Add field").click();
+      typeInto(part(3, "label"), "Car reg");
+      typeInto(part(0, "label"), "Hound");
+      submit();
+      await tick();
+      submit();
+      await tick();
+      expect(puts(calls)).toHaveLength(2);
+      expect(puts(calls)[1].body.fields).toEqual([{ ...FORM[0], label: "Hound" }, FORM[1], FORM[2]]);
+      expect($("h1").textContent).toBe("Saved.");
+    });
+  });
+
+  it("shows the server's errors for the fields, keyed by position, at the right inputs", async () => {
+    await start({
+      ...withForm(),
+      put: () => reply(400, { error: { code: "invalid_input" }, fields: { "fields.2.maxLength": "Enter a whole number of characters from 1 to 80.", "fields.0.label": "Enter the field label." } }),
+    });
+    await tick();
+    typeInto(part(2, "max"), "0");
+    typeInto(part(0, "label"), "");
+    submit();
+    await tick();
+    expect(errorText(part(2, "max"))).toBe("Enter a whole number of characters from 1 to 80.");
+    expect(errorText(part(0, "label"))).toBe("Enter the field label.");
+    expect(document.activeElement).toBe(part(0, "label"));
+  });
+});
+
+describe("booking form: a required error on a field that isn't forced", () => {
+  it("shows it next to that field's Required box", async () => {
+    const FORM = [
+      { label: "Dog", required: true, maxLength: 80, identity: true }, { label: "Phone", required: false, maxLength: 20, identity: false },
+      { label: "Mobile", required: false, maxLength: 20, identity: false }, { label: "Notes", required: false, maxLength: 20, identity: false },
+    ];
+    await start({
+      get: () => reply(200, { ...DETAIL, event: { ...EVENT, fields: FORM, identityLimit: 1 } }),
+      put: () => reply(400, { error: { code: "invalid_input" }, fields: { "fields.1.label": "x", "fields.3.required": "Required must be true or false." } }),
+    });
+    await tick();
+    submit();
+    await tick();
+    const box = document.querySelectorAll<HTMLInputElement>(".field-def")[3].querySelector('[id$="-required"]')!;
+    expect(document.getElementById(`${box.id}-error`)!.textContent).toBe("Required must be true or false.");
+    expect(box.getAttribute("aria-invalid")).toBe("true");
   });
 });

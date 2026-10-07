@@ -140,13 +140,16 @@ textarea[readonly], input[readonly] { color: var(--muted); }
 fieldset { min-width: 0; border: 0; margin: 0; padding: 0; }
 legend { padding: 0; font-weight: 600; }
 .breaks-group { margin-bottom: 1rem; }
-.break-row, .lane-row {
+.break-row, .lane-row, .field-def {
   margin: 0.5rem 0;
   padding: 0.75rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
-.break-row .button, .lane-row .button, .breaks-group > .button { min-height: 48px; }
+.break-row .button, .lane-row .button, .field-def .button, .breaks-group > .button { min-height: 48px; }
+/* The booking form card: a field's checkboxes sit side by side (Required, Identifies a booking), each label wrapping inside its own cell. */
+.field-def .select-all { align-items: flex-start; }
+.field-def .select-all input[type="checkbox"] { flex: none; margin-top: 12px; }
 
 .note { color: var(--muted); margin: 0 0 0.5rem; }
 

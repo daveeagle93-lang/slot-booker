@@ -10,7 +10,7 @@ import { errorResponse } from "./http";
 import { loadSettings } from "./settings";
 
 export type EditResult =
-  | { kind: "saved"; event: EventRow; slotCount: number; removed: BookingRef[] }
+  | { kind: "saved"; event: EventRow; slotCount: number; removed: BookingRef[]; hasBookings: boolean }
   | { kind: "bookings_affected"; affected: BookingRef[] }
   /** The lanes, capacity, identity limit or fields were edited by someone else after the event was read, and this request would have overwritten that. */
   | { kind: "layout_changed" }
@@ -55,15 +55,18 @@ export const toRef = (b: StoredBooking): BookingRef => ({
   id: b.id, slotStart: b.slotStart, lane: b.lane, fields: b.fields, dogName: b.dogName, handlerName: b.handlerName, // TRANSITIONAL(6b)
 });
 
-/** The event as the edit form uses it: London-local date and times next to the stored UTC instants. */
-export const eventView = (e: EventRow) => ({
+/**
+ * The event as the edit form uses it: London-local date and times next to the stored UTC instants. `hasBookings` says whether the event
+ * has any booking at all (an orphan counts): once it has, the number of fields and which of them identify a booking can't change.
+ */
+export const eventView = (e: EventRow, hasBookings: boolean) => ({
   slug: e.slug, name: e.name, archived: e.archived, listed: e.listed,
   date: utcToLondon(e.startUtc).date, start: utcToLondon(e.startUtc).time, end: utcToLondon(e.endUtc).time,
   sessionMinutes: e.sessionMinutes, gapMinutes: e.gapMinutes, costPence: e.costPence,
   venuePostcode: e.venuePostcode, details: e.details, shareMessage: e.shareMessage,
   startUtc: e.startUtc, endUtc: e.endUtc,
   lanes: e.lanes.map((l) => ({ id: l.id, name: l.name })), capacity: e.capacity,
-  fields: draftsOf(e.fields), identityLimit: e.identityLimit,
+  fields: draftsOf(e.fields), identityLimit: e.identityLimit, hasBookings,
   breaks: [...e.breaks].sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0))
     .map((b) => ({ start: utcToLondon(b.start).time, end: utcToLondon(b.end).time, label: b.label, startUtc: b.start, endUtc: b.end })),
 });
@@ -161,7 +164,7 @@ export async function eventDetail(db: D1Database, event: EventRow) {
     return { ...s, booking: single ? places[0].bookings[0] ?? null : null, places };
   });
   return {
-    event: eventView(event),
+    event: eventView(event, bookings.length > 0),
     slots: withBookings,
     orphans: orphans.map(toRef),
     defaultShareMessage: defaultMessage?.share_message ?? "",
@@ -335,14 +338,17 @@ async function writeEdit(
     );
   }
 
+  // Last, so it sees the batch's own deletions: whether the event still has any booking (the page locks the form's shape if so).
+  batch.push(db.prepare("SELECT EXISTS (SELECT 1 FROM bookings WHERE event_id = ?) AS has").bind(event.id));
   const results = await db.batch(batch);
+  const hasBookings = (results[results.length - 1].results as { has: number }[])[0].has === 1;
   const deleted = results[deleteAt].results as (ValueColumns & { id: number; slot_start_utc: string; lane_id: number })[];
   const laneName = new Map(event.lanes.map((l) => [l.id, l.name]));
   const newLanes = lanesChanged
     ? (await db.prepare("SELECT id, position, name FROM event_lanes WHERE event_id = ? ORDER BY position").bind(event.id).all<EventRow["lanes"][number]>()).results
     : event.lanes;
   return {
-    kind: "saved", slotCount: slots.length,
+    kind: "saved", slotCount: slots.length, hasBookings,
     event: {
       ...event, name: draft.name, startUtc: draft.startUtc, endUtc: draft.endUtc, sessionMinutes: draft.sessionMinutes,
       gapMinutes: draft.gapMinutes, costPence: draft.costPence, venuePostcode: draft.venuePostcode, details: draft.details,
