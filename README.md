@@ -1,152 +1,95 @@
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/daveeagle93-lang/slot-booker)
-
-
 # slot-booker
 
-A slot-booking app for small clubs that run a few events a year, such as a trial day with a few dozen timed slots. People book a slot on their phone with no account; admins create events and manage the bookings.
+Online booking for your club's events: members pick a time on their phone with no account, you manage it all from a simple admin page, and it is built to run on Cloudflare's free plan.
 
-It is a template. Each club gets its own copy in its own Cloudflare account, on the free tier. The copy is one Cloudflare Worker (it serves the website and the booking API) plus one D1 database, written in TypeScript with a vanilla JavaScript front end and no build step.
+![Screenshot of the booking page on a phone goes here](docs/images/booking-page-placeholder.svg)
 
-Status: work in progress. The button has now been run end to end once, against the public copy of this repository (6 October 2026): it created the database, applied all 14 migrations, deployed the Worker to `workers.dev`, and `/setup`, sign-in, event creation and booking all worked on the deployed copy. That was one run; the points it did not cover are marked **unverified**.
+<!--
+Maintainer: replace docs/images/booking-page-placeholder.svg with a real screenshot of the booking page on a phone
+(then update the image line above, keeping the alt text meaningful).
+-->
 
-## What the button will ask you for
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/daveeagle93-lang/slot-booker)
 
-Press the button, sign in to Cloudflare (a free account is enough) and connect your GitHub or GitLab account. Cloudflare then asks for:
+You get your own copy of the app in your own Cloudflare account, on Cloudflare's free plan. Press the button, answer a short form, then make your admin sign-in. Allow about 15 minutes.
 
-- **Your Git account** (GitHub or GitLab), with a toggle for whether your copy of the repository is private.
-- **Names:** a project (Worker) name. The suggested one is fine. The Worker name becomes part of your site's address.
-- **Database:** a new D1 database, shown with the description from `package.json`. The suggested name is fine.
-- **`SETUP_CODE`:** a private phrase you choose, at least 12 characters. You type it once, on your new site, to create your admin sign-in. Keep it to yourself and write it down somewhere safe.
+## What the form asks for
 
-The form also has toggles for "Enable Preview builds" and "Protect with Cloudflare Access", and an Advanced settings section; this guide does not use them. Cloudflare creates the database, builds the copy with Workers Builds, which runs `npm run deploy` (the `deploy` script in `package.json`: it applies the migrations, then publishes the Worker). Cloudflare's docs say the button copies the code into your own GitHub or GitLab account.
+Press the button and sign in to Cloudflare (a free account is enough). Cloudflare then asks for these, in this order:
 
-In that run the button replaced the placeholder database id in `wrangler.jsonc` and applied the migrations through the `DB` binding. Step-by-step, with what you should see: [docs/deploying.md](docs/deploying.md).
+1. **Your Git account.** Connect GitHub or GitLab. Cloudflare copies the code into it. There is a switch for whether your copy is private.
+2. **A project (Worker) name.** The suggested name is fine. It becomes part of your site's address.
+3. **A new database.** Cloudflare creates it for you. The suggested name is fine.
+4. **`SETUP_CODE`.** A private phrase you choose, **at least 12 characters**, such as four unrelated words. You type it once, on your new site, to make your admin sign-in. Keep it private and write it down somewhere safe.
+5. **Two switches: leave both OFF.**
+   - **Protect with Cloudflare Access: OFF.** The app has its own admin sign-in, and Access needs a custom domain and extra set-up first ([sign-in options](docs/sign-in.md)).
+   - **Enable Preview builds: OFF.** This app has no preview copies on purpose: they would put the whole app, admin pages included, on extra web addresses.
+6. **Advanced settings.** Leave them as they are.
+
+Then press **Deploy** and wait for it to finish.
+
+If Cloudflare says your GitHub authorisation has expired, reinstall the Cloudflare GitHub app: [Cloudflare's instructions](https://developers.cloudflare.com/workers/ci-cd/builds/git-integration/github-integration/#reinstall-the-cloudflare-github-app).
 
 ## First run: `/setup`
 
 Do this once the deploy has finished. A new site has no admin sign-in until you do.
 
-1. Open `https://<worker-name>.<your-workers-subdomain>.workers.dev/setup` (find the address on the Worker's page in the Cloudflare dashboard).
+1. Open `https://<worker-name>.<your-workers-subdomain>.workers.dev/setup`. Find the address on the Worker's page in the Cloudflare dashboard.
 2. Type your `SETUP_CODE` and press **Continue**.
-3. The page shows your **admin secret**, 43 characters, **once**. Copy it into a password manager now.
+3. The page shows your **admin secret** once. Copy it into a password manager now. Nobody can look it up for you later.
 4. Tick **I've saved it**, then press **Go to sign in**.
-5. On the sign-in page, paste the secret into **Admin secret** and press **Sign in**.
+5. Paste the secret into **Admin secret** and press **Sign in**.
 
-Good to know:
+Until you first sign in, running `/setup` again replaces the secret. After your first sign-in, `/setup` is closed for good. If the secret is lost, see [If the admin secret is lost](docs/handover.md#if-the-admin-secret-is-lost). If `/setup` says "Setup isn't ready", see [Troubleshooting](docs/deploying.md#troubleshooting).
 
-- Until you first sign in successfully, `/setup` stays open and running it again **replaces** the secret (the old one stops working).
-- After the first successful sign-in, `/setup` is closed for good (it answers 404).
-- Only a hash of the secret is stored, in the `admin_credentials` table. The secret itself never is, so nobody can look it up for you.
-- The setup code is limited to 5 attempts per 15 minutes per visitor (every attempt counts).
-- If the secret is lost after the first sign-in, there is a recovery that needs your Cloudflare login: [If the admin secret is lost](docs/handover.md#if-the-admin-secret-is-lost).
-- The `SETUP_CODE` has no other use afterwards, so it may stay where it is. It is what lets you run `/setup` again after a recovery.
-
-If `/setup` says "Setup isn't ready" or an admin page says "Admin sign-in isn't set up.", see [Troubleshooting](docs/deploying.md#troubleshooting).
-
-## Sign-in options
-
-- **Setup secret (the default).** One shared admin secret, made on `/setup`. Nothing to configure: `wrangler.jsonc` already sets `ADMIN_AUTH=password`. Everyone who administers the club uses the same secret, there is no second factor and no per-person identity.
-- **Cloudflare Access (the upgrade for a custom domain).** One-time-PIN emails and a named identity per admin. It needs a domain whose nameservers are managed by Cloudflare ([Cloudflare's migration notes](https://developers.cloudflare.com/workers/static-assets/migration-guides/migrate-from-pages/) say custom domains require this). In your own copy's `wrangler.jsonc`, set the `vars` `ADMIN_AUTH` to `access`, plus `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`, commit and push so the Worker redeploys, and create the Access application for your custom domain's hostname. Config `vars` overwrite values set in the dashboard on every deploy unless `keep_vars` is set ([Wrangler docs](https://developers.cloudflare.com/workers/wrangler/commands/workers/)); secrets are never deleted by a deploy.
-  **Unverified:** whether the `Cf-Access-Jwt-Assertion` header reaches a Worker that serves static assets. Cloudflare's docs say `ctx.access` is not available for such Workers ([Cloudflare Access for Workers](https://developers.cloudflare.com/workers/configuration/cloudflare-access/)) and say nothing about the header; the app checks the header itself. Test the sign-in after you turn Access on. Access can also protect `workers.dev` addresses ([workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)), but the recommendation stays a custom domain.
-
-Details, settings and limits: [docs/admin-auth.md](docs/admin-auth.md).
-
-## What it costs
-
-A club's use should fit the free plans. Figures read from Cloudflare's documentation in September and October 2026; check the pages if it matters ([Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/)).
-
-- **Workers Free:** 100,000 requests a day to the Worker script and 10 ms of CPU per request. Static files served straight from `public/` (scripts, styles, icons) are free and unlimited.
-- **What reaches the Worker:** `/`, `/e/*`, `/api/*`, `/admin`, `/admin/*` and `/setup`. So one view of a booking page costs about one Worker request plus a few API calls (settings, `theme.css`, events, icons and the manifest; the browser caches each for minutes).
-- **If the daily limit is passed,** those requests get a 429 until the day resets, and static files keep working.
-- **D1 Free:** 5 million rows read a day, 100,000 rows written a day, 5 GB of storage and 10 databases per account.
-
-Whether a real admin sign-in fits the 10 ms of CPU is **unverified**: the timings in the docs were taken locally, and local `workerd` does not apply the limit. The paths the docs flag are the admin login, the logo read and the logo and app-icon uploads (see [docs/admin-auth.md](docs/admin-auth.md) and [docs/branding.md](docs/branding.md)).
-
-## Link previews
-
-`/` and `/e/<slug>` carry a page title and Open Graph tags (the event's name and London date, the club name, the venue postcode, the cost, and the 512 px icon), so a link pasted into WhatsApp shows a preview. Only what the public pages already show is used. An archived or unknown link gets generic tags. This has not been checked on real WhatsApp, which also caches a preview for each link.
-
-## Keeping your copy up to date
-
-The button makes a **copy**. Later changes to the template do **not** flow into your copy, and Cloudflare's docs describe no way for them to. To update, either:
-
-- add the template as a git remote, merge it and push: `git remote add template <template-url>`, `git fetch template`, `git merge template/main`, `git push`. The migrations run on every deploy, so a merge and push applies any new ones. Expect a merge conflict if you or the button changed the database id lines in `wrangler.jsonc`: keep your own ids. A push redeploys your Worker automatically: the button's form says "Every push to your production branch will be deployed automatically". Tip: check the Deployments tab on the Worker's page in the dashboard after your first push; or
-- deploy a fresh copy with the button and move your data across ([docs/handover.md](docs/handover.md)).
-
-Details: [docs/deploying.md](docs/deploying.md#updating-your-copy).
+Now set your club name and privacy contact, and make your first event: the [admin guide](docs/admin-guide.md) shows you how, step by step.
 
 ## What it does
 
-- Booking: a booker picks a free slot and enters a dog's name and a handler's name. A dog and handler pair can hold one slot per event. The booker gets a confirmation and an "Add to calendar" `.ics` file. Bookers cannot change or cancel online; they contact the organiser, and an admin moves or clears the booking.
-- Events: date, start and end times, session length, gap, cost, postcode, details and breaks. The form previews the schedule and suggests fixes for near-miss settings.
-- Event templates: saved sets of details, times, cost, breaks and a share message with placeholders (and a live preview), one of them the default. Picking a template fills the create-event form; each event keeps its own copy.
-- Sharing: a Share button on upcoming events (the phone's share sheet) with Copy message beside it (and Copy link where there is no share sheet), and a plain-text lineup (running order) to paste into a chat.
-- Admin booking management: add a booking, move it, swap two, or clear one.
-- Editing an event warns which bookings sit on slots the new schedule no longer has, and lists the people to tell.
-- Archive (reversible) and delete (typed confirmation), including a bulk clear-out of past events.
-- Per-event bookings export as CSV.
-- Listed and unlisted events: unlisted events stay off the landing page, but their link works.
-- Club settings without redeploying: club name, logo, theme colours (WCAG AA contrast checked) and a privacy contact.
-- App icons: a neutral default favicon, or square icons drawn in the browser from the club logo on the theme colour for the tab, a phone home screen and a web app manifest.
-- A privacy notice on the booking form.
+- **Booking:** a booker opens your link, picks a free time and fills in the form. They get a confirmation and an "Add to calendar" file. Bookers can't change or cancel online; they contact you, and you move or clear the booking.
+- **Lanes and places:** an event has one or more lanes, such as rings or courts, and one or more places in each lane at each time.
+- **Your own booking form:** ask for one to four things, such as Dog and Handler, or Name and Member number. You choose the labels and which are optional.
+- **Who counts as one booker:** you mark which fields say who is booking, and how many bookings one of them may make. For example, one dog and handler may book once.
+- **Events and templates:** set the date, times, session length, gap, cost, postcode, details and breaks. Save a template to reuse the same settings, including the form and lanes.
+- **Sharing:** a Share button that opens the phone's share sheet (WhatsApp, for example), and a plain-text lineup of who is booked when, to paste into a chat.
+- **Fixing things:** add, move, swap or clear a booking. If an edit would leave bookings with no place, you are shown who is affected before anything is removed.
+- **Keeping records:** a CSV of each event's bookings, and archive or delete old events.
+- **Your club's look:** club name, logo and colours, set in the admin pages.
+- **Private:** no tracking, no analytics, no third-party scripts.
 
-Design notes:
+## Use cases
 
-- Times are stored in UTC and shown in Europe/London.
-- Money is whole pence.
-- No tracking: no analytics or third-party scripts, and the Content-Security-Policy allows scripts from the site only.
+Each example is a template you could save. The labels are only suggestions. "Identifies" means the field says who is booking. The limit is how many bookings that person may make in one event.
 
-## Screenshots
+**Dog sports trial.** Template "Saturday trial": 30-minute sessions, 5-minute gap, lanes "Ring 1" and "Ring 2", 1 place per lane per time. Fields: Dog (required, identifies), Handler (required, identifies), Phone (optional). Limit 1. A booker taps a time, taps a ring, then types the dog's and handler's names.
 
-Screenshots: to come.
+**Riding lessons.** Template "Lesson day": 30-minute sessions, 10-minute gap, lanes "Indoor school" and "Outdoor arena", 1 place per lane per time. Fields: Rider (required, identifies), Pony (required, identifies), Phone (optional). Limit 2. A booker picks a time and an arena, then enters the rider and pony, and can book a second lesson.
 
-<!--
-Intended files (not yet created):
-![Booking page on a phone](docs/screenshots/booking.png)
-![Booking confirmation](docs/screenshots/confirmation.png)
-![Admin schedule](docs/screenshots/schedule.png)
-![Settings page](docs/screenshots/settings.png)
--->
+**Tennis or padel courts.** Template "Evening courts": 60-minute sessions, no gap, lanes "Court 1" to "Court 4", 1 place per lane per time. Fields: Member name (required, identifies), Member number (required). Limit 3. A booker sees each hour with a button for every court that is still free.
 
-## Run it on your own computer
+**Golf tee times.** Template "Saturday tee sheet": 10-minute sessions, no gap, lanes "1st tee" and "10th tee", 1 place per lane per time. Fields: Player 1 (required, identifies), Players 2, 3 and 4 (optional). Limit 1. A booker picks a tee time and enters their group; only Player 1 is needed.
 
-For developers. You need Node 24 (the tests and typecheck pass here on v24.20.0).
+**Parents' evening.** Template "Parents' evening": 10-minute appointments, no gap, one lane for each teacher ("Mrs Patel", "Mr Jones", "Ms Okafor"), 1 place per lane per time. Fields: Parent (required, identifies), Child (required, identifies), Class (optional). Limit 3. A parent picks a time with each teacher, up to three appointments.
 
-```sh
-npm install
-cp .dev.vars.example .dev.vars   # then put a SETUP_CODE of 12+ characters in it
-npm test                         # unit and integration tests
-npm run typecheck
-npm run db:migrate:local         # local D1 under .wrangler/state
-npm run seed                     # adds a test event and prints its URL
-npm run dev                      # Wrangler prints the local address
-```
+Every lane needs a name once there are two or more. The most you can have is 10 lanes, 50 places per lane per time, 4 form fields and a limit of 20. The first field is always required, and so is every field that identifies a booking. More examples and every setting: [the admin guide](docs/admin-guide.md#the-booking-form).
 
-Open `/setup` on the local address to make a local admin secret, as in "First run" above.
+## More guides
 
-`npm run test:webkit` is an opt-in layout check for the admin pages on a phone, started with the date and time inputs. iOS Safari gives those inputs a minimum width of their own, which once made them overflow the card and overlap on a phone, and Chromium never shows it. The script serves `public/` locally, stubs the API, and loads the events list, `/admin/new` (plain, with templates, and after switching template), `/admin/edit`, the schedule, settings and the three states of `/admin/templates` (list, create form, edit form with breaks) at 320 and 390 px wide in Playwright's WebKit. It fails if a date or time input leaves its field, row, group or card, a Start/End pair overlaps, any element sticks out past the right edge of the screen (scrolling boxes aside), or the page scrolls sideways; and if the admin navigation has a link that is hidden, under 48 px, outside the screen or overlapping another, wraps onto a second row, or is not directly under the header band. `--shots` also runs every state in dark mode and saves full-page screenshots (`--shots-dir <dir>`, default a folder in the system temp directory) for looking at.
+- [Admin guide](docs/admin-guide.md): how organisers use the admin pages, day to day.
+- [Deploying](docs/deploying.md): the button step by step, deploying from the command line, [updating your copy](docs/deploying.md#updating-your-copy) and troubleshooting.
+- [Handover](docs/handover.md): handing a site to a club's own Cloudflare account, what to keep safe, and what to do if the admin secret is lost.
+- [Sign-in options](docs/sign-in.md): the shared admin secret, or Cloudflare Access on a custom domain.
+- [Admin sign-in details](docs/admin-auth.md): settings, security and limits of the sign-in.
+- [Club settings, logo and theme](docs/branding.md): what the settings page does.
+- [Configuration](docs/configuration.md): the booking cut-off time and the privacy notice.
+- [What it costs](docs/costs.md): the free plan's limits.
+- [Link previews](docs/link-previews.md): what shows when a link is pasted into WhatsApp.
+- [Known limits](docs/known-limits.md): what the app does not do.
+- [Development](docs/development.md): running it on your own computer, tests and the phone layout check.
 
-It needs a machine where Playwright supports WebKit (`npx playwright-core install webkit` fetches the browser; Linux also needs its system libraries). Where WebKit can't launch, it prints `SKIPPED` and exits 2, so a skip is never mistaken for a pass; add `--allow-skip` to exit 0 instead. `--engine chromium` runs the same checks in Chromium, as a sanity check of the script only. It is not part of `npm test`.
+## Status
 
-To deploy from the command line instead of the button, see [docs/deploying.md](docs/deploying.md#advanced-deploy-from-the-command-line).
-
-## Documentation
-
-- [docs/deploying.md](docs/deploying.md): deploy with the button step by step, deploy from the command line, the maintainer's preview environment, updating and troubleshooting.
-- [docs/admin-auth.md](docs/admin-auth.md): the two sign-in providers, setup and limits.
-- [docs/configuration.md](docs/configuration.md): configuration reference.
-- [docs/branding.md](docs/branding.md): club settings, logo and theme.
-- [docs/admin-guide.md](docs/admin-guide.md): how organisers use the admin pages.
-- [docs/handover.md](docs/handover.md): handing a deployment to a club's own Cloudflare account, what to keep safe, and what to do if the admin secret is lost.
-
-## Known limits
-
-- **The admin event list builds each upcoming event's schedule in the Worker.** Measured in Node on a dev machine (not in workerd), a 500-slot event costs about 0.45 ms, so a list with around 20 events of that size could exceed the Free plan's 10 ms CPU limit. Typical events (about 30 slots) cost well under 1 ms each. Storing the slot count would remove the cost if it ever matters.
-- **Booked counts and the Full badge count every booking row.** Bookings on slots that are no longer in the schedule (orphans) should no longer be creatable now that edits, swaps and public bookings are guarded, but legacy data could contain them, and they would be counted.
-- **Archived events are not included in the Past bulk clear-out.** They can be deleted one at a time, and nothing reminds anyone to, so organisers should delete archived events they no longer need.
-- **Names and club text refuse every Unicode format character** (category Cf), which includes the invisible joiners that emoji sequences and some scripts use. Plain emoji and accented names are fine. A dog's or handler's name must also contain at least one letter or number (so a name of only an emoji is refused; "Rex 🐶" is fine), and invisible characters such as variation selectors and Hangul fillers are ignored when deciding whether two bookings are the same dog and handler.
-- **There are no per-version preview URLs** (`preview_urls` is off in `wrangler.jsonc`): they would serve the whole app, admin included, on extra hostnames, and use the production database by default.
-- **The booking API has no rate limiting or bot protection.** Only the admin sign-in and `/setup` count attempts. Add something like Cloudflare Turnstile before posting a link publicly.
+Work in progress. The button has been run end to end once, against the public copy of this repository (6 October 2026): it created the database, ran all the database updates that existed then, deployed the site to `workers.dev`, and `/setup`, sign-in, creating an event and booking all worked. That was one run. Anything it did not cover is marked **unverified** in the guides.
 
 ## Licence
 
