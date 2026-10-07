@@ -179,6 +179,7 @@ You can edit the event afterwards, so a slip is easy to fix.
 - "Cost (£)". Type 12 or 12.50. Type 0 if it's free. People then see "Free".
 - "Venue postcode". 2 to 10 letters and numbers. People see it as a link to a map.
 - "Details (optional)". Up to 2000 characters. People see it on the booking page and after they book. A good place to say how to contact you to change a booking.
+- The "Booking form" card: what people are asked when they book. A new event asks for one thing, "Name". See [The booking form](#the-booking-form).
 - "Lane name (optional)" and "Places per lane per time". Most events leave these alone: one lane, one place. See [Lanes and places](#lanes-and-places).
 - "Share message (optional)". Up to 1000 characters. The wording used when you share this event, with placeholders such as {event} and {date}. Leave it blank to use your default template's message. See [Templates](#4-templates).
 - "Listed on the home page". Ticked by default. See below.
@@ -245,6 +246,7 @@ A template is a saved set of answers for the event form, so you don't type the s
 - "Details (optional)", "Venue postcode" and "Cost (£)", as in the event form.
 - "Start time", "End time", "Session length (minutes)" and "Gap between sessions (minutes)".
 - Breaks, each with a start, an end and an optional name.
+- The booking form: its fields and the identity limit, as in [The booking form](#the-booking-form).
 - Lanes (names only) and the places per lane per time, as in [Lanes and places](#lanes-and-places).
 - A share message (see below).
 
@@ -254,12 +256,12 @@ It holds no event name and no date. You choose those for each event. You can hav
 
 1. Tap "Templates" in the row of links at the top.
 2. Tap "New template". At 20 templates the button is greyed out, with a note saying why. Delete one to make room.
-3. Fill in the form. It uses the same boxes and rules as the event form, so see [Creating an event](#3-creating-an-event). Tap "Add break" for breaks.
+3. Fill in the form. It uses the same boxes and rules as the event form (including the "Booking form" card, but without the lock described there, since a template has no bookings), so see [Creating an event](#3-creating-an-event). Tap "Add break" for breaks.
 4. Tap "Create template". You go back to the list, which says "Created" and the name.
 
 A box that the server doesn't accept shows its message under it, and the page moves to the first one. For breaks, the message appears under the break it is about.
 
-The list shows each template's name, "Default" on the default one, and a line such as "09:00–16:00, 20 min sessions, £12.00". A template with more than one lane or place per time has a second line such as "3 lanes × 2 places". Each has "Edit" and "Delete", and every template except the default has "Make default".
+The list shows each template's name, "Default" on the default one, and a line such as "09:00–16:00, 20 min sessions, £12.00". A template whose booking form isn't the single "Name" field has a line such as "Fields: Dog, Handler", and one with more than one lane or place per time has a line such as "3 lanes × 2 places". Each has "Edit" and "Delete", and every template except the default has "Make default".
 
 ### The default template
 
@@ -272,8 +274,8 @@ The default is used in two ways: it fills in the create-event form, and its shar
 On the create-event page, a "Template" box at the top lists "No template" and each of your templates, with "(default)" after the default one.
 
 - When the page opens, your default template fills the form in by itself, but only if you haven't typed anything by then. If you had already started, nothing is replaced and the box stays on "No template".
-- Choosing a template fills in the details, postcode, cost, start and end times, session length, gap, breaks, lane names, places per lane and share message. It replaces what is in those boxes now, including anything you typed there. It never changes the event name, the date or "Listed on the home page". The page says "Filled in from the template" and its name, and the schedule preview updates.
-- Choosing "No template" empties exactly those boxes, removes the breaks and goes back to one unnamed lane with one place. It says "Cleared the template fields."
+- Choosing a template fills in the details, postcode, cost, start and end times, session length, gap, breaks, the booking form (fields and identity limit), lane names, places per lane and share message. It replaces what is in those boxes now, including anything you typed there. It never changes the event name, the date or "Listed on the home page". The page says "Filled in from the template" and its name, and the schedule preview updates.
+- Choosing "No template" empties exactly those boxes, removes the breaks and goes back to the single "Name" field, one unnamed lane and one place. It says "Cleared the template fields."
 - You can still change anything afterwards.
 
 If the templates can't be loaded, the box is hidden and the page says so; the form still works by hand. If you have no templates yet, there is a link "Create a template to save time".
@@ -401,20 +403,21 @@ People can't change or cancel a booking online. The page tells them to contact t
 This part is for adding, moving, swapping and removing bookings yourself.
 
 1. On the events page, tap "Schedule" on the event.
-2. Find the time you want. Each row shows a time and either "Free" or the dog and handler.
+2. Find the time you want. Each row shows a time and either "Free" or who booked: the first value of the booking, and the others in brackets ("Rex (Sam Smith)"; just "Sam" if the form has one field).
 
 Breaks show too, in time order.
 
-With one lane and one place per time, that is the whole page. If the lane has a name, the name is shown in each row. With more places or lanes, each time is a heading with how many places are free ("6 free", or "Full"). Under it there is a row for each booking, with the lane name when the lanes have names, the dog and handler, and "Move", "Swap" and "Clear". For each lane that still has room there is one row saying how many places are free, with "Add booking". Everything below works the same way: the buttons are just on the row you mean.
+With one lane and one place per time, that is the whole page. If the lane has a name, the name is shown in each row. With more places or lanes, each time is a heading with how many places are free ("6 free", or "Full"). Under it there is a row for each booking, with the lane name when the lanes have names, who booked, and "Move", "Swap" and "Clear". For each lane that still has room there is one row saying how many places are free, with "Add booking". Everything below works the same way: the buttons are just on the row you mean.
 
 After each action the page reloads the list so you see what is really saved. A line at the top says what happened.
 
 ### Add a booking for someone
 
 1. On a free row, tap "Add booking".
-2. Type "Dog's name".
-3. Type "Handler's name".
-4. Tap "Add booking".
+2. Fill in the boxes, one for each field of the booking form and titled with its label ("Dog" and "Handler", say). A field that isn't required says "(optional)".
+3. Tap "Add booking".
+
+A box the server doesn't accept shows its message under it, and the page moves to the first one.
 
 ### Move a booking
 
@@ -445,7 +448,7 @@ With lanes the question names the time and the lane. The person is not told. The
 ### Rules and clashes
 
 - You can add or move bookings after bookings have closed, and into slots that have already started. This is meant for sorting out the day itself.
-- A slot holds one booking, for an event with one lane and one place per time. If it is taken, you see "That slot is already taken by" the dog and handler. The list refreshes. With more lanes or places, a lane that is full says, for example, "Ring 1 at 10:30 is full." and the list refreshes. See [Lanes and places](#lanes-and-places).
+- A slot holds one booking, for an event with one lane and one place per time. If it is taken, you see "That slot is already taken by" and whoever holds it. The list refreshes. With more lanes or places, a lane that is full says, for example, "Ring 1 at 10:30 is full." and the list refreshes. See [Lanes and places](#lanes-and-places).
 - One identity (the fields that identify a booking: the dog and handler together, for the Dog and Handler form) can only have as many bookings as the event's limit, which is 1 unless it has been raised. Capital letters, extra spaces and hidden characters do not make a value different. If they already have one, you are told which time.
 - If someone else changed things while you were working, you see "That changed while you were working. The schedule has been refreshed."
 - Names have the same rules as when people book. See [If something looks wrong](#10-if-something-looks-wrong).
@@ -513,17 +516,38 @@ What the outputs show for lanes and places:
 
 ### The booking form
 
-What the booking form asks for is set per event: one to four **fields**. Each field has a label (up to 40 characters, no two the same ignoring capital letters; people see it as the title of the box), whether it is **required**, the **longest value** it takes (1 to 80 characters), and whether it **identifies a booking**. The first field is always required, and so is every field that identifies a booking. At least one field identifies a booking. How many bookings one identity (the values of the identifying fields together) may hold in the event is the **identity limit** (1 to 20, 1 by default).
+The "Booking form" card on the create and edit pages (and on the template form) sets what people are asked when they book. It sits under the breaks, above "Lanes". An event has one to four **fields**. Each field has:
 
-- An event or template that existed before the fields could be changed has two: "Dog" and "Handler", both required, 80 characters, both identifying the booking. Nothing about its bookings changes.
-- A new event made without saying (which is what the event form does until its screens can set the fields) has one required field, "Name", that identifies the booking, and an identity limit of 1. Templates are the same.
-- Bookers see each field's label as the box's title ("Dog"), and "(optional)" after the label of one that isn't required. A required field left empty says "Dog is required." The other messages use the same bare label ("Dog must be at most 80 characters.").
-- An optional field can be left empty. It is then left out of the confirmation, the calendar entry and the lineup, and its CSV cell is empty.
-- Two bookings are the same identity when the identifying fields match, ignoring capital letters, extra spaces and hidden characters. The other fields can differ.
+- **Label**. Up to 40 characters, and no two fields may have the same label (capital letters don't make a label different). People see it as the title of the box ("Dog", "Rider's name", "Phone").
+- **Required**. Ticked, the box has to be filled in. Unticked, it is marked "(optional)" and can be left empty.
+- **Max length**. The most characters the box takes, 1 to 80 (80 by default).
+- **Identifies a booking**. Ticked on the fields that tell one booking from another (see below).
 
-**Once an event has bookings,** the number of fields and which of them identify a booking can't be changed (the save is refused with "fields_locked"): the stored bookings and their calendar entries depend on them. Clear the bookings first if you really need to. You can still change the labels, which fields are required, the longest values and the identity limit. A booking made at the same moment as a change to what is required or the longest values is refused and tried again against the new form.
+Tap "Add field" for another (up to four; the button greys out there) and "Remove" on a field to take it out (the last field can't be removed). The fields are numbered "Field 1" and so on, in the order people see them.
 
-I haven't built the screens for this yet. Until they exist, the fields and the identity limit can be set only through the admin API (`fields` and `identityLimit` in the body when creating or saving an event or a template).
+**Required and identifying fields.** The first field is always required, and so is every field that identifies a booking: their "Required" box is ticked and greyed out, with a note saying why. At least one field must identify a booking; if none does, the save is refused with "At least one field must identify a booking."
+
+**The identity limit.** Under the fields is a question made from the labels of the identifying fields, such as "How many bookings can one Dog + Handler make?" (it changes as you type the labels and tick the boxes). The answer is the **identity limit**, 1 to 20 and 1 by default: how many bookings the same identity may hold in the event. An identity is the values of the identifying fields together, and two values are the same when they differ only in capital letters, extra spaces or hidden characters. The other fields can differ. With a limit of 1 the same dog and handler can book one time only; with 3, up to three times. A booker who is over the limit is told "That dog and handler already have a booking for this event." (with the field names of your form).
+
+**New events and templates.** A new event with no template asks for one required field, "Name", that identifies the booking, with a limit of 1. Choosing a template copies its fields and limit; "No template" goes back to "Name". Events and templates that existed before the fields could be changed have "Dog" and "Handler", both required, 80 characters, both identifying the booking, and their bookings are unchanged.
+
+**Once an event has bookings,** you can no longer add or remove fields or change which ones identify a booking, because the stored bookings and their calendar entries depend on that. On the edit page "Add field", "Remove" and the "Identifies a booking" boxes are greyed out, with the note "Bookings exist, so you can't add or remove fields or change which ones identify a booking. You can still rename them and change the other settings." You can still rename a field, change which fields are required (except the ones that must be), change a longest length, and change the identity limit. If a booking arrives while you are editing and you have already added or removed a field or changed an identifying box, the save is refused with a message saying so, and the card is put back as the page loaded it (with your other changes kept). To change the shape of the form of an event that has bookings, you would have to clear its bookings first. A booking made at the very moment you change what is required or a longest value is refused and tried again against the new form.
+
+**What people see.** Each field's label is the title of its box, with "(optional)" after it when it isn't required. A required box left empty says "Dog is required." and the other messages start with the same bare label ("Dog must be at most 80 characters."). An optional field left empty is left out of the confirmation, the calendar entry and the lineup, and its cell in the CSV is empty. The privacy notice names the labels.
+
+**Examples.** Each is a set of fields, lanes and places; adapt the labels to your own club.
+
+| Event | Fields (identity in bold) | Limit | Lanes and places |
+| --- | --- | --- | --- |
+| Dog sports trial | **Dog**, **Handler**, Phone (optional) | 1 | one lane per ring ("Ring 1", "Ring 2"), 1 place |
+| Riding lesson or clinic | **Rider**, **Pony**, Phone (optional) | 2 (two lessons each) | one lane per arena, 1 place |
+| Tennis or badminton courts | **Member name**, Member number | 3 (three slots a day) | one lane per court ("Court 1" to "Court 4"), 1 place |
+| Golf tee times | **Player 1**, Player 2 (optional), Player 3 (optional), Player 4 (optional) | 1 | one lane per starting tee ("1st tee", "10th tee"), 1 place |
+| Parents' evening | **Parent**, **Child**, Class | 5 (an appointment with up to five teachers) | one lane per teacher, 1 place |
+
+For the golf example one booking is a whole group: only Player 1 identifies it, so one person can't hold two tee times, and the other players are optional and appear in the lineup and the CSV when filled in. The limit counts across the whole event, so the parents' evening needs a limit of more than 1 for a parent to see several teachers. Tick "Identifies a booking" on every field you need to tell bookings apart, and no more: ticking Phone, say, would let the same dog and handler book twice with different phone numbers.
+
+**Checking it.** The lineup, the CSV and the confirmation use your labels: the lineup joins a booking's values with " — " ("10:00 — Rex — Sam"), the CSV has a column headed by each label, and the confirmation has a row for each value the booker gave.
 
 ### After saving
 

@@ -1,6 +1,6 @@
 # Admin sign-in
 
-Everything under `/admin/*` (the pages) and `/api/admin/*` (the API) is for the club's organisers. Handlers can't move or cancel bookings; only an admin can. Sign-in is pluggable: one `AdminAuth` interface (`src/server/auth/types.ts`) with two providers, chosen by configuration:
+Everything under `/admin/*` (the pages) and `/api/admin/*` (the API) is for the club's organisers. People who book can't move or cancel bookings; only an admin can. Sign-in is pluggable: one `AdminAuth` interface (`src/server/auth/types.ts`) with two providers, chosen by configuration:
 
 - **`access`**: Cloudflare Access sits in front of the site and the Worker verifies the signed token Access adds. The admin's identity is the verified email address. It needs a custom domain (see the hard rule below).
 - **`password`**: one shared, generated admin secret, checked by the Worker, which then issues a signed session cookie. The identity is the fixed string `admin`. It is the default (`wrangler.jsonc` sets `ADMIN_AUTH=password`), and the option for local development, for previews and for deployments reachable only on `*.workers.dev`. A new deployment makes its secret on the `/setup` page (see "First-run setup").
