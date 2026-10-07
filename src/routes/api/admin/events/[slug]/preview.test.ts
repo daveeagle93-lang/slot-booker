@@ -29,13 +29,13 @@ const draft = (over: Record<string, unknown> = {}) => ({
 });
 const seed = () => insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T11:00:00Z", sessionMinutes: 15 });
 
-/** A booking of the Dog and Handler form as the admin API shows it: labelled values, and TRANSITIONAL(6b) `dogName` and `handlerName`. */
-const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }], dogName: dog, handlerName: handler });
+/** A booking of the Dog and Handler form as the admin API shows it: its labelled values. */
+const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }] });
 
 interface Body {
   slots: { start: string; end: string }[];
   suggestions: { breakIndex: number; breakLabel: string; suggestedLocal: { start: string; end: string } }[];
-  affected: { id: number; slotStart: string; dogName: string; handlerName: string; fields: { label: string; value: string }[]; lane: { id: number; name: string } }[];
+  affected: { id: number; slotStart: string; fields: { label: string; value: string }[]; lane: { id: number; name: string } }[];
   placeCount: number;
 }
 
@@ -82,7 +82,7 @@ describe("POST /api/admin/events/[slug]/preview", () => {
     await insertBooking(t.env.DB, id, "2026-10-24T08:15:00Z", "A", "Al");
     await insertBooking(t.env.DB, id, "2026-10-24T08:30:00Z", "B", "Bo");
     const body = (await (await post(slug, draft({ sessionMinutes: 16 }))).json()) as Body;
-    expect(body.affected.map((a) => a.dogName)).toEqual(["A", "B"]);
+    expect(body.affected.map((a) => a.fields[0].value)).toEqual(["A", "B"]);
   });
 
   it("looks only at this event's bookings", async () => {

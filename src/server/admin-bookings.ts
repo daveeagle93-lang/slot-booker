@@ -41,34 +41,8 @@ const holdersOf = async (db: D1Database, eventId: number, laneId: number, slot: 
   (await db.prepare(`SELECT ${COLUMNS}, identity_key FROM bookings WHERE event_id = ? AND lane_id = ? AND slot_start_utc = ? ORDER BY place`)
     .bind(eventId, laneId, slot).all<Row & { identity_key: string }>()).results;
 
-/**
- * The extra payload of a slot_taken refusal: `bookings`, everyone in the lane at that time; and, for an event with one lane and
- * one place per time (as every event was before lanes), also the v1.0 `booking` key with the one holder.
- */
-function takenExtra(event: Pick<EventRow, "lanes" | "capacity" | "fields">, holders: (Row & { identity_key: string })[]): object {
-  const single = event.lanes.length === 1 && event.capacity === 1;
-  return {
-    bookings: holders.map((h) => ref(h, event)),
-    // TRANSITIONAL(6b): the v1.0 key, read by the admin schedule page written before the fields were configurable.
-    ...(single ? { booking: { id: holders[0].id, dogName: holders[0].value_1, handlerName: holders[0].value_2 } } : {}),
-  };
-}
-
-/**
- * TRANSITIONAL(6b): the admin schedule page written before the fields were configurable sends `dogName` and `handlerName` for
- * `field1` and `field2` and reads its errors under those names too. This is the request with them filled in where the
- * `field` key is missing, and `answered` copies the first two field errors under the old names. Delete both with that page's use of them.
- */
-const withFieldAliases = (raw: Record<string, unknown>): Record<string, unknown> => ({
-  ...raw,
-  ...(raw.field1 === undefined && raw.dogName !== undefined ? { field1: raw.dogName } : {}),
-  ...(raw.field2 === undefined && raw.handlerName !== undefined ? { field2: raw.handlerName } : {}),
-});
-const answered = (errors: Record<string, string>): Record<string, string> => ({
-  ...errors,
-  ...(errors.field1 !== undefined ? { dogName: errors.field1 } : {}),
-  ...(errors.field2 !== undefined ? { handlerName: errors.field2 } : {}),
-});
+/** The extra payload of a slot_taken refusal: `bookings`, everyone in the lane at that time. */
+const takenExtra = (event: Pick<EventRow, "lanes" | "fields">, holders: (Row & { identity_key: string })[]): object => ({ bookings: holders.map((h) => ref(h, event)) });
 
 /**
  * Adds a booking on someone's behalf: `field1` to `field4` as the event's form has them (checked as the public form is: see
@@ -81,12 +55,12 @@ const answered = (errors: Record<string, string>): Record<string, string> => ({
 export async function addBooking(
   db: D1Database, event: EventRow, raw: Record<string, unknown>, hooks: MutationHooks = {},
 ): Promise<Outcome<BookingRef>> {
-  const checked = checkFieldValues(withFieldAliases(raw), event.fields);
+  const checked = checkFieldValues(raw, event.fields);
   const laneChoice = chooseLane(event, raw.laneId);
   const fields: Record<string, string> = "errors" in checked ? checked.errors : {};
   if ("message" in laneChoice) fields.laneId = laneChoice.message;
   if (typeof raw.slot !== "string") fields.slot = "Choose a slot.";
-  if (Object.keys(fields).length > 0) return invalidInput(answered(fields));
+  if (Object.keys(fields).length > 0) return invalidInput(fields);
   const { values } = checked as { values: string[] };
   const { laneId } = laneChoice as { laneId: number };
   const slot = findSlot(event, raw.slot as string);

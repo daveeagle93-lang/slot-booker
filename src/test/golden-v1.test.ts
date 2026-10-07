@@ -13,11 +13,13 @@
 // names and so on are derived from the field's position). The migrated v1.0 events have the fields Dog and Handler, so the replay
 // can say the same things in the new words and translate the answers back. Everything that translates or allows is in this file's
 // ADAPTERS and WORDING tables below, each with its reason, and each must be USED by the replay or the last test fails:
-//   - REQUEST adapter (adaptRequest): the public POST bodies of the scenario are v1.0's (dogName, handlerName) and are sent as
-//     field1 and field2. The admin requests are NOT adapted yet: the admin API still accepts the v1.0 names (TRANSITIONAL(6b)).
-//   - RESPONSE normalisers (legacyPublic, legacyCall): new -> v1.0 shape, public answers only, and only when the labels really
-//     are Dog and Handler (anything else throws): `booking.fields` -> dogName and handlerName, the error keys field1 and field2 ->
-//     dogName and handlerName, and the page's own request bodies in the logged calls.
+//   - REQUEST adapter (adaptRequest): the public POST bodies and the admin add bodies of the scenario are v1.0's (dogName,
+//     handlerName) and are sent as field1 and field2.
+//   - RESPONSE normalisers (legacyPublic, legacyAdmin, legacyCall): new -> v1.0 shape, and only when the labels really are Dog and
+//     Handler (anything else throws). Public answers: `booking.fields` -> dogName and handlerName, the error keys field1 and field2
+//     -> dogName and handlerName. Admin answers: every booking's `fields` -> dogName and handlerName, the error keys likewise, the
+//     slots' `places` of an event with one lane and one place -> the v1.0 `slots[].booking`, and a slot_taken answer's one holder in
+//     `bookings` -> the v1.0 `booking`. The pages' own request bodies in the logged calls (legacyCall).
 //   - DOM normalisers (legacyDom, legacyAdminDom): the booking page's ids, names, `for` and `aria-describedby` that are derived from
 //     the position (field-1 and so on), and the admin schedule's Add panel's (add-field-1 and so on, plus the maxlength and required
 //     attributes its inputs have now), listed one by one, applied to the pages' innerHTML only. textContent is never normalised.
@@ -75,30 +77,19 @@ const ALLOWED_ADDITIONS: Allowed[] = [
   { files: /^admin-api\/event-edit\.json$/, path: "*.body.removed[].lane", why: "a booking an edit removed names its lane" },
   { files: /^admin-api\/detail-/, path: "body.slots[].places", why: "every slot of the admin detail lists, per lane, the bookings there and how many places are free" },
   { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.slots[].places", why: "every slot of the admin detail lists, per lane, the bookings there and how many places are free" },
-  { files: /^admin-api\/bookings-(add|move)\.json$/, path: "*.body.bookings", why: "a slot_taken answer lists everyone who holds a place in the lane at that time (the v1.0 `booking` key stays for one lane and one place)" },
+  { files: /^admin-api\/bookings-(add|move)\.json$/, path: "*.body.bookings", why: "a slot_taken answer lists everyone who holds a place in the lane at that time (legacyAdmin derives the v1.0 `booking` key from it for one lane and one place)" },
   { files: /^admin-api\/bookings-swap\.json$/, path: "*.body.a.lane", why: "a swapped booking says which lane it is in now (a swap can change the lane)" },
   { files: /^admin-api\/bookings-swap\.json$/, path: "*.body.b.lane", why: "a swapped booking says which lane it is in now (a swap can change the lane)" },
   // The booking form's fields (0018). The public side is translated back by the RESPONSE normalisers; what is added is listed here.
   { files: /^public-api\/event-(?!not-found)/, path: "body.event.fields", why: "the public event lists the booking form's fields (position, label, required, longest value; never which identify a booking) so the page can render them" },
   { files: /^public-api\/post-(bookings|slot-started)\.json$/, path: "*.body.event.fields", why: "the event summary in a booking answer carries the fields, as the public event does" },
-  // Admin side: the first two values of every booking are still sent as dogName and handlerName (TRANSITIONAL(6b)), with the labelled `fields` beside them.
+  // Admin side: the booking form (a booking's values are translated back to dogName and handlerName by legacyAdmin, so no `fields` of a booking is added).
   { files: /^admin-api\/events-list\.json$/, path: "body.events[].fields", why: "the admin list gives each upcoming event's booking form fields" },
   { files: /^admin-api\/events-list\.json$/, path: "body.events[].identityLimit", why: "the admin list gives how many bookings one identity may hold" },
   { files: /^admin-api\/detail-/, path: "body.event.fields", why: "the admin detail lists the event's booking form fields for the edit form" },
   { files: /^admin-api\/detail-/, path: "body.event.identityLimit", why: "the admin detail gives how many bookings one identity may hold" },
   { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.event.fields", why: "an event as the admin API returns it (detail or saved edit) lists its booking form fields" },
   { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.event.identityLimit", why: "an event as the admin API returns it (detail or saved edit) gives its identity limit" },
-  { files: /^admin-api\/(detail-|orphan-actions)/, path: "body.orphans[].fields", why: "an orphan booking lists its values by label, as every booking in the admin API does" },
-  { files: /^admin-api\/orphan-actions\.json$/, path: "*.body.orphans[].fields", why: "an orphan booking lists its values by label, as every booking in the admin API does" },
-  { files: /^admin-api\/detail-/, path: "body.slots[].booking.fields", why: "the slot's v1.0 `booking` lists its values by label, as every booking in the admin API does" },
-  { files: /^admin-api\/(orphan-actions|event-edit)\.json$/, path: "*.body.slots[].booking.fields", why: "the slot's v1.0 `booking` lists its values by label, as every booking in the admin API does" },
-  { files: /^admin-api\/bookings-(add|move)\.json$/, path: "*.body.booking.fields", why: "a booking added or moved by the admin (or the one holding an identity) lists its values by label" },
-  { files: /^admin-api\/orphan-actions\.json$/, path: "*.body.booking.fields", why: "a booking added by the admin lists its values by label" },
-  { files: /^admin-api\/bookings-clear\.json$/, path: "*.body.removed.fields", why: "a booking cleared by the admin lists its values by label" },
-  { files: /^admin-api\/event-edit\.json$/, path: "*.body.affected[].fields", why: "a booking an edit would strand lists its values by label" },
-  { files: /^admin-api\/event-edit\.json$/, path: "*.body.removed[].fields", why: "a booking an edit removed lists its values by label" },
-  { files: /^admin-api\/bookings-add\.json$/, path: "*.body.fields.field1", why: "the admin add also keys the first value's error by its number (dogName stays, TRANSITIONAL(6b))" },
-  { files: /^admin-api\/bookings-add\.json$/, path: "*.body.fields.field2", why: "the admin add also keys the second value's error by its number (handlerName stays, TRANSITIONAL(6b))" },
   // ONE additive key, written twice only because the paths differ (a single-case file, and a grouped file whose cases are keyed): the edit form needs
   // to know whether the event has bookings, because then the number of fields and the identity fields can't change (decision 3).
   { files: /^admin-api\/detail-/, path: "body.event.hasBookings", why: "the admin event view says whether the event has any booking, so the edit form can lock the booking form's shape" },
@@ -161,6 +152,9 @@ const adapterHits = new Map<string, number>();
 const used = (name: string) => adapterHits.set(name, (adapterHits.get(name) ?? 0) + 1);
 const ADAPTERS = [
   "request: public POST dogName -> field1", "request: public POST handlerName -> field2",
+  "request: admin add dogName -> field1", "request: admin add handlerName -> field2",
+  "admin response: booking fields -> dogName and handlerName", "admin response: error key field1 -> dogName", "admin response: error key field2 -> handlerName",
+  "admin response: slots[].places (one lane, one place) -> slots[].booking", "admin response: slot_taken bookings (one holder) -> booking",
   "response: booking.fields -> dogName and handlerName", "response: error key field1 -> dogName", "response: error key field2 -> handlerName",
   "call log: page request field1 -> dogName", "call log: page request field2 -> handlerName",
   "dom: <label for=field-1>", "dom: <label for=field-2>", "dom: input id field-1", "dom: input id field-2", "dom: input name field1", "dom: input name field2",
@@ -173,13 +167,13 @@ const ADAPTERS = [
   "admin dom: add input maxlength=80 dropped", "admin dom: add input required dropped",
 ];
 
-/** REQUEST adapter: a v1.0 public booking body (dogName, handlerName) as the current public API takes it (field1, field2). Anything else is left alone. */
-function adaptRequest(body: unknown): unknown {
+/** REQUEST adapter: a v1.0 booking body (dogName, handlerName; the public POST's or the admin add's) as the current API takes it (field1, field2). Anything else is left alone. */
+function adaptRequest(body: unknown, who: "public POST" | "admin add" = "public POST"): unknown {
   if (!body || typeof body !== "object" || Array.isArray(body)) return body;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(body)) {
-    if (k === "dogName") { used("request: public POST dogName -> field1"); out.field1 = v; }
-    else if (k === "handlerName") { used("request: public POST handlerName -> field2"); out.field2 = v; }
+    if (k === "dogName") { used(`request: ${who} dogName -> field1`); out.field1 = v; }
+    else if (k === "handlerName") { used(`request: ${who} handlerName -> field2`); out.field2 = v; }
     else out[k] = v;
   }
   return out;
@@ -212,6 +206,49 @@ function legacyPublic(body: unknown): unknown {
     out.fields = renamed;
   }
   return out;
+}
+
+/**
+ * RESPONSE normaliser for the admin API's answers (every JSON answer under /api/admin), as v1.0 shaped them, children first. Like legacyPublic it
+ * only exists for the labels Dog and Handler and for an event with one lane and one place per time: anything else throws.
+ *   - a booking's `fields` (a list of { label, value }) -> dogName and handlerName;
+ *   - an error's `fields` object keyed field1 and field2 -> dogName and handlerName;
+ *   - a detail (`event` and `slots`): each slot's `places` -> the v1.0 `booking` ({ id, dogName, handlerName } or null); `places` stays (an allowed addition);
+ *   - a slot_taken answer: its `bookings` (the one holder) -> the v1.0 `booking`; `bookings` stays (an allowed addition).
+ * `event.fields` and a template's `fields` (the form's definition: { label, required, maxLength, identity }) are not touched.
+ */
+function legacyAdmin(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(legacyAdmin);
+  if (!value || typeof value !== "object") return value;
+  const o: Record<string, any> = Object.fromEntries(Object.entries(value).map(([k, v]) => [k, legacyAdmin(v)]));
+  const holds = (f: unknown) => Array.isArray(f) && f.length > 0 && f.every((x) => x && typeof x === "object" && Object.keys(x).sort().join() === "label,value");
+  if (holds(o.fields)) {
+    if (!isDogHandler(o.fields.map((f: { label: string }) => f.label))) throw new Error(`the v1.0 shape only exists for the labels Dog and Handler, got ${JSON.stringify(o.fields)}`);
+    used("admin response: booking fields -> dogName and handlerName");
+    const { fields, ...rest } = o;
+    return { ...rest, dogName: fields[0].value, handlerName: fields[1].value };
+  }
+  if (typeof o.field1 === "string" || typeof o.field2 === "string") {
+    const renamed: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(o)) {
+      if (k === "field1") { used("admin response: error key field1 -> dogName"); renamed.dogName = v; }
+      else if (k === "field2") { used("admin response: error key field2 -> handlerName"); renamed.handlerName = v; }
+      else if (/^field\d$/.test(k)) throw new Error(`the v1.0 shape only exists for two fields, got ${k}`);
+      else renamed[k] = v;
+    }
+    return renamed;
+  }
+  if (o.event && Array.isArray(o.slots) && o.slots.every((s: any) => s && Array.isArray(s.places))) {
+    if (!(o.event.lanes?.length === 1 && o.event.capacity === 1)) throw new Error("the v1.0 `slots[].booking` only exists for one lane and one place per time");
+    used("admin response: slots[].places (one lane, one place) -> slots[].booking");
+    o.slots = o.slots.map((s: any) => ({ ...s, booking: s.places[0].bookings[0] ?? null }));
+  }
+  if (o.error?.code === "slot_taken" && Array.isArray(o.bookings)) {
+    if (o.bookings.length !== 1) throw new Error("the v1.0 `booking` of a slot_taken answer is one holder");
+    used("admin response: slot_taken bookings (one holder) -> booking");
+    o.booking = { id: o.bookings[0].id, dogName: o.bookings[0].dogName, handlerName: o.bookings[0].handlerName };
+  }
+  return o;
 }
 
 /** A page's own request body as it is written in the call log: field1 and field2 as v1.0 named them (the booking page's and the admin schedule's Add panel's). */
@@ -444,8 +481,10 @@ async function call(c: Ctx, method: string, path: string, body?: unknown, extra:
   }
   return worker.fetch(new Request(`${ORIGIN}${path}`, { method, headers, body: payload }), c.env);
 }
-const callSnap = async (c: Ctx, method: string, path: string, body?: unknown, extra: Record<string, string> = {}) =>
-  snap(await call(c, method, path, body, extra));
+const callSnap = async (c: Ctx, method: string, path: string, body?: unknown, extra: Record<string, string> = {}) => {
+  const r = await snap(await call(c, method, path, body, extra));
+  return path.startsWith("/api/admin") ? { ...r, body: legacyAdmin(r.body) } : r;
+};
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Driving the pages (happy-dom)
@@ -914,18 +953,18 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
     const base = `/api/admin/events/${SLUG.e1}/bookings`;
 
     const add: Record<string, unknown> = {};
-    add["created"] = await callSnap(c, "POST", base, { slot: T["1120"], dogName: "Willow", handlerName: "Gail Park" });
-    add["created with names trimmed and inner spaces kept"] = await callSnap(c, "POST", base, { slot: T["1230"], dogName: "  Juno ", handlerName: "Ian  Ford" });
-    add["slot_taken (holder named)"] = await callSnap(c, "POST", base, { slot: T["0900"], dogName: "Skye", handlerName: "Tom Hall" });
-    add["slot_taken wins over duplicate (booking 2's identity on booking 1's slot)"] = await callSnap(c, "POST", base, { slot: T["0900"], dogName: "zoë", handlerName: "ann lee" });
-    add["duplicate_booking (booking 2's identity, free slot)"] = await callSnap(c, "POST", base, { slot: T["1340"], dogName: "ZOË", handlerName: "ANN  LEE" });
-    add["duplicate_booking (own slot, same identity)"] = await callSnap(c, "POST", base, { slot: T["0935"], dogName: "Zoë", handlerName: "Ann Lee" });
+    add["created"] = await callSnap(c, "POST", base, adaptRequest({ slot: T["1120"], dogName: "Willow", handlerName: "Gail Park" }, "admin add"));
+    add["created with names trimmed and inner spaces kept"] = await callSnap(c, "POST", base, adaptRequest({ slot: T["1230"], dogName: "  Juno ", handlerName: "Ian  Ford" }, "admin add"));
+    add["slot_taken (holder named)"] = await callSnap(c, "POST", base, adaptRequest({ slot: T["0900"], dogName: "Skye", handlerName: "Tom Hall" }, "admin add"));
+    add["slot_taken wins over duplicate (booking 2's identity on booking 1's slot)"] = await callSnap(c, "POST", base, adaptRequest({ slot: T["0900"], dogName: "zoë", handlerName: "ann lee" }, "admin add"));
+    add["duplicate_booking (booking 2's identity, free slot)"] = await callSnap(c, "POST", base, adaptRequest({ slot: T["1340"], dogName: "ZOË", handlerName: "ANN  LEE" }, "admin add"));
+    add["duplicate_booking (own slot, same identity)"] = await callSnap(c, "POST", base, adaptRequest({ slot: T["0935"], dogName: "Zoë", handlerName: "Ann Lee" }, "admin add"));
     add["invalid_input (nothing sent)"] = await callSnap(c, "POST", base, {});
-    add["invalid_input (invisible character)"] = await callSnap(c, "POST", base, { slot: T["1340"], dogName: "Re​x", handlerName: "Ann Lee" });
-    add["invalid_input (handler 81 characters)"] = await callSnap(c, "POST", base, { slot: T["1340"], dogName: "Rex", handlerName: "h".repeat(81) });
-    add["invalid_slot"] = await callSnap(c, "POST", base, { slot: "2026-10-17T08:01:00Z", dogName: "Rex", handlerName: "Sam" });
+    add["invalid_input (invisible character)"] = await callSnap(c, "POST", base, adaptRequest({ slot: T["1340"], dogName: "Re​x", handlerName: "Ann Lee" }, "admin add"));
+    add["invalid_input (handler 81 characters)"] = await callSnap(c, "POST", base, adaptRequest({ slot: T["1340"], dogName: "Rex", handlerName: "h".repeat(81) }, "admin add"));
+    add["invalid_slot"] = await callSnap(c, "POST", base, adaptRequest({ slot: "2026-10-17T08:01:00Z", dogName: "Rex", handlerName: "Sam" }, "admin add"));
     add["invalid_json"] = await callSnap(c, "POST", base, "{nope");
-    add["404 unknown event"] = await callSnap(c, "POST", `/api/admin/events/${SLUG.none}/bookings`, { slot: T["1340"], dogName: "Rex", handlerName: "Sam" });
+    add["404 unknown event"] = await callSnap(c, "POST", `/api/admin/events/${SLUG.none}/bookings`, adaptRequest({ slot: T["1340"], dogName: "Rex", handlerName: "Sam" }, "admin add"));
     saveJson("admin-api/bookings-add.json", add, "POST /api/admin/events/:slug/bookings: success and every error");
 
     const move: Record<string, unknown> = {};
@@ -978,7 +1017,7 @@ describe("the v1.0 golden outputs, replayed against the current code on a migrat
     // orphan: swap refuses, move works
     const orphan: Record<string, unknown> = {};
     orphan["swap with an orphan: invalid_slot"] = await callSnap(c, "POST", `${base}/bookings/swap`, { a: { id: 10, slot: "2026-10-20T15:30:00Z" }, b: { id: 7, slot: "2026-10-20T17:00:00Z" } });
-    orphan["add on a slot of the schedule"] = await callSnap(c, "POST", `${base}/bookings`, { slot: "2026-10-20T17:20:00Z", dogName: "Nell", handlerName: "Al Penn" });
+    orphan["add on a slot of the schedule"] = await callSnap(c, "POST", `${base}/bookings`, adaptRequest({ slot: "2026-10-20T17:20:00Z", dogName: "Nell", handlerName: "Al Penn" }, "admin add"));
     orphan["detail with the orphan"] = await callSnap(c, "GET", base);
     saveJson("admin-api/orphan-actions.json", orphan, "event 2 (has an orphan booking): swap with the orphan refused, an add, and the detail JSON listing the orphan");
 

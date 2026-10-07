@@ -8,8 +8,8 @@ import { loadEventBySlug } from "./events";
 
 const NOW = new Date("2026-10-01T12:00:00Z");
 
-/** A booking of the Dog and Handler form as the admin API shows it: labelled values, and TRANSITIONAL(6b) `dogName` and `handlerName`. */
-const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }], dogName: dog, handlerName: handler });
+/** A booking of the Dog and Handler form as the admin API shows it: its labelled values. */
+const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }] });
 
 let t: TestEnv;
 beforeAll(async () => { t = await createTestEnv(); });
@@ -110,7 +110,7 @@ describe("saveEventEdit: a booking lands between the read and the save", () => {
     const result = await saveEventEdit(t.env.DB, await load(e.slug), shortened({ end: "11:15" }), [e.b, e.c], {
       afterRead: async () => { await insertBooking(t.env.DB, e.id, "2026-10-24T10:15:00Z", "Foxtrot", "Fay"); },
     });
-    expect(result.kind === "bookings_affected" && result.affected.map((a) => a.dogName)).toEqual(["Foxtrot", "Bravo", "Charlie"]);
+    expect(result.kind === "bookings_affected" && result.affected.map((a) => a.fields[0].value)).toEqual(["Foxtrot", "Bravo", "Charlie"]);
     const names = (await t.env.DB.prepare("SELECT value_1 FROM bookings WHERE event_id = ? ORDER BY slot_start_utc").bind(e.id).all<{ value_1: string }>()).results;
     expect(names.map((r) => r.value_1)).toEqual(["Alpha", "Foxtrot", "Bravo", "Charlie"]);
     expect((await load(e.slug)).name).toBe("Original");
@@ -172,13 +172,13 @@ describe("bookings of an event with several lanes and places", () => {
     expect((await loadBookings(t.env.DB, { id: e.id, fields: [] })).map((b) => b.id)).toEqual([r1p1, r1p2, r2p1, late]);
   });
 
-  it("the schedule detail's `booking` is null for several lanes (the bookings are in `places`), and the lineup text has one line per place, by time, lane and place", async () => {
+  it("the schedule detail has no `booking` key (the bookings are in `places`), and the lineup text has one line per place, by time, lane and place", async () => {
     const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:30:00Z", capacity: 2, lanes: ["Ring 1", "Ring 2"] });
     await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Second", "H", { laneId: e.laneIds[1], place: 1 });
     await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "First", "H", { laneId: e.laneIds[0], place: 1 });
     const detail = await eventDetail(t.env.DB, (await loadEventBySlug(t.env.DB, e.slug))!);
-    expect(detail.slots.map((s) => s.booking)).toEqual([null, null]);
-    expect(detail.slots[0].places.map((p) => p.bookings.map((b) => b.dogName))).toEqual([["First"], ["Second"]]);
+    expect(detail.slots.every((s) => !("booking" in s))).toBe(true);
+    expect(detail.slots[0].places.map((p) => p.bookings.map((b) => b.fields[0].value))).toEqual([["First"], ["Second"]]);
     expect(detail.lineup.split("\n").slice(3)).toEqual([
       "09:00 Ring 1 — First — H", "09:00 Ring 1 — free", "09:00 Ring 2 — Second — H", "09:00 Ring 2 — free",
       "09:15 Ring 1 — free", "09:15 Ring 1 — free", "09:15 Ring 2 — free", "09:15 Ring 2 — free",
@@ -469,7 +469,7 @@ describe("saveEventEdit: races on the layout", () => {
     const result = await saveEventEdit(t.env.DB, await load(e.slug), draftFor(e, { capacity: 1 }, 2), [], {
       afterRead: async () => { newcomer = await insertBooking(t.env.DB, e.id, S[0], "Late", "H", { laneId: e.laneIds[0] }); },
     });
-    expect(result).toMatchObject({ kind: "bookings_affected", affected: [{ id: newcomer, dogName: "Late" }] });
+    expect(result).toMatchObject({ kind: "bookings_affected", affected: [{ id: newcomer, fields: [{ label: "Dog", value: "Late" }, { label: "Handler", value: expect.any(String) }] }] });
     expect(JSON.parse(await snapshot(e.id))[0]).toEqual(JSON.parse(before)[0]);
     expect((await layoutRows(e.id)).layout).toEqual({ capacity: 2, config_rev: 0 });
     expect((await placesOf(e.id)).map((r) => r.id)).toEqual([keep, newcomer]);
@@ -605,7 +605,7 @@ describe("an edit of the layout racing the booking tools", () => {
       afterRead: async () => { late = await createBooking(t.env.DB, event, { start: S[0], end: S[1] }, input(event, S[0], "Late"), NOW); },
     });
     expect(late?.kind).toBe("created");
-    expect(result).toMatchObject({ kind: "bookings_affected", affected: [{ dogName: "Late" }] });
+    expect(result).toMatchObject({ kind: "bookings_affected", affected: [{ fields: [{ label: "Dog", value: "Late" }, { label: "Handler", value: expect.any(String) }] }] });
     expect((await layoutRows(e.id)).layout).toEqual({ capacity: 2, config_rev: 0 });
   });
 
@@ -614,7 +614,7 @@ describe("an edit of the layout racing the booking tools", () => {
     const event = await load(e.slug);
     const moving = await insertBooking(t.env.DB, e.id, S[0], "Mover", "H", { laneId: e.laneIds[0] });
     expect((await renameLane(e)).kind).toBe("saved");
-    expect(await addBooking(t.env.DB, event, { slot: S[1], laneId: e.laneIds[0], dogName: "Rex", handlerName: "Sam" })).toMatchObject({ code: "event_changed", status: 409 });
+    expect(await addBooking(t.env.DB, event, { slot: S[1], laneId: e.laneIds[0], field1: "Rex", field2: "Sam" })).toMatchObject({ code: "event_changed", status: 409 });
     expect(await moveBooking(t.env.DB, event, moving, { fromSlot: S[0], toSlot: S[1] })).toMatchObject({ code: "event_changed", status: 409 });
     expect((await placesOf(e.id)).map((r) => r.slot_start_utc)).toEqual([S[0]]);
   });
@@ -631,7 +631,7 @@ describe("an edit of the layout racing the booking tools", () => {
   it("an edit racing an admin add: the add fails with event_changed and writes nothing", async () => {
     const e = await seedLanes();
     const event = await load(e.slug);
-    const result = await addBooking(t.env.DB, event, { slot: S[1], laneId: e.laneIds[0], dogName: "Rex", handlerName: "Sam" }, { afterRead: async () => { await renameLane(e); } });
+    const result = await addBooking(t.env.DB, event, { slot: S[1], laneId: e.laneIds[0], field1: "Rex", field2: "Sam" }, { afterRead: async () => { await renameLane(e); } });
     expect(result).toMatchObject({ code: "event_changed", status: 409 });
     expect(await placesOf(e.id)).toEqual([]);
   });
@@ -821,6 +821,6 @@ describe("saveEventEdit: the booking form's fields and the identity limit", () =
     const e = await seedForm({ fields: [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Phone", required: false }] });
     await insertBookingOf(t.env.DB, e.id, [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Phone" }], S[3], ["Ann", "Biscuit", "111"]);
     const r = await edit(e, { end: "09:30" });
-    expect(r).toMatchObject({ kind: "bookings_affected", affected: [{ fields: [{ label: "Rider", value: "Ann" }, { label: "Pony", value: "Biscuit" }, { label: "Phone", value: "111" }], dogName: "Ann", handlerName: "Biscuit" }] });
+    expect(r).toMatchObject({ kind: "bookings_affected", affected: [{ fields: [{ label: "Rider", value: "Ann" }, { label: "Pony", value: "Biscuit" }, { label: "Phone", value: "111" }] }] });
   });
 });

@@ -21,8 +21,8 @@ afterAll(async () => {
   await t.dispose();
 });
 
-/** A booking of the Dog and Handler form as the admin API shows it: labelled values, and TRANSITIONAL(6b) `dogName` and `handlerName`. */
-const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }], dogName: dog, handlerName: handler });
+/** A booking of the Dog and Handler form as the admin API shows it: its labelled values. */
+const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }] });
 
 interface Opts { contentType?: string | null; raw?: string; data?: unknown[] }
 type Handler = (ctx: never) => Response | Promise<Response>;
@@ -64,7 +64,7 @@ const unauthenticated = (name: string, send: (data: unknown[]) => Promise<Respon
 describe("POST /api/admin/events/[slug]/bookings", () => {
   it("adds the booking: 201, no-store, the booking's id, slot and names", async () => {
     const e = await seed();
-    const res = await add(e.slug, { slot: S[2], dogName: "Rex", handlerName: "Sam Smith" });
+    const res = await add(e.slug, { slot: S[2], field1: "Rex", field2: "Sam Smith" });
     expect(res.status).toBe(201);
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(await body(res)).toEqual({ booking: { id: expect.any(Number), slotStart: S[2], ...dh("Rex", "Sam Smith"), lane: { id: expect.any(Number), name: "" } } });
@@ -73,7 +73,7 @@ describe("POST /api/admin/events/[slug]/bookings", () => {
 
   it("makes a booking whose public .ics link works (a token is generated)", async () => {
     const e = await seed();
-    await add(e.slug, { slot: S[2], dogName: "Rex", handlerName: "Sam Smith" });
+    await add(e.slug, { slot: S[2], field1: "Rex", field2: "Sam Smith" });
     const { token } = (await t.env.DB.prepare("SELECT token FROM bookings WHERE event_id = ?").bind(e.id).first<{ token: string }>())!;
     const res = await icsGet({
       request: new Request(`http://localhost/api/events/${e.slug}/bookings/${token}/ics`), env: t.env, params: { slug: e.slug, token },
@@ -85,27 +85,26 @@ describe("POST /api/admin/events/[slug]/bookings", () => {
   it("answers 409 slot_taken with the holder, and 409 duplicate_booking with the existing booking", async () => {
     const e = await seed();
     const rex = await insertBooking(t.env.DB, e.id, S[0], "Rex", "Sam Smith");
-    const taken = await add(e.slug, { slot: S[0], dogName: "Bella", handlerName: "Alex" });
+    const taken = await add(e.slug, { slot: S[0], field1: "Bella", field2: "Alex" });
     expect(taken.status).toBe(409);
-    expect(await body(taken)).toMatchObject({ error: { code: "slot_taken" }, booking: { id: rex, dogName: "Rex", handlerName: "Sam Smith" } });
-    const dup = await add(e.slug, { slot: S[1], dogName: "REX", handlerName: "sam smith" });
+    expect(await body(taken)).toMatchObject({ error: { code: "slot_taken" }, bookings: [{ id: rex, ...dh("Rex", "Sam Smith") }] });
+    const dup = await add(e.slug, { slot: S[1], field1: "REX", field2: "sam smith" });
     expect(dup.status).toBe(409);
-    expect(await body(dup)).toMatchObject({ error: { code: "duplicate_booking" }, booking: { id: rex, slotStart: S[0], dogName: "Rex", handlerName: "Sam Smith" } });
+    expect(await body(dup)).toMatchObject({ error: { code: "duplicate_booking" }, booking: { id: rex, slotStart: S[0], ...dh("Rex", "Sam Smith") } });
     expect(await stored(e.id)).toHaveLength(1);
   });
 
   it("answers 400 invalid_slot for a time that is not a slot, and 400 invalid_input with per-field messages", async () => {
     const e = await seed();
-    const bad = await add(e.slug, { slot: "2026-10-24T09:00:00Z", dogName: "Rex", handlerName: "Sam" });
+    const bad = await add(e.slug, { slot: "2026-10-24T09:00:00Z", field1: "Rex", field2: "Sam" });
     expect(bad.status).toBe(400);
     expect((await body(bad)).error.code).toBe("invalid_slot");
-    const fields = await add(e.slug, { slot: S[0], dogName: "", handlerName: "x".repeat(81) });
+    const fields = await add(e.slug, { slot: S[0], field1: "", field2: "x".repeat(81) });
     expect(fields.status).toBe(400);
     expect(await body(fields)).toMatchObject({
       error: { code: "invalid_input" },
       fields: {
         field1: "Dog is required.", field2: "Handler must be at most 80 characters.",
-        dogName: "Dog is required.", handlerName: "Handler must be at most 80 characters.", // TRANSITIONAL(6b)
       },
     });
     expect(await stored(e.id)).toHaveLength(0);
@@ -114,9 +113,9 @@ describe("POST /api/admin/events/[slug]/bookings", () => {
   it("refuses a name that could fake lines in the pasted lineup (U+2028, U+2029, U+0085), storing nothing", async () => {
     const e = await seed();
     for (const ch of ["\u2028", "\u2029", "\u0085"]) {
-      const res = await add(e.slug, { slot: S[0], dogName: `Rex${ch}08:15 \u2014 free`, handlerName: `Sam${ch}` });
+      const res = await add(e.slug, { slot: S[0], field1: `Rex${ch}08:15 \u2014 free`, field2: `Sam${ch}` });
       expect(res.status, JSON.stringify(ch)).toBe(400);
-      expect(Object.keys((await body(res)).fields).sort()).toEqual(["dogName", "field1", "field2", "handlerName"]);
+      expect(Object.keys((await body(res)).fields).sort()).toEqual(["field1", "field2"]);
     }
     expect(await stored(e.id)).toHaveLength(0);
   });
@@ -132,14 +131,14 @@ describe("POST /api/admin/events/[slug]/bookings", () => {
       env: { ...t.env, BOOKING_CUTOFF_OFFSET_MINUTES: undefined }, params: { slug: e.slug },
     } as never);
     expect(pub.status).toBe(410);
-    const res = await add(e.slug, { slot, dogName: "Late", handlerName: "Lee" });
+    const res = await add(e.slug, { slot, field1: "Late", field2: "Lee" });
     expect(res.status).toBe(201);
     expect((await stored(e.id)).map((r) => r.dog_name)).toEqual(["Late"]);
   });
 
   it("answers 404 for an unknown or malformed slug, and rejects a non-JSON body", async () => {
     for (const slug of [generateSlug(), "nope", "x".repeat(100)]) {
-      const res = await add(slug, { slot: S[0], dogName: "Rex", handlerName: "Sam" });
+      const res = await add(slug, { slot: S[0], field1: "Rex", field2: "Sam" });
       expect(res.status).toBe(404);
       expect((await body(res)).error.code).toBe("not_found");
     }
@@ -149,7 +148,7 @@ describe("POST /api/admin/events/[slug]/bookings", () => {
     expect((await add(e.slug, undefined, { raw: "[]" })).status).toBe(400);
   });
 
-  unauthenticated("add", async (data) => add((await seed()).slug, { slot: S[0], dogName: "Rex", handlerName: "Sam" }, { data }));
+  unauthenticated("add", async (data) => add((await seed()).slug, { slot: S[0], field1: "Rex", field2: "Sam" }, { data }));
 });
 
 describe("DELETE /api/admin/events/[slug]/bookings/[id]", () => {
@@ -228,7 +227,7 @@ describe("POST /api/admin/events/[slug]/bookings/[id]/move", () => {
     const b = await insertBooking(t.env.DB, e.id, S[1], "Bella", "Alex");
     const taken = await move(e.slug, a, { fromSlot: S[0], toSlot: S[1] });
     expect(taken.status).toBe(409);
-    expect(await body(taken)).toMatchObject({ error: { code: "slot_taken" }, booking: { id: b, dogName: "Bella" } });
+    expect(await body(taken)).toMatchObject({ error: { code: "slot_taken" }, bookings: [{ id: b, ...dh("Bella", "Alex") }] });
     expect((await body(await move(e.slug, a, { fromSlot: S[3], toSlot: S[5] }))).error.code).toBe("changed");
     expect((await body(await move(e.slug, a, { fromSlot: S[0], toSlot: S[0] }))).error.code).toBe("same_slot");
     expect((await body(await move(e.slug, a, { fromSlot: S[0], toSlot: "2026-10-24T09:00:00Z" }))).error.code).toBe("invalid_slot");
@@ -288,20 +287,19 @@ describe("the booking tools with lanes and places, over HTTP", () => {
   it("add: the lane is a field (laneId), needed with two lanes; the booking comes back with its lane; a full lane is 409 slot_taken with the holders", async () => {
     const e = await seed({ lanes: ["Ring 1", "Ring 2"], capacity: 1 });
     const [l1, l2] = e.laneIds;
-    const missing = await add(e.slug, { slot: S[0], dogName: "Rex", handlerName: "Sam" });
+    const missing = await add(e.slug, { slot: S[0], field1: "Rex", field2: "Sam" });
     expect(missing.status).toBe(400);
     expect(await body(missing)).toMatchObject({ error: { code: "invalid_input" }, fields: { laneId: "Choose a lane." } });
-    const made = await add(e.slug, { slot: S[0], laneId: l2, dogName: "Rex", handlerName: "Sam" });
+    const made = await add(e.slug, { slot: S[0], laneId: l2, field1: "Rex", field2: "Sam" });
     expect(made.status).toBe(201);
     const booking = (await body(made)).booking;
     expect(booking).toEqual({ id: expect.any(Number), slotStart: S[0], ...dh("Rex", "Sam"), lane: { id: l2, name: "Ring 2" } });
-    const full = await add(e.slug, { slot: S[0], laneId: l2, dogName: "Bella", handlerName: "Alex" });
+    const full = await add(e.slug, { slot: S[0], laneId: l2, field1: "Bella", field2: "Alex" });
     expect(full.status).toBe(409);
     const taken = await body(full);
     expect(taken.error.code).toBe("slot_taken");
     expect(taken.bookings).toEqual([booking]);
-    expect(taken.booking).toBeUndefined();
-    expect((await add(e.slug, { slot: S[0], laneId: l1, dogName: "Bella", handlerName: "Alex" })).status).toBe(201);
+    expect((await add(e.slug, { slot: S[0], laneId: l1, field1: "Bella", field2: "Alex" })).status).toBe(201);
   });
 
   it("move: toLane changes the lane (also at the same time), the answer names it, and fromLane guards against a stale view", async () => {
@@ -330,6 +328,6 @@ describe("the booking tools with lanes and places, over HTTP", () => {
     const e = await seed({ lanes: ["Ring 1", "Ring 2"] });
     const a = await insertBooking(t.env.DB, e.id, S[0], "Rex", "Sam", { laneId: e.laneIds[1] });
     expect((await body(await clear(e.slug, a, { confirm: true }))).removed.lane).toEqual({ id: e.laneIds[1], name: "Ring 2" });
-    expect((await add(e.slug, { slot: S[0], laneId: e.laneIds[1], dogName: "Next", handlerName: "H" })).status).toBe(201);
+    expect((await add(e.slug, { slot: S[0], laneId: e.laneIds[1], field1: "Next", field2: "H" })).status).toBe(201);
   });
 });

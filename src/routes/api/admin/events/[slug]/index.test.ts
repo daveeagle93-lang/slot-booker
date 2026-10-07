@@ -31,16 +31,16 @@ const get = (slug: string, ...data: unknown[]): Promise<Response> =>
     } as unknown as Parameters<typeof onRequestGet>[0]),
   );
 
-/** A booking of the Dog and Handler form as the admin API shows it: labelled values, and TRANSITIONAL(6b) `dogName` and `handlerName`. */
-const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }], dogName: dog, handlerName: handler });
+/** A booking of the Dog and Handler form as the admin API shows it: its labelled values. */
+const dh = (dog: string, handler: string) => ({ fields: [{ label: "Dog", value: dog }, { label: "Handler", value: handler }] });
 
 interface Detail {
   event: Record<string, unknown>;
   slots: {
-    start: string; end: string; booking: { id: number; dogName: string; handlerName: string } | null;
-    places: { laneId: number; laneName: string; free: number; bookings: { id: number; dogName: string; handlerName: string; fields: { label: string; value: string }[] }[] }[];
+    start: string; end: string;
+    places: { laneId: number; laneName: string; free: number; bookings: { id: number; fields: { label: string; value: string }[] }[] }[];
   }[];
-  orphans: { id: number; slotStart: string; dogName: string; handlerName: string; fields: { label: string; value: string }[]; lane: { id: number; name: string } }[];
+  orphans: { id: number; slotStart: string; fields: { label: string; value: string }[]; lane: { id: number; name: string } }[];
   lineup: string;
   defaultShareMessage: string;
 }
@@ -122,24 +122,24 @@ describe("GET /api/admin/events/[slug]", () => {
     expect((await detail(slug)).event.breaks).toMatchObject([{ start: "10:00", label: "" }, { start: "11:00", label: "Café ☕ 😀" }]);
   });
 
-  it("lists every slot of the schedule with its booking or null", async () => {
+  it("lists every slot of the schedule with its lane and the booking in it, if any", async () => {
     const { id, slug } = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T09:00:00Z", sessionMinutes: 20 });
     const bookingId = await insertBooking(t.env.DB, id, "2026-10-24T08:20:00Z", "Rex", "Sam Smith");
     const { slots, orphans } = await detail(slug);
     const laneId = (await t.env.DB.prepare("SELECT id FROM event_lanes WHERE event_id = ?").bind(id).first<{ id: number }>())!.id;
     const free = [{ laneId, laneName: "", free: 1, bookings: [] }];
     expect(slots).toEqual([
-      { start: "2026-10-24T08:00:00Z", end: "2026-10-24T08:20:00Z", booking: null, places: free },
+      { start: "2026-10-24T08:00:00Z", end: "2026-10-24T08:20:00Z", places: free },
       {
-        start: "2026-10-24T08:20:00Z", end: "2026-10-24T08:40:00Z", booking: { id: bookingId, ...dh("Rex", "Sam Smith") },
+        start: "2026-10-24T08:20:00Z", end: "2026-10-24T08:40:00Z",
         places: [{ laneId, laneName: "", free: 0, bookings: [{ id: bookingId, ...dh("Rex", "Sam Smith") }] }],
       },
-      { start: "2026-10-24T08:40:00Z", end: "2026-10-24T09:00:00Z", booking: null, places: free },
+      { start: "2026-10-24T08:40:00Z", end: "2026-10-24T09:00:00Z", places: free },
     ]);
     expect(orphans).toEqual([]);
   });
 
-  it("lists, per slot, every lane with its bookings in place order and its free places; `booking` is null unless there is one lane and one place", async () => {
+  it("lists, per slot, every lane with its bookings in place order and its free places", async () => {
     const e = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:40:00Z", sessionMinutes: 20, capacity: 2, lanes: ["Ring 1", "Ring 2"] });
     const [l1, l2] = e.laneIds;
     const second = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Second", "H", { laneId: l1, place: 2 });
@@ -147,7 +147,6 @@ describe("GET /api/admin/events/[slug]", () => {
     const other = await insertBooking(t.env.DB, e.id, "2026-10-24T08:00:00Z", "Other", "H", { laneId: l2 });
     const { slots, orphans, event } = await detail(e.slug);
     expect(event).toMatchObject({ lanes: [{ id: l1, name: "Ring 1" }, { id: l2, name: "Ring 2" }], capacity: 2 });
-    expect(slots.map((s) => s.booking)).toEqual([null, null]);
     expect(slots[0].places).toEqual([
       { laneId: l1, laneName: "Ring 1", free: 0, bookings: [{ id: first, ...dh("First", "H") }, { id: second, ...dh("Second", "H") }] },
       { laneId: l2, laneName: "Ring 2", free: 1, bookings: [{ id: other, ...dh("Other", "H") }] },
@@ -156,13 +155,15 @@ describe("GET /api/admin/events/[slug]", () => {
     expect(orphans).toEqual([]);
   });
 
-  it("keeps `booking` for one lane and capacity 1 even when the lane is named, and drops it for one lane with capacity 2", async () => {
+  it("has no v1.0 `booking` key on a slot, whether the one lane is named or not and whatever the capacity: the bookings are in `places`", async () => {
     const named = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:20:00Z", sessionMinutes: 20, lanes: ["Main"] });
     const b = await insertBooking(t.env.DB, named.id, "2026-10-24T08:00:00Z", "Rex", "Sam");
-    expect((await detail(named.slug)).slots[0].booking).toEqual({ id: b, ...dh("Rex", "Sam") });
+    const [slot] = (await detail(named.slug)).slots;
+    expect(slot).not.toHaveProperty("booking");
+    expect(slot.places[0].bookings).toEqual([{ id: b, ...dh("Rex", "Sam") }]);
     const wide = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T08:20:00Z", sessionMinutes: 20, capacity: 2 });
     await insertBooking(t.env.DB, wide.id, "2026-10-24T08:00:00Z", "Rex", "Sam");
-    expect((await detail(wide.slug)).slots[0].booking).toBeNull();
+    expect((await detail(wide.slug)).slots[0]).not.toHaveProperty("booking");
   });
 
   it("lists as orphans a booking at a time that is no slot, one at a place beyond the capacity, and keeps them out of `places`", async () => {
@@ -180,8 +181,8 @@ describe("GET /api/admin/events/[slug]", () => {
     await insertBooking(t.env.DB, id, "2026-10-24T08:05:00Z", "Zed", "Zoe");
     const orphanId = await insertBooking(t.env.DB, id, "2026-10-24T07:00:00Z", "Early", "Eve");
     const { slots, orphans } = await detail(slug);
-    expect(slots.every((s) => s.booking === null)).toBe(true);
-    expect(orphans.map((o) => o.dogName)).toEqual(["Early", "Zed"]);
+    expect(slots.every((s) => s.places.every((p) => p.bookings.length === 0))).toBe(true);
+    expect(orphans.map((o) => o.fields[0].value)).toEqual(["Early", "Zed"]);
     expect(orphans[0]).toEqual({ id: orphanId, slotStart: "2026-10-24T07:00:00Z", ...dh("Early", "Eve"), lane: { id: expect.any(Number), name: "" } });
   });
 
@@ -247,7 +248,7 @@ describe("GET /api/admin/events/[slug]", () => {
     const a = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T09:00:00Z", sessionMinutes: 20 });
     const b = await insertEvent(t.env.DB, { startUtc: "2026-10-24T08:00:00Z", endUtc: "2026-10-24T09:00:00Z", sessionMinutes: 20 });
     await insertBooking(t.env.DB, b.id, "2026-10-24T08:00:00Z", "Rex", "Sam");
-    expect((await detail(a.slug)).slots.map((s) => s.booking)).toEqual([null, null, null]);
+    expect((await detail(a.slug)).slots.map((s) => s.places.flatMap((p) => p.bookings))).toEqual([[], [], []]);
   });
 
   it("refuses with 401 unless the guard set an admin identity", async () => {
@@ -303,11 +304,11 @@ async function snapshot(eventId: number): Promise<string> {
 
 interface Saved {
   event: Record<string, unknown>; slotCount: number;
-  removed: { id: number; slotStart: string; dogName: string; handlerName: string; fields: { label: string; value: string }[]; lane: { id: number; name: string } }[];
+  removed: { id: number; slotStart: string; fields: { label: string; value: string }[]; lane: { id: number; name: string } }[];
 }
 interface Conflict {
   error: { code: string; message: string };
-  affected: { id: number; slotStart: string; dogName: string; handlerName: string; fields: { label: string; value: string }[]; lane: { id: number; name: string } }[];
+  affected: { id: number; slotStart: string; fields: { label: string; value: string }[]; lane: { id: number; name: string } }[];
 }
 const storedBreaks = async (eventId: number) =>
   (await t.env.DB.prepare("SELECT start_utc, end_utc, label FROM breaks WHERE event_id = ? ORDER BY start_utc").bind(eventId).all()).results;

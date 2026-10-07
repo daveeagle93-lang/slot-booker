@@ -28,13 +28,10 @@ export const editFailed = (what: string, e: unknown): Response => {
 /**
  * A booking as the edit screens list it. `slotStart` is a UTC instant; the slot's end isn't needed. `fields` are the values of
  * the booking form, labelled, in the form's order (a blank optional one is left out).
- *
- * TRANSITIONAL(6b): `dogName` and `handlerName` (the first two values, "" if the form has no second) are still sent because the
- * admin pages written before the fields were configurable read them. Delete them with those pages' use of them.
  */
 export interface BookingRef {
   id: number; slotStart: string; lane: { id: number; name: string };
-  fields: { label: string; value: string }[]; dogName: string; handlerName: string;
+  fields: { label: string; value: string }[];
 }
 
 /** A booking with what deciding a clash needs: its place and when it was made. */
@@ -48,12 +45,9 @@ export const bookingRefOf = (
   b: { id: number; slotStart: string; lane: { id: number; name: string } } & ValueColumns, fields: readonly { label: string }[],
 ): BookingRef => ({
   id: b.id, slotStart: b.slotStart, lane: b.lane, fields: shownValues(fields, [b.value_1, b.value_2, b.value_3, b.value_4]),
-  dogName: b.value_1, handlerName: b.value_2, // TRANSITIONAL(6b)
 });
 
-export const toRef = (b: StoredBooking): BookingRef => ({
-  id: b.id, slotStart: b.slotStart, lane: b.lane, fields: b.fields, dogName: b.dogName, handlerName: b.handlerName, // TRANSITIONAL(6b)
-});
+export const toRef = (b: StoredBooking): BookingRef => ({ id: b.id, slotStart: b.slotStart, lane: b.lane, fields: b.fields });
 
 /**
  * The event as the edit form uses it: London-local date and times next to the stored UTC instants. `hasBookings` says whether the event
@@ -133,8 +127,7 @@ export const orphanBookings = (bookings: StoredBooking[], event: Pick<EventRow, 
  * not a slot, its lane is gone, or its place is beyond the capacity; there should be none).
  *
  * Each slot has `places`: one entry per lane in lane order, with the lane's `bookings` (in place order) and how many places are
- * `free`. `booking` is the v1.0 key: the slot's booking when the event has exactly one lane and one place per time, and null
- * otherwise (an event with several lanes or places uses `places`).
+ * `free`.
  *
  * `lineup` is the WhatsApp text for the schedule page's Copy button, built here so the page can copy it
  * synchronously from what it already loaded (a clipboard write has to happen inside the click). It has one line per place (see
@@ -152,16 +145,15 @@ export async function eventDetail(db: D1Database, event: EventRow) {
   const orphanIds = new Set(orphans.map((b) => b.id));
   const at = new Map<string, StoredBooking[]>(); // by slot and lane, in place order (loadBookings' order)
   for (const b of bookings) if (!orphanIds.has(b.id)) at.set(`${b.slotStart}|${b.lane.id}`, [...(at.get(`${b.slotStart}|${b.lane.id}`) ?? []), b]);
-  const single = event.lanes.length === 1 && event.capacity === 1;
   const withBookings = slots.map((s) => {
     const places = event.lanes.map((l) => {
       const held = at.get(`${s.start}|${l.id}`) ?? [];
       return {
         laneId: l.id, laneName: l.name, free: Math.max(0, event.capacity - held.length),
-        bookings: held.map((b) => ({ id: b.id, fields: b.fields, dogName: b.dogName, handlerName: b.handlerName })), // dogName and handlerName: TRANSITIONAL(6b)
+        bookings: held.map((b) => ({ id: b.id, fields: b.fields })),
       };
     });
-    return { ...s, booking: single ? places[0].bookings[0] ?? null : null, places };
+    return { ...s, places };
   });
   return {
     event: eventView(event, bookings.length > 0),
