@@ -186,7 +186,7 @@ describe("GET /api/admin/events/[slug]", () => {
     expect(orphans[0]).toEqual({ id: orphanId, slotStart: "2026-10-24T07:00:00Z", ...dh("Early", "Eve"), lane: { id: expect.any(Number), name: "" } });
   });
 
-  it("lists a configured form's values by label (a blank optional one left out) and joins them in the lineup, in the form's order", async () => {
+  it("lists a configured form's values by label (a blank optional one left out), and the lineup joins only the identity fields' values, in the form's order", async () => {
     const fields = [{ label: "Rider", identity: true }, { label: "Pony", identity: true }, { label: "Phone", required: false }];
     const { id, slug } = await insertEvent(t.env.DB, { name: "Pony day", startUtc: "2026-03-14T09:00:00Z", endUtc: "2026-03-14T09:40:00Z", sessionMinutes: 20, venuePostcode: "AB1 2CD", fields });
     await insertBookingOf(t.env.DB, id, fields, "2026-03-14T09:00:00Z", ["Ann Lee", "Biscuit", "07700 900123"]);
@@ -194,7 +194,8 @@ describe("GET /api/admin/events/[slug]", () => {
     const body = await detail(slug);
     expect(body.slots[0].places[0].bookings[0]).toMatchObject({ fields: [{ label: "Rider", value: "Ann Lee" }, { label: "Pony", value: "Biscuit" }, { label: "Phone", value: "07700 900123" }] });
     expect(body.slots[1].places[0].bookings[0]).toMatchObject({ fields: [{ label: "Rider", value: "Bea" }, { label: "Pony", value: "Nutmeg" }] });
-    expect(body.lineup).toBe("Pony day\nSaturday 14 March 2026 · AB1 2CD\n\n09:00 — Ann Lee — Biscuit — 07700 900123\n09:20 — Bea — Nutmeg");
+    // The phone number is in the admin page's booking above, not in the lineup that is pasted into a chat.
+    expect(body.lineup).toBe("Pony day\nSaturday 14 March 2026 · AB1 2CD\n\n09:00 — Ann Lee — Biscuit\n09:20 — Bea — Nutmeg");
   });
 
   it("includes the lineup text, equal to buildLineup on the same data, without orphans", async () => {

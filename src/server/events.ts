@@ -115,7 +115,9 @@ export async function loadEventBySlug(db: D1Database, slug: string): Promise<Eve
 
 /**
  * The public face of an event: no event id, no breaks, no share message. The lanes are the ones a booker chooses between and
- * the fields are what the form asks for (never which of them identify a booking: that is not the booker's business).
+ * the fields are what the form asks for. Which of them identify a booking is not listed, but it is not secret either: the 409
+ * duplicate_booking message names the identity fields' labels ("That dog and handler already have a booking"), to a request that
+ * guessed an identity, so a booker can learn which fields those are.
  */
 export const eventSummary = (e: EventRow) => ({
   slug: e.slug, name: e.name, startUtc: e.startUtc, endUtc: e.endUtc,

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestEnv, insertBooking, insertBookingOf, insertBreak, insertEvent, insertsBooking, interceptBatches, type TestEnv } from "../test/db";
+import { createTestEnv, insertBooking, insertBookingOf, insertBreak, insertEvent, insertsBooking, interceptBatches, type TestEnv, type TestField } from "../test/db";
 import { addBooking, moveBooking } from "./admin-bookings";
 import { createBooking, validateBookingInput } from "./bookings";
 import { eventDetail, loadBookings, saveEventEdit } from "./admin-event-edit";
@@ -879,5 +879,46 @@ describe("saveEventEdit: the revision of the page the draft was made on", () => 
     const draft = { ...draftFor(e, {}), configRev: 0 };
     expect((await saveEventEdit(t.env.DB, await load(e.slug), draft, [])).kind).toBe("saved");
     expect((await layoutRows(e.id)).layout!.config_rev).toBe(9);
+  });
+});
+
+describe("eventDetail: the lineup (pasted into a club chat) prints only the fields that identify a booking", () => {
+  const SLOT = "2026-10-24T08:00:00Z";
+  const lineupOf = async (fields: TestField[], rows: string[][]) => {
+    const e = await insertEvent(t.env.DB, { startUtc: SLOT, endUtc: "2026-10-24T08:30:00Z", sessionMinutes: 15, fields, capacity: rows.length });
+    for (const values of rows) await insertBookingOf(t.env.DB, e.id, fields, SLOT, values);
+    const detail = await eventDetail(t.env.DB, (await loadEventBySlug(t.env.DB, e.slug))!);
+    return { detail, lines: detail.lineup.split("\n").slice(3, 3 + rows.length) };
+  };
+
+  it("leaves out an optional field that holds a phone number, which the admin pages still show", async () => {
+    const { detail, lines } = await lineupOf([{ label: "Dog", identity: true }, { label: "Handler", identity: true }, { label: "Phone", required: false }], [["Rex", "Sam", "07700 900123"]]);
+    expect(lines).toEqual(["09:00 — Rex — Sam"]);
+    expect(detail.lineup).not.toContain("07700");
+    expect(detail.slots[0].places[0].bookings[0].fields).toEqual([{ label: "Dog", value: "Rex" }, { label: "Handler", value: "Sam" }, { label: "Phone", value: "07700 900123" }]);
+  });
+
+  it("leaves out a required field that does not identify a booking", async () => {
+    const { lines } = await lineupOf([{ label: "Name", identity: true }, { label: "Medical notes" }], [["Ann Lee", "Asthma, carries an inhaler"]]);
+    expect(lines).toEqual(["09:00 — Ann Lee"]);
+  });
+
+  it("prints the identity fields in the form's order, wherever the other fields sit between them", async () => {
+    const fields = [{ label: "Rider", identity: true }, { label: "Phone", required: false }, { label: "Pony", identity: true }, { label: "Notes", required: false }];
+    const { lines } = await lineupOf(fields, [["Ann", "07700 900123", "Biscuit", "Nervous"], ["Bea", "", "Nutmeg", ""]]);
+    expect(lines).toEqual(["09:00 — Ann — Biscuit", "09:00 — Bea — Nutmeg"]);
+  });
+
+  it("prints every field of a form where every field identifies a booking, and keeps the Dog and Handler line as it was", async () => {
+    expect((await lineupOf([{ label: "Dog", identity: true }, { label: "Handler", identity: true }], [["Rex", "Sam"]])).lines).toEqual(["09:00 — Rex — Sam"]);
+    expect((await lineupOf([{ label: "A", identity: true }, { label: "B", identity: true }, { label: "C", identity: true }], [["x", "y", "z"]])).lines).toEqual(["09:00 — x — y — z"]);
+  });
+
+  it("applies to a form of one field and to named lanes", async () => {
+    expect((await lineupOf([{ label: "Car reg", identity: true }], [["AB12 CDE"]])).lines).toEqual(["09:00 — AB12 CDE"]);
+    const e = await insertEvent(t.env.DB, { startUtc: SLOT, endUtc: "2026-10-24T08:15:00Z", sessionMinutes: 15, lanes: ["Ring 1", "Ring 2"], fields: [{ label: "Dog", identity: true }, { label: "Phone", required: false }] });
+    await insertBookingOf(t.env.DB, e.id, [{ label: "Dog", identity: true }, { label: "Phone" }], SLOT, ["Rex", "07700 900123"], { laneId: e.laneIds[1] });
+    const detail = await eventDetail(t.env.DB, (await loadEventBySlug(t.env.DB, e.slug))!);
+    expect(detail.lineup.split("\n").slice(3)).toEqual(["09:00 Ring 1 — free", "09:00 Ring 2 — Rex"]);
   });
 });

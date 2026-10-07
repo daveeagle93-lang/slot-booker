@@ -133,7 +133,8 @@ export const orphanBookings = (bookings: StoredBooking[], event: Pick<EventRow, 
  *
  * `lineup` is the WhatsApp text for the schedule page's Copy button, built here so the page can copy it
  * synchronously from what it already loaded (a clipboard write has to happen inside the click). It has one line per place (see
- * buildLineup): the lane is named in each line unless the event has one unnamed lane.
+ * buildLineup): the lane is named in each line unless the event has one unnamed lane. A booked place shows only the values of the
+ * fields that identify a booking, in the form's order (the other fields are not for a group chat).
  * `defaultShareMessage` is the default template's share message ("" if none), for events that have none of their own.
  */
 export async function eventDetail(db: D1Database, event: EventRow) {
@@ -157,6 +158,13 @@ export async function eventDetail(db: D1Database, event: EventRow) {
     });
     return { ...s, places };
   });
+  // The lineup is pasted into a club chat, so it names only who a booking is for (the fields that identify it): a phone number or a
+  // note in an optional field is for the organisers and stays in these pages, the CSV and the booker's own confirmation. A booking's
+  // `fields` leave out blank ones, so they are matched by label (unique within an event).
+  const identityLabels = new Set(event.fields.filter((f) => f.identity).map((f) => f.label));
+  const lineupSlots = withBookings.map((s) => ({
+    ...s, places: s.places.map((p) => ({ ...p, bookings: p.bookings.map((b) => ({ fields: b.fields.filter((f) => identityLabels.has(f.label)) })) })),
+  }));
   return {
     event: eventView(event, bookings.length > 0),
     slots: withBookings,
@@ -164,7 +172,7 @@ export async function eventDetail(db: D1Database, event: EventRow) {
     defaultShareMessage: defaultMessage?.share_message ?? "",
     lineup: buildLineup({
       clubName, name: event.name, venuePostcode: event.venuePostcode, startUtc: event.startUtc,
-      slots: withBookings, breaks: event.breaks,
+      slots: lineupSlots, breaks: event.breaks,
     }),
   };
 }

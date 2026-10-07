@@ -509,7 +509,7 @@ A name or number the server doesn't accept shows its message under that lane (or
 
 What the outputs show for lanes and places:
 
-- **The lineup** has one line per place. An event with one unnamed lane reads as it always did ("10:00 — Rex — Sam", "10:00 — free"; with several places, the bookings first, then a "free" line for each free place). Otherwise each line names the lane after the time ("10:00 Ring 1 — Rex — Sam", "10:00 Ring 1 — free"), in time order, then lane order, then place. A single lane that has a name is named too.
+- **The lineup** has one line per place, showing only the fields that identify a booking. An event with one unnamed lane reads as it always did ("10:00 — Rex — Sam", "10:00 — free"; with several places, the bookings first, then a "free" line for each free place). Otherwise each line names the lane after the time ("10:00 Ring 1 — Rex — Sam", "10:00 Ring 1 — free"), in time order, then lane order, then place. A single lane that has a name is named too.
 - **The CSV** gets a "Lane" column after "Time", but only when the event has a named lane. The rows are in time order, then lane order, then place.
 - **The calendar entry** (.ics) a booker adds says "Slot: 10:00–10:30, Ring 1" when the event has a named lane, and is otherwise unchanged. The entry's title, location and identity are unchanged.
 - **The share message** has a {lanes} placeholder: the lane names separated by commas. It is blank for an event with one unnamed lane, so a line holding only {lanes} is left out. Share fills it in from the events list, the schedule page and the "Event created" page.
@@ -527,13 +527,13 @@ Tap "Add field" for another (up to four; the button greys out there) and "Remove
 
 **Required and identifying fields.** The first field is always required, and so is every field that identifies a booking: their "Required" box is ticked and greyed out, with a note saying why. At least one field must identify a booking; if none does, the save is refused with "At least one field must identify a booking."
 
-**The identity limit.** Under the fields is a question made from the labels of the identifying fields, such as "How many bookings can one Dog + Handler make?" (it changes as you type the labels and tick the boxes). The answer is the **identity limit**, 1 to 20 and 1 by default: how many bookings the same identity may hold in the event. An identity is the values of the identifying fields together, and two values are the same when they differ only in capital letters, extra spaces or hidden characters. The other fields can differ. With a limit of 1 the same dog and handler can book one time only; with 3, up to three times. A booker who is over the limit is told "That dog and handler already have a booking for this event." (with the field names of your form).
+**The identity limit.** Under the fields is a question made from the labels of the identifying fields, such as "How many bookings can one Dog + Handler make?" (it changes as you type the labels and tick the boxes). The answer is the **identity limit**, 1 to 20 and 1 by default: how many bookings the same identity may hold in the event. An identity is the values of the identifying fields together, and two values are the same when they differ only in capital letters, extra spaces or hidden characters. The other fields can differ. With a limit of 1 the same dog and handler can book one time only; with 3, up to three times. A booker who is over the limit is told "That dog and handler already have a booking for this event." (with the field names of your form). If you lower the limit below what an identity already holds, its bookings stay, and it can't book again until it holds fewer than the new limit. **With a limit above 1, the app does not stop one person taking two places at the same time:** the same identity may hold two places in the same time (in another lane, or another place in the same lane), because the limit counts bookings, not times.
 
 **New events and templates.** A new event with no template asks for one required field, "Name", that identifies the booking, with a limit of 1. Choosing a template copies its fields and limit; "No template" goes back to "Name". Events and templates that existed before the fields could be changed have "Dog" and "Handler", both required, 80 characters, both identifying the booking, and their bookings are unchanged.
 
 **Once an event has bookings,** you can no longer add or remove fields or change which ones identify a booking, because the stored bookings and their calendar entries depend on that. On the edit page "Add field", "Remove" and the "Identifies a booking" boxes are greyed out, with the note "Bookings exist, so you can't add or remove fields or change which ones identify a booking. You can still rename them and change the other settings." You can still rename a field, change which fields are required (except the ones that must be), change a longest length, and change the identity limit. If a booking arrives while you are editing and you have already added or removed a field or changed an identifying box, the save is refused with a message saying so, and the card is put back as the page loaded it (with your other changes kept). To change the shape of the form of an event that has bookings, you would have to clear its bookings first. A booking made at the very moment you change what is required or a longest value is refused and tried again against the new form.
 
-**What people see.** Each field's label is the title of its box, with "(optional)" after it when it isn't required. A required box left empty says "Dog is required." and the other messages start with the same bare label ("Dog must be at most 80 characters."). An optional field left empty is left out of the confirmation, the calendar entry and the lineup, and its cell in the CSV is empty. The privacy notice names the labels.
+**What people see.** Each field's label is the title of its box, with "(optional)" after it when it isn't required. A required box left empty says "Dog is required." and the other messages start with the same bare label ("Dog must be at most 80 characters."). An optional field left empty is left out of the confirmation and the calendar entry, and its cell in the CSV is empty. The lineup shows only the fields that identify a booking, whether or not the others are filled in (see [The lineup](#8-the-lineup)). The privacy notice names the labels.
 
 **Examples.** Each is a set of fields, lanes and places; adapt the labels to your own club.
 
@@ -545,9 +545,9 @@ Tap "Add field" for another (up to four; the button greys out there) and "Remove
 | Golf tee times | **Player 1**, Player 2 (optional), Player 3 (optional), Player 4 (optional) | 1 | one lane per starting tee ("1st tee", "10th tee"), 1 place |
 | Parents' evening | **Parent**, **Child**, Class | 5 (an appointment with up to five teachers) | one lane per teacher, 1 place |
 
-For the golf example one booking is a whole group: only Player 1 identifies it, so one person can't hold two tee times, and the other players are optional and appear in the lineup and the CSV when filled in. The limit counts across the whole event, so the parents' evening needs a limit of more than 1 for a parent to see several teachers. Tick "Identifies a booking" on every field you need to tell bookings apart, and no more: ticking Phone, say, would let the same dog and handler book twice with different phone numbers.
+For the golf example one booking is a whole group: only Player 1 identifies it, so one person can't hold two tee times, and the other players are optional and appear on the admin pages, in the CSV and in the booker's confirmation when filled in (the pasted lineup shows only Player 1). The limit counts across the whole event, so the parents' evening needs a limit of more than 1 for a parent to see several teachers. Tick "Identifies a booking" on every field you need to tell bookings apart, and no more: ticking Phone, say, would let the same dog and handler book twice with different phone numbers.
 
-**Checking it.** The lineup, the CSV and the confirmation use your labels: the lineup joins a booking's values with " — " ("10:00 — Rex — Sam"), the CSV has a column headed by each label, and the confirmation has a row for each value the booker gave.
+**Checking it.** The lineup, the CSV and the confirmation use your labels: the lineup joins the values of the fields that identify a booking with " — " ("10:00 — Rex — Sam"), the CSV has a column headed by each label, and the confirmation has a row for each value the booker gave.
 
 ### After saving
 
@@ -573,10 +573,10 @@ The text looks like this:
 2. The event name.
 3. The date, then a dot, then the venue postcode.
 4. A blank line.
-5. One line per place, in time order. A booked place shows the time and the value of each field of the booking form, in the form's order (the dog and the handler, for the Dog and Handler form). A free place shows the time and "free". With a named lane (or two or more lanes) each line also names the lane after the time, and the lines at one time go by lane order, then place. See [Lanes and places](#lanes-and-places).
+5. One line per place, in time order. A booked place shows the time and the value of each field that identifies the booking, in the form's order (the dog and the handler, for the Dog and Handler form). Other fields, such as an optional phone number or a note, are not in the lineup. A free place shows the time and "free". With a named lane (or two or more lanes) each line also names the lane after the time, and the lines at one time go by lane order, then place. See [Lanes and places](#lanes-and-places).
 6. Breaks show where they fall, with their start and end times and their name. An unnamed break shows as "Break".
 
-Paste it into a group chat such as WhatsApp. The booking form's usual privacy note tells people that the running order, with names, may be shared with other people taking part.
+Paste it into a group chat such as WhatsApp. The booking form's usual privacy note tells people that the running order, with names, may be shared with other people taking part. Only the fields that identify a booking go into the lineup, so what you collect in other fields (a phone number, medical notes) is not pasted into the chat by mistake. Those appear on the admin pages, in the CSV download and in the booker's own confirmation and calendar file.
 
 Names appear as typed. If a name has star, underscore or tilde characters, WhatsApp may turn part of the message bold, italic or struck through.
 
@@ -641,7 +641,7 @@ Archived events are not part of this. This is a known limit. Delete archived eve
 
 ### Keep it tidy
 
-The booking form's usual privacy note says details are kept until an organiser deletes the event. Nothing is deleted automatically. So delete old events once you no longer need them.
+The booking form's usual privacy note says details are kept until an organiser deletes the event. Nothing is deleted automatically. So delete old events once you no longer need them. Deleting removes the bookings from the live database, but Cloudflare keeps backups of earlier states (D1 "Time Travel", 7 days on the free plan and 30 on paid), so a deleted booking can still exist there until that period ends. The app can't remove it from the backups.
 
 ## 11. If something looks wrong
 

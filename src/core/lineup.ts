@@ -10,7 +10,9 @@ import { utcToLondon } from "./london";
  * can still make part of the message bold, italic or struck through when pasted into the chat. That is not
  * coded around. Lane names are user text too and are printed the same way, as stored.
  *
- * One line per place: a booking shows the value of each of its fields, in the form's order, between " — " (`10:00 — Rex — Sam`).
+ * One line per place: a booking shows the value of each of the fields it is given, in the form's order, between " — " (`10:00 — Rex — Sam`).
+ * It prints what it is given and decides nothing about privacy: eventDetail (src/server/admin-event-edit.ts) gives it only the fields that
+ * identify a booking, so an optional phone number or a note never reaches a pasted lineup.
  * An event with exactly one lane and that lane unnamed reads as in v1.0 (`10:00 — Rex — Sam`,
  * `10:00 — free`; with several places in the lane, the bookings in place order and then a `free` line for each free
  * place). Any other event names the lane in every line (`10:00 Ring 1 — Rex — Sam`, `10:00 Ring 1 — free`), by time,
