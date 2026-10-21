@@ -7,7 +7,8 @@ import { loadEventBySlug } from "../server/events";
 import { createTestEnv, insertBreak, insertEvent, insertsBooking, interceptBatches, type TestEnv, type TestField } from "./db";
 
 // How many SQL statements the Worker sends to D1 for one request, counted by wrapping the database. docs/known-limits.md quotes these
-// numbers (Cloudflare's Workers Free plan may count each statement toward a per-invocation limit; how a batch counts is unverified), so
+// numbers (the Workers Free plan allows 50 D1 queries per invocation; the 58-statement worst-case edit save below passed on a real Free
+// account on the preview deployment, so a batch is not counted statement by statement), so
 // a change that moves them should update that page. The numbers are pinned as ceilings, so the test fails when a request gets more
 // expensive (and passes if one gets cheaper); run it with `--reporter=verbose --silent=false` to print what was measured.
 
