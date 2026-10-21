@@ -297,7 +297,7 @@ Template consequences:
 
 ### Cloudflare-side surprises
 
-- A custom domain "will also generate an Advanced Certificate on your target zone" and the certificate is not deleted when the domain is detached [S7]. Whether that is **billed** is **not stated** in what I read; spike P4 must check before the wizard tells a club it is free, and the docs need a line on it either way (`docs/costs.md` exists only on `feature/lanes-and-fields`, not on `main`).
+- A custom domain "will also generate an Advanced Certificate on your target zone" and the certificate is not deleted when the domain is detached [S7]. Whether that is **billed** is **not stated** in what I read; spike P4 must check before the wizard tells a club it is free, and the docs need a line on it either way (`docs/costs.md`).
 - A hostname with an existing CNAME, or in a zone the account does not own, is refused [S7]. The wizard surfaces the raw Cloudflare error with a one-line explanation and does not retry with overrides.
 - `self_hosted_domains` was "supported until November 21, 2025" [S5]; the design uses `destinations`.
 - The schema requires `domain` for `self_hosted` apps, but Cloudflare's Workers docs create one with only a `worker` destination and no `domain` [S16]. That worker-level form would protect every hostname of the Worker, including the public booking pages, so it is not used (alternative below).
@@ -335,7 +335,7 @@ P6 evidence: on 21 October 2026 a production deployment on a custom domain retur
 ## Docs and tests to change when this is built
 
 - `docs/admin-auth.md`: settings table, the hard rule, the manual route moves to an appendix, `workers_dev` section, "Unverified" notes resolved by the spikes.
-- `docs/deploying.md`, `README.md` ("Sign-in options"), `docs/handover.md` (recovery), the cost note about the certificate, if billed (`docs/deploying.md`, or `docs/costs.md` once that branch lands).
+- `docs/deploying.md`, `README.md` ("Sign-in options"), `docs/handover.md` (recovery), the cost note about the certificate, if billed (`docs/deploying.md` or `docs/costs.md`).
 - New: a `migration-0019` test per the existing convention (`src/test/migration-0019.test.ts`); a resolution-table test for `adminAuthFor`; guard tests for the exempt check route; tests that mock `fetch` with the spike fixtures for the Cloudflare client; a test that the token never reaches `console.*` or any D1 write; the template-URL decode test; and the extended `wrangler-config.test.ts` assertion.
 - CI never calls Cloudflare.
 
