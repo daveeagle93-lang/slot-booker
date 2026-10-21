@@ -219,6 +219,17 @@ Apply all migrations before running new code that needs them. For instance `0011
 
 Migrations `0015` to `0017` rebuild the `bookings` table (for lanes and places) in three files, because Cloudflare's documentation does not say whether a migration file is applied as one transaction: `0016` is written so that running it again after an interruption finishes the job, and the old table is only dropped by `0017`, after the rows have been copied (and checked). From `0015` (which renames the old table) until the new Worker is live, the previous version of the Worker cannot read or make bookings, so a deploy that includes these migrations has a gap, normally seconds long: update at a quiet time, and take an export first (`npx wrangler d1 export`, see [handover.md](handover.md)). I have not measured the gap on a deployed copy. The booking table's id counter is not carried across (a write to D1's internal `sqlite_sequence` table might be refused, which would stop the migration after `0015` and leave the site down), so the id of a booking that was cleared before the migration may be given to a new booking; nothing outside the app refers to booking ids. Migration `0018` (the booking form's fields) only adds tables and rows, so it has no gap of its own: the previous Worker keeps working after it, and an event that Worker makes before the new one is live has no field rows and is read as Dog and Handler. The same goes for an event made in the window between `0016` and the new Worker going live: it has no layout row and no lane, so the new Worker gives it one unnamed lane, capacity 1 and a limit of 1 the first time anyone opens it (the public page, the booking form, or the admin list or event page), and it then behaves like any other event.
 
+### Upgrading from v1.0
+
+To go from v1.0 (migrations up to `0014`) to the version with lanes and places and the configurable booking form (migrations `0015` to `0018`), do these in order:
+
+1. Take an export first, and keep it private (it contains the admin secret's hash): see [handover.md](handover.md#exporting-before-deleting).
+2. **Apply the migrations before the new Worker is live.** `npm run deploy` does this in the right order (migrations, then `wrangler deploy`), and so does the build the button sets up, so pushing the upgrade is enough. By hand, run `npm run db:migrations:apply` and then deploy. Do not deploy the new code first: it needs the new tables.
+3. Expect a short gap. `0015` renames `bookings`, so from then until the new Worker is live the old Worker cannot read or make bookings. Choose a quiet time. Nothing is lost in the gap.
+4. If `migrations apply` stops at `0015` with "no such table: bookings", follow [the recovery steps](#migrations-apply-stops-at-0015-with-no-such-table-bookings) instead of editing a migration.
+
+I upgraded a v1.0 preview database (2 events, 5 bookings) with `wrangler d1 migrations apply` and then `wrangler deploy --env preview` on 21 October 2026, and every booking was unchanged afterwards. I have not run `npm run deploy` end to end against a v1.0 database, and I have not measured the gap on a deployed copy.
+
 ## Troubleshooting
 
 ### `/setup` says "Setup isn't ready"
@@ -264,7 +275,7 @@ Open the build log on the Worker's page in the dashboard (**unverified** where).
 
 ### `migrations apply` stops at `0015` with "no such table: bookings"
 
-**Unverified on real D1** (checked only on the local database, where running `0015` again after the rename gives exactly this error). It means the rename in `0015_bookings_legacy.sql` was committed but Wrangler's own record of it in the `d1_migrations` table was not, so Wrangler tries `0015` again. Do not edit the migration. First confirm the state: the old table must exist under its new name and the new one must not exist yet.
+**Checked on real D1** (the preview database, 21 October 2026, Wrangler 4.147): I produced this state on purpose by running `0015_bookings_legacy.sql` on its own with `wrangler d1 execute`, so the rename was committed and `d1_migrations` had no record of it. `migrations apply` then stopped with exactly this error, the check below listed only `bookings_legacy`, the `INSERT` recorded `0015`, and the next `migrations apply` carried on with `0016`, `0017` and `0018`; the existing bookings were all still there afterwards, unchanged. I have not seen a real deploy stopped in this state: in a separate test, a migration file that failed half-way was rolled back as a whole by D1, so this state may never happen. It means the rename in `0015_bookings_legacy.sql` was committed but Wrangler's own record of it in the `d1_migrations` table was not, so Wrangler tries `0015` again. Do not edit the migration. First confirm the state: the old table must exist under its new name and the new one must not exist yet.
 
 ```sh
 npx wrangler d1 execute DB --remote --env="" --command "SELECT name FROM sqlite_master WHERE name IN ('bookings', 'bookings_legacy')"
