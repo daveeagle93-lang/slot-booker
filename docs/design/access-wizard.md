@@ -32,7 +32,7 @@ Recorded 21 October 2026. D1 to D4 accept the recommendation made in the first d
 
 ### Table
 
-One new migration (the number is **not** fixed here: `main` ends at `0014`, but `feature/lanes-and-fields` already has `0015` to `0018`, so take the next free number when this lands). It follows the `site_settings` pattern, a singleton row with snake_case columns (`migrations/0009_site_settings.sql`):
+One new migration, `0019` (`main` ends at `0018` since v1.1). It follows the `site_settings` pattern, a singleton row with snake_case columns (`migrations/0009_site_settings.sql`):
 
 | Column | Meaning |
 | --- | --- |
@@ -336,7 +336,7 @@ P6 evidence: on 21 October 2026 a production deployment on a custom domain retur
 
 - `docs/admin-auth.md`: settings table, the hard rule, the manual route moves to an appendix, `workers_dev` section, "Unverified" notes resolved by the spikes.
 - `docs/deploying.md`, `README.md` ("Sign-in options"), `docs/handover.md` (recovery), the cost note about the certificate, if billed (`docs/deploying.md`, or `docs/costs.md` once that branch lands).
-- New: a `migration-00NN` test per the existing convention (`src/test/migration-00NN.test.ts`); a resolution-table test for `adminAuthFor`; guard tests for the exempt check route; tests that mock `fetch` with the spike fixtures for the Cloudflare client; a test that the token never reaches `console.*` or any D1 write; the template-URL decode test; and the extended `wrangler-config.test.ts` assertion.
+- New: a `migration-0019` test per the existing convention (`src/test/migration-0019.test.ts`); a resolution-table test for `adminAuthFor`; guard tests for the exempt check route; tests that mock `fetch` with the spike fixtures for the Cloudflare client; a test that the token never reaches `console.*` or any D1 write; the template-URL decode test; and the extended `wrangler-config.test.ts` assertion.
 - CI never calls Cloudflare.
 
 ## Sources
