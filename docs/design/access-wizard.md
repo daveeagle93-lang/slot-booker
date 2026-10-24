@@ -1,6 +1,6 @@
 # Design: "Switch to email sign-in" wizard
 
-Status: **draft, design only, no code.** Written 21 October 2026 on branch `docs/access-wizard-design`, cut from `main`. Decisions D1 to D5 were recorded on 21 October 2026 and spike P6 has passed (see [Decisions](#decisions) and [Spikes](#spikes-live-tests-needed-before-building)).
+Status: **draft, design only, no code.** Written 21 October 2026 on branch `docs/access-wizard-design`, cut from `main`. Decisions D1 to D5 were recorded on 21 October 2026 and spike P6 has passed (see [Decisions](#decisions) and [Spikes](#spikes-live-tests-needed-before-building)). On 24 October 2026 the text was reconciled with [zero-config setup](zero-config-setup.md), which takes migration `0019`, creates the shared `auth_settings` table and ships the resolution rule first; this design builds on that table with migration `0020` (zero-config design, section 5). That file is on branch `docs/zero-config-setup`, so the link works only once both are merged.
 
 Every Cloudflare claim below is tagged. **VERIFIED** means it was read in a primary source (Cloudflare's docs, the OpenAPI schema at github.com/cloudflare/api-schemas commit `880ff24`, or Wrangler's source at workers-sdk commit `f43e2e6`) on 21 October 2026. **Unverified** means inferred, secondary, or untested. Nothing here was run against a Cloudflare account; the one live call was an unauthenticated read of a public price catalogue. The list of live tests that must pass before any code is written is in [Spikes](#spikes-live-tests-needed-before-building). Source labels `[S1]`... are listed at the end.
 
@@ -10,10 +10,10 @@ Today a club moves from the shared admin secret to Cloudflare Access by hand: bu
 
 The wizard replaces all of that with one admin page and a pasted API token. The design rests on five decisions:
 
-1. **Auth settings live in D1, not in `wrangler.jsonc`.** The template stops shipping `vars.ADMIN_AUTH`. An env `ADMIN_AUTH=access` still wins, so existing hand-configured deployments keep working untouched.
+1. **Auth settings live in D1, not in `wrangler.jsonc`.** Zero-config setup (migration `0019`) has already created the `auth_settings` table, removed `vars.ADMIN_AUTH` from the template and implemented the resolution rule; the wizard adds its own columns (migration `0020`). An env `ADMIN_AUTH=access` still wins, so existing hand-configured deployments keep working untouched.
 2. **The token is used in memory for one wizard run and is never stored or logged.** It reaches Cloudflare only through a fixed allow-list of calls made by the Worker.
 3. **Nothing switches until a real Access sign-in has reached the Worker and the Worker's own JWT check has passed against the new settings.** The switch is refused by the server otherwise, not just hidden in the UI.
-4. **`SETUP_CODE` stays as break-glass**, always on in v1 and limited per client address (never by a global cap), so it cannot be used to lock the owner out. A D1-console statement is the last resort if even that is unavailable.
+4. **Break-glass is `SETUP_CODE` valid (12+ characters) or `auth_settings.recovery_hash` set**, always on in v1 and limited per client address (never by a global cap), so it cannot be used to lock the owner out. `/recover` with the recovery code is the main route; `SETUP_CODE` is the alternative. The wizard refuses to enable Access until one of them exists. A D1-console statement is the last resort if even that is unavailable.
 5. **`workers.dev` is closed by the Worker at run time, not by the API.** The API toggle does not survive a Workers Builds redeploy (see [Workers Builds](#workers-builds-and-wranglerjsonc)).
 
 ## Decisions
@@ -26,13 +26,15 @@ Recorded 21 October 2026. D1 to D4 accept the recommendation made in the first d
 | D2 | Disable `workers.dev` through the API, or at run time in the Worker? | **At run time** (redirect to the custom domain; keep only break-glass reachable). API disable is an opt-in extra, unchecked by default. | Wrangler re-enables `workers.dev` on the next deploy unless the repo says `workers_dev: false`; a redirect also keeps already-shared booking links working. |
 | D3 | Ship "create the Zero Trust organisation" via the API? | **Manual step first**; add the API button only if spike P1 shows `POST .../access/organizations` completes plan selection. | The endpoint has no plan field; the docs put plan and payment in the dashboard onboarding. |
 | D4 | Account-owned token or user token in the template URL? | **Account-owned.** | The documented user-token template forces `accountId=*&zoneId=all`; the account template scopes in the dashboard. |
-| D5 | Can break-glass be switched off in-app? | **No, not in v1.** Break-glass is always on whenever `SETUP_CODE` is set and valid. The only off switch is removing the `SETUP_CODE` Worker secret, outside the app. | An in-app switch is one more way to lock yourself out, and break-glass exists for the day everything else is broken. The lock-out risk it was meant to limit is handled by per-client rate limiting instead (section 5). |
+| D5 | Can break-glass be switched off in-app? | **No, not in v1.** Break-glass is always on whenever `SETUP_CODE` is set and valid (12+ characters) or `auth_settings.recovery_hash` is set. The only off switch for the `SETUP_CODE` route is removing that Worker secret, outside the app; `/recover` has no off switch. Amended 24 October 2026 to include the recovery code, which zero-config setup adds (zero-config design, 3.6). | An in-app switch is one more way to lock yourself out, and break-glass exists for the day everything else is broken. The lock-out risk it was meant to limit is handled by per-client rate limiting instead (section 5). |
 
 ## 1. Auth settings move to D1
 
 ### Table
 
-One new migration, `0019` (`main` ends at `0018` since v1.1). It follows the `site_settings` pattern, a singleton row with snake_case columns (`migrations/0009_site_settings.sql`):
+The table already exists. `0019` is `auth_settings`, created by zero-config setup, on the `site_settings` pattern, a singleton row with snake_case columns (`migrations/0009_site_settings.sql`). The wizard takes the next number, `0020`, and only runs `ALTER TABLE auth_settings ADD COLUMN` for the columns it needs. It creates no table.
+
+Created by zero-config `0019`:
 
 | Column | Meaning |
 | --- | --- |
@@ -40,35 +42,42 @@ One new migration, `0019` (`main` ends at `0018` since v1.1). It follows the `si
 | `access_team_domain` | `<team>.cloudflareaccess.com`. From the organisation's `auth_domain` [S3]. |
 | `access_aud` | The Access application's AUD tag. From `result.aud` on create/list [S5]. |
 | `access_hostname` | The canonical custom-domain hostname the site is served on. |
+| `changed_at`, `changed_by` | `wizard`, `recovery`, `import` or `owner`. Shown as a banner after a recovery. |
+| `setup_opened_at`, `claim_token_hash` | The first-run claim window and the claim. Zero-config only; the wizard does not touch them. |
+| `recovery_hash`, `recovery_created_at` | The recovery code (zero-config design, 3.6). The wizard reads `recovery_hash` for its break-glass check (section 5) and never writes it. |
+
+Added by the wizard's `0020`:
+
+| Column | Meaning |
+| --- | --- |
 | `access_app_id`, `access_policy_id` | Cloudflare ids kept so a later run updates instead of duplicating. Not secret. |
 | `admin_emails` | JSON array copy of the Allow policy, for display and re-sync. The Access policy stays the source of truth. |
 | `verify_nonce`, `verify_nonce_expires_at` | One-time value for the sign-in test (section 4). |
 | `verified_at`, `verified_config_hash` | When a real Access sign-in passed, and a hash of team domain + AUD + hostname it passed for. |
-| `changed_at`, `changed_by` | `wizard`, `recovery`, `import` or `owner`. Shown as a banner after a recovery. |
 
-A `CHECK` constraint makes `mode = 'access'` impossible unless team domain, AUD and hostname are all non-null, so a half-written row cannot lock admin out by itself. No secret is stored: the team domain and AUD are in every Access JWT the Worker sees anyway. The API token is never in this table.
+The `CHECK` constraint that makes `mode = 'access'` impossible unless team domain, AUD and hostname are all non-null is already in `0019`, so a half-written row cannot lock admin out by itself. No secret is stored: the team domain and AUD are in every Access JWT the Worker sees anyway. The API token is never in this table.
 
 ### Which source wins
 
-`adminAuthFor` (`src/server/auth/index.ts:19`) today reads only env. The new rule:
+`adminAuthFor` (`src/server/auth/index.ts:19`) used to read only env. **Already done by zero-config setup** (its design, 3.8), which implements this table and the removal of `vars.ADMIN_AUTH`; the wizard changes neither. The rule:
 
 | env `ADMIN_AUTH` | D1 `mode` | Result |
 | --- | --- | --- |
 | `access` | any | Access, with `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` **from env**, exactly as today (fails closed if they are invalid). D1 is not consulted. The wizard shows "set in your deployment config". |
 | `password` or unset | `access` | Access, with all three values **from D1**. |
-| `password` or unset | `password`, or no row | Password, as today. |
+| `password` or unset | `password`, or no row | Password, as today (env credentials, else `admin_credentials`). |
 | anything else | any | 503 `not_configured`, as today. |
 
-Values are never mixed field by field between env and D1: a source is chosen whole, so a stray `ACCESS_AUD` in env cannot combine with a D1 team domain. The preview environment uses a separate D1 database (`wrangler.jsonc`, `env.preview`), so it has no row and stays on password.
+Values are never mixed field by field between env and D1: a source is chosen whole, so a stray `ACCESS_AUD` in env cannot combine with a D1 team domain. D1 access beats leftover env password credentials: if `mode = 'access'`, a leftover `ADMIN_PASSWORD_HASH` or `ADMIN_SESSION_SECRET` is not used (zero-config design, 3.8). The preview environment uses a separate D1 database (`wrangler.jsonc`, `env.preview`), so it has no row and stays on password.
 
 Cost: D1 access mode adds one single-row read per admin request (password mode already reads D1 on every admin request, `src/server/auth/index.ts:33`). The `workers.dev` redirect (section 5) must **not** read D1 per public request, because most clubs are on `workers.dev` and would pay for a read on every booking-page view; it caches the decision per isolate for 60 seconds. Admin authentication itself is not cached.
 
 ### Migration for existing deployments
 
-- **Schema:** the migration is additive and creates an empty table. `npm run deploy` applies it before `wrangler deploy` (`package.json:15`). Whether a club's Workers Builds "deploy command" runs that script rather than plain `wrangler deploy` is **unverified**; the forked repo's build settings need to be looked at on the test instance.
-- **Clubs on password mode (the default):** no action. Their forked `wrangler.jsonc` still has `ADMIN_AUTH=password`, which the rule above treats as "defer to D1", so the wizard works the moment they sync their fork. They never have to edit `wrangler.jsonc`.
-- **Clubs already on Access by env (a hand-configured instance):** unchanged; env access pins. The wizard page shows an **Import** button that copies the env values into D1 (`changed_by = 'import'`). It only becomes the live source once the three vars are removed from their config; the page says so. Importing never changes behaviour by itself.
-- **The template:** `wrangler.jsonc` drops `vars.ADMIN_AUTH` from the top level and from `env.preview`, and the comment above it is rewritten. `src/test/wrangler-config.test.ts` gains an assertion that the template has no `ADMIN_AUTH` var (it does not assert on `vars` today). `docs/admin-auth.md` ("Settings", "Setting it up") and the README "Sign-in options" move the manual route to a short appendix. The same pass fixes the stale `ADMIN_AUTH: "password"` literal in `worker-configuration.d.ts:4-7`.
+- **Schema:** `0020` is additive: it adds seven nullable columns to a table that already exists. `npm run deploy` applies it before `wrangler deploy` (`package.json:15`). Whether a club's Workers Builds "deploy command" runs that script rather than plain `wrangler deploy` is **unverified**; the forked repo's build settings need to be looked at on the test instance.
+- **Clubs on password mode (the default):** no action. Their forked `wrangler.jsonc` may still have `ADMIN_AUTH=password`, which the rule above treats as "defer to D1", so the wizard works the moment they sync their fork. They never have to edit `wrangler.jsonc`.
+- **Clubs already on Access by env (a hand-configured instance):** unchanged; env access pins. Zero-config setup pins most of them automatically: the first authenticated `GET /api/admin/session` copies the env values and the request hostname into `auth_settings` (`changed_by = 'import'`), so a lost env line changes nothing afterwards (zero-config design, 3.8). The wizard's **Import** button is therefore only for env-Access sites where nobody has signed in yet, so nothing has been pinned. It copies the env values into D1 (`changed_by = 'import'`), and it only becomes the live source once the three vars are removed from their config; the page says so. Importing never changes behaviour by itself.
+- **The template:** already done by zero-config setup: `wrangler.jsonc` has no `vars.ADMIN_AUTH`, at the top level or in `env.preview`, and `src/test/wrangler-config.test.ts` asserts it. What remains for the wizard's pass: `docs/admin-auth.md` ("Settings", "Setting it up") and the README "Sign-in options" move the manual route to a short appendix. Whether zero-config setup fixes the stale `ADMIN_AUTH: "password"` literal in `worker-configuration.d.ts:4-7` is **unverified** (it was still there on its branch when this was checked); if not, the same pass does.
 
 ## 2. The API token
 
@@ -159,18 +168,24 @@ If verification does not complete, nothing has changed: `mode` is still `passwor
 
 ## 5. Break-glass and `workers.dev` at run time
 
-### Recovery with `SETUP_CODE`
+### Break-glass: the recovery code or `SETUP_CODE`
 
-`SETUP_CODE` is already a required Worker secret (the Deploy button prompts for it) and already means "the person who owns the deployment". It becomes the way back:
+Break-glass exists when **either** `SETUP_CODE` is set and valid (12+ characters) **or** `auth_settings.recovery_hash` is set. `/recover` with the recovery code is the main route, because new deployments have no `SETUP_CODE`: it is an optional Worker secret now, no longer prompted for by the Deploy button, and it still means "the person who owns the deployment". Both routes switch the mode back to password and set `changed_by = 'recovery'`. **The wizard refuses to enable Access until one of them exists.** A new deployment has a recovery code from its first screen. An older site with neither must first get a recovery code through the signed-in "make a recovery code" action (`POST /api/admin/recovery-code`, zero-config design, 3.6). That action is **not built** and stays in this wizard's plan; the wizard cannot ship without it. Zero-config setup implements `/recover` (it exists on its branch and sets `mode = 'password'` and `changed_by = 'recovery'` when it switches the stored mode from access back to password; when the mode was already password it leaves `changed_by` and `changed_at` alone).
+
+#### Recovery with the recovery code
+
+- `GET /recover` and `POST /api/recover` work in any sign-in mode, on both hostnames, and need no Worker secret. The new admin secret and a new recovery code are shown once; the old recovery code stops working (zero-config design, 3.6). If env still says `ADMIN_AUTH=access`, `/recover` tells the owner to remove that line too, because env wins.
+
+#### Recovery with `SETUP_CODE`
 
 - `/setup` today is 404 under Access (`docs/admin-auth.md:51`). Under D1 access mode it serves a **"Recover sign-in"** form instead, reachable on both hostnames (Access only covers the four admin paths). This reuses the existing `/setup` entry in `run_worker_first`, so the pinned list in `src/test/wrangler-config.test.ts:37-41` does not change.
 - A correct `SETUP_CODE` (constant-time compare, existing rate limits) sets `mode = 'password'`, **deletes the `admin_credentials` row** so `/setup` can issue a new generated secret (the same effect as the manual step in [handover.md](../handover.md#if-the-admin-secret-is-lost)), and sets `changed_by = 'recovery'`. The old secret is not reused, because after months in Access mode the club may have lost it.
 - The next admin page shows "Sign-in was reset to the shared secret on <time>", so an unexpected recovery is visible.
-- It is refused with 404 if `SETUP_CODE` is unset or shorter than 12 characters. There is no other off switch (D5).
+- It is refused with 404 if `SETUP_CODE` is unset or shorter than 12 characters. There is no other off switch (D5). This route does not need the recovery code, and `/recover` does not need `SETUP_CODE`.
 
 #### Rate limiting for recovery (decided 21 October 2026)
 
-The first draft reused the setup design, which includes a global cap of 30 attempts per 15 minutes across all visitors (`docs/admin-auth.md:49`). That cap is wrong for recovery: anyone could burn it and block the owner from the one route meant for the day everything else is broken. Recovery therefore limits **per client only**:
+The first draft reused the setup design, which includes a global cap of 30 attempts per 15 minutes across all visitors (`docs/admin-auth.md:49`). That cap is wrong for recovery: anyone could burn it and block the owner from the one route meant for the day everything else is broken. Recovery therefore limits **per client only**, on both routes (`/recover` and the `SETUP_CODE` form; `/recover` is keyed with the stored recovery hash, zero-config design, 3.6):
 
 - **Key.** The existing client bucket: `CF-Connecting-IP`, with an IPv6 address counted as its /64 prefix, hashed with the session secret (`docs/admin-auth.md:110-111`). Stored in `login_attempts` under its own key prefix, so it never shares a count with sign-in or first-run setup.
 - **Window.** 5 failed attempts per 15 minutes per client. Attempts are counted before the code is compared, so parallel guesses cannot exceed the limit, and a correct code clears that client's count.
@@ -179,27 +194,27 @@ The first draft reused the setup design, which includes a global cap of 30 attem
 
 What this leaves:
 
-- A distributed attacker gets 5 guesses per address per window, and `SETUP_CODE` is a phrase a person chose (at least 12 characters), far weaker than the generated 256-bit admin secret. The backoff slows a single address a lot but does nothing about many addresses. The mitigations are visibility (the banner after any recovery), the Deploy-button and docs advice to use a long random phrase, and the owner's option to remove the secret. A stronger option, such as a longer minimum for recovery or a second factor, is not designed here.
+- A distributed attacker gets 5 guesses per address per window, and `SETUP_CODE` is a phrase a person chose (at least 12 characters), far weaker than the generated 256-bit admin secret and recovery code (a distributed attacker has hopeless odds against the recovery code, and a real chance only against a weak `SETUP_CODE`). The backoff slows a single address a lot but does nothing about many addresses. The mitigations are visibility (the banner after any recovery), the docs advice to use a long random phrase if `SETUP_CODE` is set at all, and the owner's option to remove the secret. A stronger option, such as a longer minimum for recovery or a second factor, is not designed here.
 - Someone sharing the owner's address (carrier-grade NAT, venue wifi, the same /64) shares the bucket and can lock that address out for up to the current backoff. The owner then uses another network, or the D1 console below.
-- First-run `/setup` keeps its present limits, global cap included. Before the first sign-in there is no admin to lock out. Revisit if the implementation finds a reason to unify them.
+- First-run `/setup` (the code flow) keeps its present limits, global cap included. Before the first sign-in there is no admin to lock out. The claim flow of zero-config setup has no attempt limit at all. Revisit if the implementation finds a reason to unify them.
 
 It is the same trust the deployment already has: whoever can set Worker secrets can set `SETUP_CODE`.
 
 ### Last resort
 
-If recovery is unavailable (secret removed or shorter than 12 characters, or the owner's address is in backoff with no other network to use), the owner can open the D1 console in the dashboard and run:
+If recovery is unavailable (no valid `SETUP_CODE` and the recovery code lost, or the owner's address is in backoff with no other network to use), the owner can open the D1 console in the dashboard and run:
 
 ```sql
 UPDATE auth_settings SET mode = 'password' WHERE id = 1;
 ```
 
-and, if the secret is also lost, delete the `admin_credentials` row. Both belong in `docs/handover.md`. For an env-pinned Access deployment the lever is changing the three vars; a dashboard edit lasts only until the next deploy.
+and, if the secret is also lost, delete the `admin_credentials` row. Both belong in `docs/handover.md`, together with the `auth_settings` reset from the zero-config design (3.8 gives the statement with `changed_by = 'owner'`). For an env-pinned Access deployment the lever is changing the three vars; a dashboard edit lasts only until the next deploy.
 
 ### Closing `workers.dev` without the API
 
 In D1 access mode, a request whose host ends in `.workers.dev` and is not the canonical hostname is handled before routing:
 
-- `/setup` and `POST /api/setup` (the recovery form) pass through, so break-glass works even if the custom domain breaks.
+- `/setup` and `POST /api/setup` (the `SETUP_CODE` recovery form), and `/recover` and `POST /api/recover`, pass through, so break-glass works even if the custom domain breaks. That `/recover` passes through is the zero-config design's own statement (3.6, "Reach"); the `workers.dev` redirect itself is this wizard's and is not built.
 - Other `GET`/`HEAD` get a `308` to the same path and query on `access_hostname`. That keeps every booking link the club has already shared working, which turning `workers.dev` off through the API would break.
 - Other methods get `421`. A page left open on `workers.dev` loses an in-flight booking; this is rare and said in the docs.
 
@@ -265,7 +280,7 @@ What a Wrangler deploy (which is what Workers Builds runs) does to settings made
 
 Template consequences:
 
-- Remove `vars.ADMIN_AUTH` (section 1). With no `vars` in the template, there is nothing for a deploy to overwrite, and the wizard's settings are in D1, which a deploy never touches.
+- `vars.ADMIN_AUTH` is already removed by zero-config setup (section 1). With no `vars` in the template, there is nothing for a deploy to overwrite, and the wizard's settings are in D1, which a deploy never touches.
 - **Leave `workers_dev` explicit** at `true` in the template. The Deploy button's first-run URL needs it (`wrangler.jsonc` comment, and `docs/admin-auth.md:16`), and omitting it would only reintroduce Wrangler's "it will be enabled for this deployment by default" warning. The run-time redirect (section 5) does the closing, so the club never needs `workers_dev: false`.
 - Do **not** add `keep_vars` yet. It would let a club set a plain var in the dashboard that survives deploys, which is attractive, but how it behaves when the *same* var is also in the fork's old config is **unverified** (spike P7), and the wizard no longer needs it.
 - Do not add a `custom_domain` route: it is per-club, and adding it would make Wrangler start managing (and, in non-interactive mode, overriding) the domain [S15].
@@ -282,7 +297,7 @@ Template consequences:
 | The Access app, the org, or the team name is deleted or changed in the dashboard later. | The Worker fails closed (no header, 401). Recovery: break-glass (section 5). |
 | The key fetch from `<team>.cloudflareaccess.com/cdn-cgi/access/certs` fails or Access rotates keys. | Existing behaviour (hourly cache, `kid` match, one forced refetch a minute: `docs/admin-auth.md:208`). Rotation keeps the old key for 7 days [S12]. |
 | The custom domain's DNS or certificate breaks. | `/setup` on `workers.dev` stays reachable (section 5). |
-| `SETUP_CODE` removed or short, or the owner's address is in recovery backoff. | D1-console statement, documented in `handover.md`. |
+| No valid `SETUP_CODE` and the recovery code lost, or the owner's address is in recovery backoff. | D1-console statement, documented in `handover.md`. The wizard does not enable Access in the first place unless one of the two exists. |
 | A half-written D1 row. | `CHECK` constraint; a write for the three Access values is one statement. |
 | A recovery destroys the old admin secret. | The recovery page says so before the code is submitted; the old secret is unrecoverable by design anyway (`docs/admin-auth.md:53`). |
 
@@ -336,7 +351,7 @@ P6 evidence: on 21 October 2026 a production deployment on a custom domain retur
 
 - `docs/admin-auth.md`: settings table, the hard rule, the manual route moves to an appendix, `workers_dev` section, "Unverified" notes resolved by the spikes.
 - `docs/deploying.md`, `README.md` ("Sign-in options"), `docs/handover.md` (recovery), the cost note about the certificate, if billed (`docs/deploying.md` or `docs/costs.md`).
-- New: a `migration-0019` test per the existing convention (`src/test/migration-0019.test.ts`); a resolution-table test for `adminAuthFor`; guard tests for the exempt check route; tests that mock `fetch` with the spike fixtures for the Cloudflare client; a test that the token never reaches `console.*` or any D1 write; the template-URL decode test; and the extended `wrangler-config.test.ts` assertion.
+- New: a `migration-0020` test per the existing convention (`src/test/migration-0020.test.ts`), checking the seven added columns on top of `0019`'s table; a test that the wizard refuses to activate without a valid `SETUP_CODE` or a `recovery_hash`; guard tests for the exempt check route; tests that mock `fetch` with the spike fixtures for the Cloudflare client; a test that the token never reaches `console.*` or any D1 write; and the template-URL decode test. The resolution-table test for `adminAuthFor` and the `wrangler-config.test.ts` assertion on `ADMIN_AUTH` are zero-config setup's, not the wizard's.
 - CI never calls Cloudflare.
 
 ## Sources
