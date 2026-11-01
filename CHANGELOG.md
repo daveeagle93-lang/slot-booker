@@ -2,7 +2,7 @@
 
 Tags v1.0 and v1.1 exist and have no entries here.
 
-## v1.2 (unreleased: dated when it is tagged)
+## v1.2 (1 November 2026)
 
 The Deploy to Cloudflare form no longer asks for any secret or variable. An organiser deploys, opens the site's address, and a 30-minute first-run window lets the first visitor press one button to create the admin secret and a recovery code. Both are shown once, on a single screen.
 
@@ -52,7 +52,11 @@ This is a summary. The full steps are in [docs/deploying.md](docs/deploying.md#u
 
 ### Known limits and not yet verified
 
-- On the 31 October 2026 Deploy-button run, only part of the checklist was observed: the form, the build, the claim page with the secret and recovery code, and sign-in.
-- `/recover`, window expiry and redeploy-on-push have not been run on a deployed copy.
-- The v1.1 to v1.2 upgrade has not been run on a deployed copy.
+What a real deployment has shown so far:
+- 31 October 2026, a copy made with the Deploy button: the form had no secret field, the build took 55 seconds and applied all 19 migrations, `/` went to the first-run page, the admin secret and recovery code were shown once on one screen, and sign-in worked.
+- 1 November 2026, a live copy (`club-slots`): the owner reports that claiming again in a reopened window worked, that `/recover` refused a wrong code and gave a new admin secret and recovery code for the right one, and that their other live checks passed (the session endpoint, a private window, the theme colours; the details were not recorded here). I saw that a push redeployed the site through Workers Builds, that the first-run window stayed closed after its 30 minutes, and that a redeploy did not reopen it.
+
+Not verified:
+- The upgrade of an actual v1.1 site has not been run. Migration 0019 was applied to an existing database on the first `club-slots` build, but that was a development database, not a v1.1 club site, and the Cloudflare Access upgrade path has not been run at all.
+- The theme-colour cache fix and the recovery links were checked in Chromium only, not in WebKit (Safari) or Firefox.
 - The Deploy form shows an "Enable Preview builds" switch that is on by default. I found no way to default it to off from the repository (see docs/deploying.md), so switch it off.
